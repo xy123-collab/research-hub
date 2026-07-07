@@ -1,0 +1,47 @@
+# 科研数据共享平台 · 腾讯云一键部署
+# 默认形态：TencentDB for PostgreSQL（外部托管） + COS 对象存储 + 应用 web + nginx 前端。
+# 如需同机自装 PostgreSQL：加 --profile local-db 启动（把 .env 的 DATABASE_URL 指向 db 服务）。
+services:
+  web:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    env_file: ../.env
+    restart: always
+    expose:
+      - "8000"
+    volumes:
+      - app_data:/app/data            # STORAGE_BACKEND=local 时的文件目录（COS 模式可忽略）
+    # 若使用 local-db profile，取消下一行注释让 web 等待 db
+    # depends_on: [db]
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./certs:/etc/nginx/certs:ro   # 放 HTTPS 证书（见 nginx-ssl 说明）
+    depends_on:
+      - web
+
+  # ---- 可选：同机自装 PostgreSQL（预算紧时用；生产建议用 TencentDB）----
+  db:
+    image: postgres:15-alpine
+    profiles: ["local-db"]
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rhub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rhubpwd}
+      POSTGRES_DB: ${POSTGRES_DB:-research_hub}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  app_data:
+  pg_data:

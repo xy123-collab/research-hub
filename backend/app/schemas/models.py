@@ -1,0 +1,160 @@
+"""业务 I/O schema（精简，够用即可）。"""
+from pydantic import BaseModel, field_validator
+from .common import ORMModel, validate_http_url
+
+
+# -------- group --------
+class GroupIn(BaseModel):
+    slug: str; name_zh: str; name_en: str | None = None
+    desc_zh: str | None = None; desc_en: str | None = None
+    icon: str | None = None; discoverable: bool = True
+
+
+class GroupOut(ORMModel):
+    id: int; slug: str; name_zh: str; name_en: str | None = None
+    desc_zh: str | None = None; desc_en: str | None = None
+    icon: str | None = None; discoverable: bool = True
+
+
+# -------- dataset --------
+class DatasetIn(BaseModel):
+    slug: str; name_zh: str; name_en: str | None = None
+    desc_zh: str | None = None; desc_en: str | None = None
+    icon: str | None = None; founder_contact: str  # 必填
+    is_sensitive: bool = False
+
+    @field_validator("founder_contact")
+    @classmethod
+    def _c(cls, v):
+        if not v or not v.strip():
+            raise ValueError("发起人联系方式必填")
+        return v
+
+
+class DatasetOut(ORMModel):
+    id: int; group_id: int; slug: str; name_zh: str; name_en: str | None = None
+    desc_zh: str | None = None; icon: str | None = None
+    founder_id: int | None = None; founder_contact: str | None = None
+    current_version_id: int | None = None; is_sensitive: bool = False
+
+
+# -------- version --------
+class VersionIn(BaseModel):
+    version_id: str; based_on_version: str | None = None
+    changelog_zh: str | None = None; changelog_en: str | None = None
+
+
+# -------- charter --------
+class CharterIn(BaseModel):
+    body_zh: str; body_en: str | None = None
+
+
+# -------- bug --------
+class BugIn(BaseModel):
+    officer_id: str | None = None; term_id: str | None = None
+    variable_id: int | None = None
+    current_value: str | None = None; suggested_value: str | None = None
+    bug_type: str | None = None
+    description_zh: str; description_en: str | None = None; evidence: str | None = None
+
+
+class ReviewIn(BaseModel):
+    acceptability_score: float; comment: str | None = None
+
+    @field_validator("acceptability_score")
+    @classmethod
+    def _r(cls, v):
+        if not 0 <= v <= 10:
+            raise ValueError("评分需在 0-10 之间")
+        return v
+
+
+class FinalizeIn(BaseModel):
+    adopt_level: str  # full|partial|reject
+    final_score: float; comment: str | None = None
+
+    @field_validator("final_score")
+    @classmethod
+    def _f(cls, v):
+        if not 0 <= v <= 10:
+            raise ValueError("最终分需在 0-10 之间")
+        return v
+
+
+# -------- code --------
+class CodeIn(BaseModel):
+    filename: str; lang: str; title_zh: str; title_en: str | None = None
+    desc_zh: str | None = None; source_code: str
+
+
+class CodeBugIn(BaseModel):
+    line_ref: str | None = None; description_zh: str
+    description_en: str | None = None; suggested_patch: str | None = None
+
+
+# -------- post / project --------
+class PostIn(BaseModel):
+    content_zh: str; content_en: str | None = None
+    dataset_id: int | None = None; group_id: int | None = None
+    visibility: str = "platform"; cover_icon: str | None = None
+    tags: list[str] = []
+
+
+class CommentIn(BaseModel):
+    content: str
+
+
+class ProjectIn(BaseModel):
+    title: str; body_zh: str | None = None; body_en: str | None = None
+    dataset_id: int | None = None; status: str | None = None
+    open_for_discussion: bool = True; visibility: str = "platform"
+
+
+# -------- workspace --------
+class WorkspaceIn(BaseModel):
+    title: str; overleaf_url: str | None = None
+    member_ids: list[int] = []
+
+    @field_validator("overleaf_url")
+    @classmethod
+    def _u(cls, v):
+        return validate_http_url(v)
+
+
+class WsUpdateIn(BaseModel):
+    body: str
+
+
+class WsTodoIn(BaseModel):
+    text: str; assignee_id: int | None = None
+
+
+class WsTodoPatch(BaseModel):
+    text: str | None = None; done: bool | None = None; assignee_id: int | None = None
+
+
+class WsNoteIn(BaseModel):
+    body: str
+
+
+# -------- skill --------
+class SkillIn(BaseModel):
+    name_zh: str; name_en: str | None = None; desc_zh: str | None = None
+    group_id: int | None = None; github_url: str | None = None
+
+    @field_validator("github_url")
+    @classmethod
+    def _g(cls, v):
+        return validate_http_url(v)
+
+
+# -------- resume --------
+class ResumeBlockIn(BaseModel):
+    type: str; text_zh: str | None = None; text_en: str | None = None; seq: int = 0
+
+
+# -------- literature --------
+class LitRefIn(BaseModel):
+    title: str; authors: str | None = None; venue: str | None = None
+    year: int | None = None; url: str | None = None
+    note_zh: str | None = None

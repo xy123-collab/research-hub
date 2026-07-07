@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { --accent: #2d4a7c; }
+body { background: #faf9f6; color: #1a1a1a; }
+.card { @apply bg-card border border-line rounded-lg p-5 transition hover:shadow-md; }
+.btn { @apply px-4 py-2 rounded-md text-sm font-medium transition; }
+.btn-primary { @apply btn bg-accent text-white hover:opacity-90; }
+.btn-ghost { @apply btn border border-line bg-white hover:bg-paper; }
+.tag { @apply inline-block text-[11px] uppercase tracking-wide px-2 py-0.5 rounded bg-paper border border-line text-accent; }
+.input { @apply w-full border border-line rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:border-accent; }
+.label-cap { @apply text-[11px] uppercase tracking-wider text-gray-500; }
+h1,h2,h3 { @apply font-serif; }
+pre { @apply bg-ink text-gray-100 rounded-md p-4 text-xs overflow-x-auto font-mono; }

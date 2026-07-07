@@ -1,0 +1,20 @@
+# 配置 HTTPS 时，把此 server 段合并进 frontend/nginx.conf 并挂载证书到 ./deploy/certs/
+# 证书获取：腾讯云控制台申请免费 DV 证书 → 下载 Nginx 格式 → 放入 deploy/certs/
+server {
+    listen 443 ssl;
+    server_name your-domain.com;              # ★ 换成你的域名
+    ssl_certificate     /etc/nginx/certs/your-domain.crt;   # ★
+    ssl_certificate_key /etc/nginx/certs/your-domain.key;   # ★
+    client_max_body_size 60m;
+    root /usr/share/nginx/html;
+    index index.html;
+    location / { try_files $uri $uri/ /index.html; }
+    location /api/ { proxy_pass http://web:8000/api/; proxy_set_header Host $host; }
+    location /files/ { proxy_pass http://web:8000/files/; }
+}
+# 80 → 443 跳转
+server {
+    listen 80;
+    server_name your-domain.com;
+    return 301 https://$host$request_uri;
+}

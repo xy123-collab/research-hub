@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>科研数据共享平台 · 原型</title>
+<style>
+:root{--ink:#1a1a1a;--ink-soft:#4a4742;--ink-mute:#8a857c;--bg:#faf9f6;--card:#fff;--line:#e6e3dc;--line-soft:#efece5;--accent:#2d4a7c;--accent-soft:#eef1f7;--green:#3a7d44;--amber:#b5842a;--red:#9a4a4a;--blue:#2d4a7c;--radius:7px;--serif:'Source Serif 4',Georgia,'Songti SC','Noto Serif SC',serif;--sans:'Inter',-apple-system,'PingFang SC','Noto Sans SC',sans-serif;--mono:ui-monospace,'SF Mono',Menlo,monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}
+h1,h2,h3{font-family:var(--serif);font-weight:600;letter-spacing:-.01em}
+.mono{font-family:var(--mono);font-size:.86em}
+.label{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-mute);font-weight:600}
+.hidden{display:none!important}
+.lk{color:var(--accent);cursor:pointer}.lk:hover{text-decoration:underline}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 16px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:5px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit}
+.btn:hover{background:#24406e}.btn.ghost{background:transparent;color:var(--accent)}.btn.ghost:hover{background:var(--accent-soft)}
+.btn.small{padding:5px 11px;font-size:12px}.btn.danger{border-color:var(--red);color:var(--red);background:#fff}.btn.danger:hover{background:#f7eded}
+.field{margin-bottom:16px}.field label{display:block;font-size:12px;color:var(--ink-soft);margin-bottom:6px}
+.field input,.field select,.field textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:5px;background:#fff;font-family:inherit;font-size:14px;color:var(--ink)}
+.field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.modal-bg{position:fixed;inset:0;background:rgba(26,26,26,.42);display:flex;align-items:center;justify-content:center;z-index:60;padding:20px}
+.modal{background:#fff;border-radius:10px;max-width:600px;width:100%;padding:28px 30px;max-height:88vh;overflow:auto}
+.modal h2{font-size:20px;margin-bottom:4px}
+.modal-close{float:right;cursor:pointer;color:var(--ink-mute);font-size:20px;line-height:1;border:none;background:none}
+#login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:70}
+.login-card{width:400px;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:44px 40px}
+.login-card .brand{font-family:var(--serif);font-size:22px;font-weight:600;margin-bottom:4px}
+.login-card .sub{color:var(--ink-mute);font-size:13px;margin-bottom:28px}
+.hint{font-size:12px;color:var(--ink-mute);margin-top:18px;padding-top:16px;border-top:1px solid var(--line-soft);line-height:1.7}
+#app.hidden{display:none}
+header.topbar{position:sticky;top:0;background:rgba(250,249,246,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);z-index:20}
+.topbar-inner{max-width:1120px;margin:0 auto;padding:0 28px;height:58px;display:flex;align-items:center;gap:22px}
+.logo{font-family:var(--serif);font-weight:600;font-size:16px;white-space:nowrap;cursor:pointer}.logo .dot{color:var(--accent)}
+nav.mainnav{display:flex;gap:2px;margin-left:2px}
+nav.mainnav a{padding:6px 11px;border-radius:5px;color:var(--ink-soft);font-size:13.5px;cursor:pointer}
+nav.mainnav a:hover{background:#f0ede6}nav.mainnav a.active{color:var(--accent);background:var(--accent-soft);font-weight:500}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.demo-view{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-mute);border:1px dashed var(--line);border-radius:6px;padding:3px 8px}
+.demo-view select{border:none;background:transparent;font-size:12px;color:var(--accent);font-family:inherit;cursor:pointer;font-weight:600}
+.lang-toggle{display:flex;border:1px solid var(--line);border-radius:5px;overflow:hidden;font-size:12px}
+.lang-toggle button{border:none;background:#fff;padding:4px 9px;cursor:pointer;color:var(--ink-mute);font-family:inherit}.lang-toggle button.on{background:var(--accent);color:#fff}
+.userchip{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:4px 8px;border-radius:5px}.userchip:hover{background:#f0ede6}
+.avatar{width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600}
+main{max-width:1120px;margin:0 auto;padding:32px 28px 90px}
+.view{display:none}.view.active{display:block;animation:fade .25s ease}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.page-head{margin-bottom:22px}.page-head h1{font-size:25px;margin-bottom:4px}.page-head p{color:var(--ink-mute);font-size:14px}
+.crumb{font-size:12.5px;color:var(--ink-mute);margin-bottom:12px}.crumb span{cursor:pointer}.crumb span:hover{color:var(--accent)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px 24px;margin-bottom:18px}
+.grid{display:grid;gap:16px}.grid.c2{grid-template-columns:1fr 1fr}.grid.c3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:860px){.grid.c2,.grid.c3{grid-template-columns:1fr}}
+.sec-title{display:flex;align-items:baseline;gap:12px;margin:24px 0 14px}.sec-title h2{font-size:18px}.sec-title .more{margin-left:auto;font-size:12.5px;color:var(--accent);cursor:pointer}
+.cardgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.ecard{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;cursor:pointer;transition:.15s}
+.ecard:hover{border-color:var(--accent);box-shadow:0 4px 18px rgba(45,74,124,.08);transform:translateY(-2px)}
+.ecard .et{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.eicon{width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:18px;background:var(--accent-soft);color:var(--accent)}
+.ecard h3{font-size:15.5px}.ecard .edesc{font-size:12.5px;color:var(--ink-soft);min-height:36px;margin:6px 0 12px}
+.emeta{display:flex;gap:14px;font-size:12px;color:var(--ink-mute);border-top:1px solid var(--line-soft);padding-top:10px;flex-wrap:wrap}.emeta b{color:var(--ink);font-family:var(--serif)}
+.dashed{border:1.5px dashed var(--line);background:#fcfbf9;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--ink-mute);min-height:150px;cursor:pointer}.dashed:hover{border-color:var(--accent);color:var(--accent)}.dashed .plus{font-size:26px}
+.badge{font-size:11px;font-weight:600;letter-spacing:.05em;padding:2px 8px;border-radius:20px}
+.badge.current{background:var(--accent);color:#fff;text-transform:uppercase}.badge.g{background:#eaf3ec;color:var(--green)}.badge.a{background:#f6efe0;color:var(--amber)}.badge.r{background:#f3e9e9;color:var(--red)}.badge.b{background:var(--accent-soft);color:var(--blue)}
+.chip{display:inline-block;font-size:11px;padding:1px 8px;border:1px solid var(--line);border-radius:20px;color:var(--ink-soft);background:#fff}.chip.role{background:var(--accent-soft);color:var(--accent);border-color:transparent;font-weight:600}
+.stat{font-family:var(--serif);font-size:26px;font-weight:600}.stat-label{font-size:12px;color:var(--ink-mute)}
+.divider{height:1px;background:var(--line-soft);margin:14px 0}.muted{color:var(--ink-mute)}.small{font-size:12.5px}
+.charter-bar{display:flex;align-items:flex-start;gap:10px;background:#fbf7ee;border:1px solid #ece0c6;border-radius:8px;padding:12px 16px;margin-bottom:18px;font-size:13px;color:#6f5a2c}.charter-bar .ci{font-size:16px}.charter-bar a{color:#8a6d2f;font-weight:600;cursor:pointer;white-space:nowrap}
+table.tl{width:100%;border-collapse:collapse;font-size:13px}
+table.tl thead th{text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-mute);font-weight:600;padding:0 12px 9px;border-bottom:1.5px solid var(--ink-soft)}
+table.tl tbody td{padding:9px 12px;border-bottom:1px solid var(--line-soft)}table.tl tbody tr:last-child td{border-bottom:1.5px solid var(--ink-soft)}table.tl tbody tr:hover{background:#fbfaf7}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:20px;flex-wrap:wrap}
+.tabs a{padding:9px 13px;font-size:13.5px;color:var(--ink-soft);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}.tabs a:hover{color:var(--accent)}.tabs a.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
+.tabpane{display:none}.tabpane.on{display:block}
+.compose{display:flex;gap:12px}.compose textarea{min-height:54px;resize:vertical}
+.compose-actions{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+.mini{font-size:12px;color:var(--ink-mute);border:1px dashed var(--line);border-radius:5px;padding:4px 9px;cursor:pointer;background:#fff}
+.idea{border-bottom:1px solid var(--line-soft);padding:15px 0}.idea:last-child{border-bottom:none}
+.idea-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}.idea-meta{font-size:12px;color:var(--ink-mute)}
+.idea-actions{display:flex;gap:16px;margin-top:9px;font-size:12.5px;color:var(--ink-mute)}.idea-actions span{cursor:pointer}.idea-actions span:hover{color:var(--accent)}
+.tag{font-size:11px;color:var(--accent);background:var(--accent-soft);padding:1px 8px;border-radius:4px;cursor:pointer}
+.avatar-lg{width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;cursor:pointer}
+.vis{font-size:10px;padding:1px 7px;border-radius:20px;background:#eef1f7;color:var(--accent);font-weight:600}.vis.plat{background:#e7f1ea;color:var(--green)}.vis.priv{background:#f0eef0;color:var(--ink-mute)}
+.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:640px){.formgrid{grid-template-columns:1fr}}
+.req{color:var(--red)}
+.dsadmin-only,.groupadmin-only,.superadmin-only{display:none}
+body.is-dsadmin .dsadmin-only,body.is-groupadmin .groupadmin-only,body.is-superadmin .superadmin-only{display:block}
+.notice{font-size:12.5px;background:#fbf7ee;border:1px solid #ece0c6;color:#7a5f28;padding:8px 12px;border-radius:5px;margin-bottom:14px}.notice.ai{background:#eef1f7;border-color:#c9d4e6;color:#2d4a7c}
+.contrib-row{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px;cursor:pointer}.contrib-row:hover{background:#fbfaf7}.contrib-row:last-child{border-bottom:none}
+.kpi{display:flex;gap:26px;flex-wrap:wrap}
+.locked{display:flex;align-items:center;gap:8px;background:#f6f4ef;border:1px dashed var(--line);border-radius:6px;padding:10px 14px;font-size:13px;color:var(--ink-mute);flex-wrap:wrap}
+.dash-controls{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px}.dash-controls .field{margin-bottom:0;min-width:150px}
+.bar-row{display:flex;align-items:center;gap:12px;margin:8px 0;font-size:13px}.bar-row .bl{width:100px;text-align:right;color:var(--ink-soft);flex-shrink:0}
+.bar-track{flex:1;display:flex;gap:4px;align-items:center}.bar{height:19px;border-radius:3px;background:var(--accent);min-width:2px;transition:width .4s}.bar.s2{background:#9db4d6}
+.bar-val{font-size:12px;color:var(--ink-mute);font-family:var(--mono)}
+.legend{display:flex;gap:16px;font-size:12px;color:var(--ink-mute);margin-top:10px}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}
+.varpick{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 14px}.varpick label{display:flex;align-items:center;gap:5px;font-size:12.5px;border:1px solid var(--line);border-radius:20px;padding:3px 11px;cursor:pointer;background:#fff}.varpick input{accent-color:var(--accent)}
+pre.code{background:#1e2330;color:#d7dae0;border-radius:6px;padding:13px 15px;overflow:auto;font-family:var(--mono);font-size:12.5px;line-height:1.7;margin-top:10px;white-space:pre-wrap}
+.code-item{border:1px solid var(--line);border-radius:6px;padding:13px 15px;margin-bottom:10px;cursor:pointer}.code-item:hover{border-color:var(--accent)}
+.review-box{border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-top:12px;background:#fcfbf9}
+.review-row{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:13px;border-bottom:1px dashed var(--line-soft)}.review-row:last-child{border-bottom:none}
+.score{font-family:var(--mono);font-weight:600;font-size:13px;padding:1px 8px;border-radius:5px;background:var(--accent-soft);color:var(--accent)}.score.ai{background:#e7f1ea;color:var(--green)}.score.final{background:var(--accent);color:#fff}
+.member-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px}.member-row:last-child{border-bottom:none}
+.approve-log{font-size:12.5px;color:var(--ink-mute);padding:5px 0;border-bottom:1px dashed var(--line-soft)}
+.pub{padding:10px 0;border-bottom:1px solid var(--line-soft);cursor:pointer}.pub:last-child{border-bottom:none}.pub:hover .pt{color:var(--accent)}.pub .pt{font-size:13.5px;font-weight:500}.pub .pm{font-size:12px;color:var(--ink-mute);margin-top:2px}
+.mindmap{width:100%;background:#fcfbf9;border:1px solid var(--line);border-radius:8px}
+.founder-bar{display:flex;align-items:center;gap:14px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 16px;margin-bottom:16px;font-size:13px;flex-wrap:wrap}
+.post-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px}
+.post-card{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff;cursor:pointer;transition:.15s}.post-card:hover{transform:translateY(-2px);box-shadow:0 4px 14px rgba(0,0,0,.06)}
+.post-cover{height:88px;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--accent)}.post-cover.proj{background:linear-gradient(120deg,#e9edf5,#f3eee6)}
+.post-body{padding:11px 13px}.post-body .pt{font-size:13px;font-weight:500;line-height:1.4}.post-body .pm{font-size:11px;color:var(--ink-mute);margin-top:7px;display:flex;gap:10px;flex-wrap:wrap}
+.rank-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line-soft)}.rank-no{width:20px;font-family:var(--serif);font-weight:600;color:var(--ink-mute)}.rank-bar{height:8px;border-radius:4px;background:var(--accent)}
+.profile-banner{background:linear-gradient(120deg,#2d4a7c,#3a5a92);border-radius:var(--radius);padding:24px;color:#fff;display:flex;gap:20px;align-items:center;margin-bottom:18px}
+.profile-banner .pa{width:70px;height:70px;border-radius:50%;background:#fff;color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:27px;font-weight:700;font-family:var(--serif)}
+.profile-banner h1{color:#fff;font-size:23px}.profile-banner .bio{font-size:13px;opacity:.9;margin-top:3px}
+.grouptag{display:inline-flex;align-items:center;gap:6px;font-size:12px;background:rgba(255,255,255,.16);padding:3px 10px;border-radius:20px;margin-right:8px;margin-top:10px}.grouptag input{accent-color:#fff}
+.toggle{display:inline-flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="login-card">
+    <div class="brand">科研数据共享平台 <span style="color:var(--accent)">·</span> Research Hub</div>
+    <div class="sub" data-i18n="login_sub">跨课题组的科研数据共享 · 数据勘误 · 文献 · 学术交流</div>
+    <div class="field"><label data-i18n="username">用户名</label><input value="lixy"></div>
+    <div class="field"><label data-i18n="password">密码</label><input type="password" value="xxxxxxxx"></div>
+    <button class="btn" style="width:100%;justify-content:center" onclick="login()" data-i18n="login_btn">登录</button>
+    <button class="btn ghost" style="width:100%;justify-content:center;margin-top:8px" onclick="login(true)" data-i18n="login_new">注册新账户（体验空白视角）</button>
+    <div class="hint" data-i18n="login_hint">原型演示 · 假数据。身份不在登录时选择——右上角"演示视角"可切换 成员/数据集管理员/课题组管理员/总管理员，仅用于预览不同后台。</div>
+  </div>
+</div>
+
+<div id="charter-modal" class="modal-bg hidden">
+  <div class="modal">
+    <div class="label" data-i18n="charter_label">课题组公约 · 请阅读并同意</div>
+    <h2 id="charter-title" style="margin:6px 0 12px"></h2>
+    <div id="charter-body" style="font-size:13.5px;color:var(--ink-soft);line-height:1.9"></div>
+    <div style="display:flex;gap:10px;margin-top:20px;align-items:center">
+      <label style="font-size:13px;display:flex;gap:7px;align-items:center;cursor:pointer"><input type="checkbox" id="charter-ck" style="accent-color:var(--accent)"> <span data-i18n="charter_agree">我已阅读并同意遵守本公约</span></label>
+      <button class="btn" style="margin-left:auto" onclick="acceptCharter()" data-i18n="enter">进入</button>
+    </div>
+  </div>
+</div>
+
+<div id="detail-modal" class="modal-bg hidden">
+  <div class="modal"><button class="modal-close" onclick="closeModal()">×</button>
+    <div class="label" id="dm-kicker"></div><h2 id="dm-title" style="margin:5px 0 12px"></h2>
+    <div id="dm-body"></div><div id="dm-actions" style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap"></div>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <header class="topbar"><div class="topbar-inner">
+    <div class="logo" onclick="go('home')">科研数据共享平台<span class="dot"> · </span><span style="font-size:12px;color:var(--ink-mute);font-family:var(--sans)">Research Hub</span></div>
+    <nav class="mainnav" id="nav">
+      <a data-view="home" class="active" data-i18n="nav_home">首页</a>
+      <a data-view="feed" data-i18n="nav_feed">研究广场</a>
+      <a data-view="profile" data-i18n="nav_profile">我的主页</a>
+      <a data-view="admin" id="nav-admin" data-i18n="nav_admin">管理后台</a>
+    </nav>
+    <div class="topbar-right">
+      <div class="demo-view" title="仅用于原型预览不同后台"><span data-i18n="demo_view">演示视角</span>
+        <select id="viewsel" onchange="setView(this.value)"><option value="member" data-i18n="v_member">成员</option><option value="dsadmin" data-i18n="v_dsadmin">数据集管理员</option><option value="groupadmin" data-i18n="v_groupadmin">课题组管理员</option><option value="superadmin" data-i18n="v_superadmin">总管理员</option></select></div>
+      <div class="lang-toggle"><button id="lz" class="on" onclick="setLang('zh')">中</button><button id="le" onclick="setLang('en')">EN</button></div>
+      <div class="userchip" onclick="logout()" title="退出"><div class="avatar">李</div><span>李小雨</span></div>
+    </div>
+  </div></header>
+
+  <main>
+    <!-- HOME -->
+    <section class="view active" id="v-home">
+      <div class="page-head"><h1 data-i18n="home_title">首页</h1><p data-i18n="home_sub">你所在的课题组、可发现的课题组，以及全平台的近期研究动态。空白账户从这里创建或加入课题组。</p></div>
+      <div class="sec-title"><h2 data-i18n="my_groups">我的课题组</h2></div>
+      <div class="cardgrid" id="my-groups"></div>
+      <div class="sec-title"><h2 data-i18n="discover_groups">发现课题组</h2><span class="muted small" data-i18n="discover_hint">— 仅显示公开课题组的简介、人数与公开想法</span></div>
+      <div class="cardgrid" id="discover-groups"></div>
+      <div class="sec-title"><h2 data-i18n="sec_recent">研究广场 · 近期（全平台）</h2><span class="more" onclick="go('feed')" data-i18n="more">全部 →</span></div>
+      <div class="card"><div id="home-feed"></div></div>
+    </section>
+
+    <!-- GROUP -->
+    <section class="view" id="v-group">
+      <div class="crumb"><span onclick="go('home')" data-i18n="back_home">首页</span> / <span id="gd-crumb"></span></div>
+      <div class="page-head" style="display:flex;align-items:center;gap:16px">
+        <div class="eicon" id="gd-icon" style="width:50px;height:50px;font-size:22px;border-radius:12px"></div>
+        <div style="flex:1"><h1 id="gd-name">—</h1><p id="gd-desc" class="muted"></p></div>
+        <div id="gd-headbtn"></div>
+      </div>
+      <div class="charter-bar"><span class="ci">📜</span><div style="flex:1"><b data-i18n="group_charter">课题组公约</b>：<span id="gd-charter-short"></span></div><a onclick="openCharter('group')" data-i18n="view_full">查看全文</a><a class="groupadmin-only" style="display:none" onclick="editCharter('group')" data-i18n="edit">· 编辑</a></div>
+      <div class="groupadmin-only card" style="display:none;border-left:3px solid var(--accent)"><label class="toggle"><input type="checkbox" id="gd-discoverable" checked onchange="alert('原型：切换是否在“发现课题组”页展示本组')"> <span data-i18n="discoverable">在“发现课题组”页展示本课题组（关闭后其他人看不到本组）</span></label></div>
+      <div class="grid c3" id="gd-stats"></div>
+      <div id="gd-nonmember"></div>
+      <div id="gd-memberview">
+        <div class="sec-title"><h2 data-i18n="group_datasets">数据集</h2></div>
+        <div class="cardgrid" id="gd-datasets"></div>
+        <div class="grid c2" style="margin-top:8px">
+          <div class="card"><div style="display:flex;gap:10px;align-items:center"><div class="label" data-i18n="group_members">课题组成员</div><span class="chip" id="gd-mcount"></span></div><div class="divider"></div><div id="gd-members"></div></div>
+          <div class="card"><div class="label" data-i18n="group_ideas">本组近期研究想法</div><div class="divider"></div><div id="gd-ideas"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DATASET -->
+    <section class="view" id="v-dataset">
+      <div class="crumb"><span onclick="go('home')" data-i18n="back_home">首页</span> / <span id="dd-gcrumb" onclick="openGroupFromDS()"></span> / <span id="dd-crumb"></span></div>
+      <div class="page-head" style="display:flex;align-items:center;gap:16px">
+        <div class="eicon" id="dd-icon" style="width:50px;height:50px;font-size:22px;border-radius:12px"></div>
+        <div style="flex:1"><h1 id="dd-name">—</h1><p id="dd-desc" class="muted"></p></div>
+        <div style="text-align:right"><div class="badge current" id="dd-ver">v—</div><div class="small muted" id="dd-date" style="margin-top:5px"></div></div>
+      </div>
+      <div class="founder-bar"><span class="label" data-i18n="founder">数据发起人</span><span class="lk" id="dd-founder" onclick="openUser(curFounder)">@—</span><span class="muted" data-i18n="contact">联系方式</span><span id="dd-contact" class="mono"></span><button class="btn small ghost" style="margin-left:auto" id="dd-join" onclick="alert('原型：提交加入本数据集处理的申请')">＋ <span data-i18n="apply_join">申请加入处理</span></button></div>
+      <div class="charter-bar"><span class="ci">📜</span><div style="flex:1"><b data-i18n="ds_charter">数据集公约</b>：<span id="dd-charter-short"></span></div><a onclick="openCharter('ds')" data-i18n="view_full">查看全文</a></div>
+      <div class="tabs" id="dd-tabs">
+        <a class="on" data-tab="ov" data-i18n="tab_ov">概览</a><a data-tab="dash" data-i18n="tab_dash">数据看板</a><a data-tab="lit" data-i18n="tab_lit">文献地图</a><a data-tab="ver" data-i18n="tab_ver">版本库</a><a data-tab="rawbug" data-i18n="tab_rawbug">原始数据勘误</a><a data-tab="code" data-i18n="tab_code">处理代码库</a><a class="dsadmin-only" style="display:none" data-tab="manage" data-i18n="tab_manage">数据集后台</a>
+      </div>
+      <div class="tabpane on" id="pane-ov">
+        <div class="grid c3" id="dd-stats"></div>
+        <div class="card"><div class="label" data-i18n="cur_ver">当前推荐版本</div><div class="divider"></div><div style="display:flex;align-items:center;gap:12px"><span class="mono" style="font-size:16px;font-weight:600" id="dd-ver2"></span><span class="muted small" id="dd-clog"></span></div><div id="dd-dl" style="margin-top:14px"></div></div>
+        <div class="grid c2">
+          <div class="card"><div style="display:flex;gap:10px;align-items:center"><div class="label" data-i18n="members">数据集成员</div><span class="chip" id="dd-mcount"></span></div><div class="divider"></div><div id="dd-members"></div><div class="label" style="margin-top:14px" data-i18n="approve_log">加入审批记录</div><div id="dd-approve" style="margin-top:8px"></div></div>
+          <div class="card"><div class="label" data-i18n="recent_pub">近期刊物</div><div class="divider"></div><div id="dd-pubs"></div><div class="label" style="margin-top:16px" data-i18n="recent_ds_ideas">近期研究想法（本数据集）</div><div id="dd-ideas" style="margin-top:6px"></div></div>
+        </div>
+      </div>
+      <div class="tabpane" id="pane-dash">
+        <div class="card"><div class="label" data-i18n="dash_sample">① 样本描述性统计（选择多个变量）</div><p class="small muted" style="margin:6px 0 8px" data-i18n="dash_sample_sub">勾选变量，生成 N / 均值 / 标准差 / 最小 / 中位 / 最大 的汇总表。只读，不改原始值。</p><div class="varpick" id="var-pick"></div><table class="tl"><thead><tr><th data-i18n="c_var">变量</th><th>N</th><th data-i18n="c_mean">均值</th><th data-i18n="c_sd">标准差</th><th data-i18n="c_min">最小</th><th data-i18n="c_p50">中位</th><th data-i18n="c_max">最大</th></tr></thead><tbody id="stat-body"></tbody></table><button class="btn small ghost" style="margin-top:12px" onclick="alert('原型：导出汇总统计 CSV')" data-i18n="export">导出</button></div>
+        <div class="card"><div class="label" data-i18n="dash_title">② 分布图 · 自定义维度</div><div class="dash-controls" style="margin-top:12px"><div class="field"><label data-i18n="dash_var">分析变量</label><select id="dv-var" onchange="renderDash()"><option value="jobrank">jobrank</option><option value="edu_first">edu_first</option><option value="home_prov">home_prov</option><option value="begin_yr">begin_yr</option></select></div><div class="field"><label data-i18n="dash_group">分组维度</label><select id="dv-grp" onchange="renderDash()"><option value="none" data-i18n="grp_none">不分组</option><option value="gender" data-i18n="grp_gender">按性别</option><option value="central" data-i18n="grp_central">按是否中央任职</option></select></div></div><div id="dash-chart"></div><div class="legend" id="dash-legend"></div></div>
+        <div class="card"><div style="display:flex;align-items:center;gap:10px"><div class="label" data-i18n="ai_title">③ 代码 / AI 描述分析</div><span class="badge b" data-i18n="readonly">只读 · 不改原始值</span></div><div class="notice ai" style="margin:12px 0" data-i18n="ai_note">用自然语言描述分析，AI 生成代码；或手写。代码在只读沙箱运行，永不写回原始数据。</div><div class="field"><label data-i18n="ai_ask">告诉 AI 你想分析什么</label><textarea id="ai-ask">按是否中央任职，比较不同学历官员的平均任期长度</textarea></div><div style="display:flex;gap:8px"><button class="btn small" onclick="aiGen()" data-i18n="ai_gen">✦ AI 生成分析代码</button><button class="btn small ghost" onclick="aiRun()" data-i18n="ai_run">▶ 运行（只读）</button></div><pre class="code" id="ai-code" style="display:none"></pre><div id="ai-result" style="margin-top:12px"></div></div>
+      </div>
+      <div class="tabpane" id="pane-lit">
+        <div class="notice ai" data-i18n="lit_note">AI 可自动总结本数据集研究用途/话题、生成文献思维导图；成员可上传/修改。完整显示与编辑需权限。</div>
+        <div class="card"><div style="display:flex;gap:10px;align-items:center"><div class="label" data-i18n="lit_map">文献 · 研究话题思维导图</div><button class="btn small ghost" style="margin-left:auto" onclick="alert('原型：AI 重新总结研究用途/话题')" data-i18n="ai_summarize">✦ AI 总结/更新</button></div><div class="divider"></div><svg class="mindmap" viewBox="0 0 720 300" id="mindmap"></svg></div>
+        <div class="card"><div style="display:flex;gap:10px;align-items:center"><div class="label" data-i18n="key_refs">重点文献清单</div><button class="btn small ghost" style="margin-left:auto" onclick="alert('原型：添加重点文献（需权限）')" data-i18n="add_ref">＋ 添加</button></div><div class="divider"></div><div id="lit-refs"></div></div>
+      </div>
+      <div class="tabpane" id="pane-ver">
+        <div class="dsadmin-only card" style="border-left:3px solid var(--accent)"><div class="label" data-i18n="publish_new">发布新版本（发起人 / 管理员）</div><div class="divider"></div><div class="formgrid"><div class="field"><label data-i18n="f_version">版本号</label><input value="v1.3.1" class="mono"></div><div class="field"><label data-i18n="f_file">数据文件</label><input value="cod_v1.3.1.dta" readonly></div></div><button class="btn" onclick="alert('原型：发布后旧版本保留')" data-i18n="publish">发布并设为当前推荐</button></div>
+        <div class="card"><table class="tl"><thead><tr><th data-i18n="c_version">版本</th><th data-i18n="c_date">日期</th><th data-i18n="c_changes">更新摘要</th><th data-i18n="c_fixed">修复</th><th data-i18n="c_status">状态</th></tr></thead><tbody id="ver-body"></tbody></table></div>
+      </div>
+      <div class="tabpane" id="pane-rawbug"><div class="notice" data-i18n="rawbug_note">原始数据勘误：审核分三步——① 成员评审打分（0–10）② AI 自动评审打分 ③ 管理员终审决定采纳程度并给最终分。</div><div id="rawbug-list"></div></div>
+      <div class="tabpane" id="pane-code">
+        <div class="notice" data-i18n="code_note">处理代码勘误：清洗/构造脚本是公共资产，公开展示、可复用、可勘误。审核同上（成员 + AI 评分 → 管理员终审）。</div>
+        <div class="grid c2" style="grid-template-columns:1.1fr .9fr">
+          <div><div class="sec-title" style="margin-top:0"><h2 style="font-size:15px" data-i18n="code_lib">公共处理代码库</h2><button class="btn small" style="margin-left:auto" onclick="submitCode()" data-i18n="submit_code">＋ 提交新代码</button></div><div id="code-list"></div></div>
+          <div><div class="card"><div style="display:flex;align-items:center;gap:8px"><div class="label" data-i18n="code_view">代码预览</div><span class="lk small dsadmin-only" style="display:none;margin-left:auto" onclick="alert('原型：代码作者/管理员可编辑该脚本')" data-i18n="edit">编辑</span></div><div class="divider"></div><div id="code-view-title" class="small mono" style="font-weight:600"></div><pre class="code" id="code-view"></pre><button class="btn small" style="margin-top:10px" onclick="alert('原型：对该代码某行提交勘误')" data-i18n="report_code">＋ 提交代码勘误</button></div><div class="card"><div class="label" data-i18n="code_bug_queue">代码勘误队列</div><div class="divider"></div><div id="codebug-list"></div></div></div>
+        </div>
+      </div>
+      <div class="tabpane dsadmin-only" id="pane-manage">
+        <div class="notice" data-i18n="ds_manage_note">数据集管理后台（仅数据集管理员/发起人可见）。</div>
+        <div class="grid c2"><div class="card"><div class="label" data-i18n="join_reqs">加入本数据集申请</div><div class="divider"></div><div id="dsmanage-join"></div></div><div class="card"><div class="label" data-i18n="ds_perm">成员与授权</div><div class="divider"></div><div id="dsmanage-perm"></div><button class="btn small ghost" style="margin-top:10px" onclick="alert('原型：给成员授权，最高可至与发起人一致')" data-i18n="grant">＋ 授权成员</button></div></div>
+        <div class="card"><div class="label" data-i18n="ds_contrib">本数据集贡献度</div><div class="divider"></div><div id="dsmanage-contrib"></div></div>
+        <div class="card"><div style="display:flex;gap:10px;align-items:center"><div class="label" data-i18n="ds_charter_edit">数据集公约</div><button class="btn small ghost" style="margin-left:auto" onclick="editCharter('ds')" data-i18n="edit">编辑</button></div><div class="divider"></div><div class="small muted" id="dsmanage-charter"></div></div>
+      </div>
+    </section>
+
+    <!-- FEED -->
+    <section class="view" id="v-feed">
+      <div class="page-head"><h1 data-i18n="feed_title">研究广场</h1><p data-i18n="feed_sub">全平台的学术想法流。发帖可选择"全平台/本课题组/仅自己"，带数据集标签即进入对应数据集近期想法。</p></div>
+      <div class="card"><div class="compose"><div class="avatar-lg">李</div><div style="flex:1"><textarea class="field" style="width:100%" placeholder="你有什么研究想法？"></textarea><div class="compose-actions"><span class="mini">＋ 图片</span><span class="mini">＋ 附件</span><span class="mini">＃ 标签</span><span class="mini">⧉ 关联数据集</span><select class="field" style="width:auto;padding:4px 8px;font-size:12px"><option data-i18n="vis_plat">全平台可见</option><option data-i18n="vis_group2">本课题组可见</option><option data-i18n="vis_private">仅自己可见</option></select><button class="btn small" style="margin-left:auto" onclick="alert('原型：按所选可见范围发布')" data-i18n="post">发布</button></div></div></div></div>
+      <div class="card"><div id="feed-list"></div></div>
+    </section>
+
+    <!-- PROFILE -->
+    <section class="view" id="v-profile">
+      <div class="profile-banner"><div class="pa" id="pf-ava">李</div><div style="flex:1"><h1 id="pf-name">李小雨 <span style="font-size:12px;opacity:.8;font-family:var(--sans)">@lixy</span></h1><div class="bio" id="pf-bio" data-i18n="p_bio">政治经济学 · 关注官员晋升与地方财政</div><div style="margin-top:6px"><span style="font-size:22px;font-family:var(--serif);font-weight:600">128</span> <span data-i18n="p_score" style="font-size:13px;opacity:.9">贡献度</span></div><div id="pf-groups" style="margin-top:4px"></div></div></div>
+      <div class="tabs" id="pf-tabs"><a class="on" data-tab="projects" data-i18n="pf_projects">在做的项目</a><a data-tab="posts" data-i18n="pf_posts">我的发帖</a><a data-tab="contrib" data-i18n="pf_contrib">我的贡献</a><a data-tab="maintain" data-i18n="pf_maintain">我维护的数据/代码</a></div>
+      <div class="tabpane on" id="ppane-projects"><div class="card" id="pf-proj-compose"><div class="compose"><div class="avatar-lg">李</div><div style="flex:1"><textarea class="field" style="width:100%;min-height:44px" placeholder="发起一个在做的项目 · 欢迎讨论（可放图、附件、标签）"></textarea><div class="compose-actions"><span class="mini">＋ 图片</span><span class="mini">＋ 附件</span><span class="mini">＃ 标签</span><button class="btn small" style="margin-left:auto" onclick="alert('原型：像发帖一样发出，同时列入在做的项目')" data-i18n="post_proj">发布项目</button></div></div></div></div><div class="post-grid" id="my-projects"></div></div>
+      <div class="tabpane" id="ppane-posts"><div class="post-grid" id="my-posts"></div></div>
+      <div class="tabpane" id="ppane-contrib"><div class="card"><div class="label" data-i18n="contrib_detail">贡献明细</div><p class="small muted" style="margin:6px 0 4px" data-i18n="contrib_detail_sub">勘误分按管理员终审评分加权。点每一条可溯源到来源。</p><div class="divider"></div><div id="contrib-detail"></div></div></div>
+      <div class="tabpane" id="ppane-maintain"><div class="card"><div class="label" data-i18n="maintain_ds">维护/发起的数据集</div><div class="divider"></div><div id="maintain-ds"></div></div><div class="card"><div class="label" data-i18n="maintain_code">发起/贡献的处理代码</div><div class="divider"></div><div id="maintain-code"></div></div></div>
+    </section>
+
+    <!-- ADMIN -->
+    <section class="view" id="v-admin">
+      <div class="page-head"><h1 data-i18n="admin_title">管理后台</h1><p data-i18n="admin_sub">按你持有的角色展示：总管理员（全站）/ 课题组管理员 / 数据集管理员。</p></div>
+      <div class="superadmin-only">
+        <div class="sec-title"><h2 data-i18n="panel_super">总管理员 · 全站</h2></div>
+        <div class="grid c2"><div class="card"><div class="label" data-i18n="all_groups">全部课题组</div><div class="divider"></div><div id="admin-groups"></div><button class="btn small ghost" style="margin-top:10px" onclick="alert('原型：审批新建课题组 / 停用课题组')" data-i18n="manage_groups">管理课题组</button></div>
+          <div class="card"><div class="label" data-i18n="site_admins">总管理员（可多个）</div><div class="divider"></div><div class="member-row"><div class="avatar-lg" onclick="openUser('王教授')">导</div><span style="flex:1">王教授（导师）</span><span class="chip role" data-i18n="role_super">总管理员</span></div><div class="member-row"><div class="avatar-lg" onclick="openUser('李小雨')">李</div><span style="flex:1">李小雨</span><span class="chip role" data-i18n="role_super">总管理员</span></div><button class="btn small ghost" style="margin-top:8px" onclick="alert('原型：交接/新增总管理员')" data-i18n="add_admin">＋ 新增 / 交接</button></div></div>
+        <div class="card"><div class="label" data-i18n="audit_log">全站审计日志</div><div class="divider"></div><table class="tl"><thead><tr><th data-i18n="c_user">用户</th><th data-i18n="c_action">动作</th><th data-i18n="c_obj">对象</th><th data-i18n="c_time">时间</th></tr></thead><tbody id="audit-body"></tbody></table></div>
+      </div>
+      <div class="groupadmin-only">
+        <div class="sec-title"><h2 data-i18n="panel_group">课题组管理员 · NSD 发展政经课题组</h2></div>
+        <div class="grid c2"><div class="card"><div class="label" data-i18n="join_group_reqs">加入课题组申请</div><div class="divider"></div><div id="admin-groupjoin"></div></div><div class="card"><div style="display:flex;gap:10px;align-items:center"><div class="label" data-i18n="group_charter">课题组公约</div><button class="btn small ghost" style="margin-left:auto" onclick="editCharter('group')" data-i18n="edit">编辑</button></div><div class="divider"></div><div class="small muted" id="admin-groupcharter"></div></div></div>
+        <div class="card"><div class="label" data-i18n="contrib_total">全员总贡献度</div><div class="divider"></div><div id="rank-list"></div></div>
+        <div class="card"><div class="label" data-i18n="contrib_byds">分数据集贡献度</div><div class="divider"></div><div class="field" style="max-width:280px"><label data-i18n="pick_ds">选择数据集</label><select id="byds-sel" onchange="renderByDS()"><option value="cod">COD 地方官员数据库</option><option value="fiscal">地级市财政数据</option></select></div><table class="tl"><thead><tr><th data-i18n="c_member">成员</th><th data-i18n="k_bugs">数据勘误分</th><th data-i18n="k_code">代码勘误分</th><th data-i18n="k_review">审核被采纳</th><th data-i18n="p_score">小计</th></tr></thead><tbody id="byds-body"></tbody></table></div>
+      </div>
+      <div class="dsadmin-only"><div class="sec-title"><h2 data-i18n="panel_ds">数据集管理员</h2></div><div class="card"><div class="small" data-i18n="ds_admin_hint">数据集后台在每个数据集详情的"数据集后台"页签内。</div><button class="btn small ghost" style="margin-top:10px" onclick="openDataset('cod')" data-i18n="goto_ds">进入 COD 数据集后台 →</button></div></div>
+    </section>
+  </main>
+</div>
+
+<script>
+/* ===== bilingual helper ===== */
+let lang='zh';
+function B(zh,en){return {zh:zh,en:en||zh}}
+function tf(x){return (x&&typeof x=='object'&&('zh'in x))?(x[lang]||x.zh):x}
+
+/* ===== DATA ===== */
+const users={
+ lixy:{name:B('李小雨','Li Xiaoyu'),bio:B('政治经济学 · 关注官员晋升与地方财政','Political economy · officer promotion & local fiscal'),score:128},
+ chenm:{name:B('陈默','Chen Mo'),bio:B('政商关系与政策执行','Political-business ties & policy'),score:141},
+ zhangf:{name:B('张沨','Zhang Feng'),bio:B('地方财政与转移支付','Local fiscal & transfers'),score:96},
+ wangp:{name:B('王沛','Wang Pei'),bio:B('晋升激励','Promotion incentives'),score:88},
+ wangprof:{name:B('王教授（导师）','Prof. Wang'),bio:B('课题组负责人 · 政治经济学','PI · Political economy'),score:0},
+};
+const groups=[
+ {id:'nsd',mine:true,discoverable:true,icon:'🏛',name:B('NSD 发展政经课题组','NSD Development PolEcon Group'),desc:B('国发院发展政治经济学方向 · 官员/财政/网络/文本数据','NSD dev. political economy · officials/fiscal/network/text'),members:14,dscount:4,myrole:B('课题组管理员','Group admin'),charter:B('1. 平台数据仅限课题组内部研究使用，禁止外传、转售或商业用途。\n2. 学术讨论内容（含研究广场发帖、他人未发表想法）禁止截图公开发表或外传。\n3. 使用数据发表成果须按贡献声明致谢/署名相关成员。\n4. 敏感数据遵守最小授权，导出行为全程留痕。\n5. 发现数据错误应通过平台勘误流程提交，不得私自改动。','1. Data is for internal research only; no redistribution/resale/commercial use.\n2. Discussion content (posts, others\\' unpublished ideas) must not be screenshotted or published.\n3. Publications using the data must credit contributors per the contribution statement.\n4. Sensitive data follows least-privilege; all exports are logged.\n5. Report errors via the platform; no private edits.')},
+ {id:'labor',mine:false,discoverable:true,icon:'👷',name:B('劳动经济读书组','Labor Economics Reading Group'),desc:B('劳动力市场、教育回报、迁移','Labor market, returns to education, migration'),members:8,dscount:2,myrole:B('',''),charter:B('读书组公约：尊重原始数据版权，讨论内容不外传。','Charter: respect data copyright; keep discussion internal.')},
+ {id:'macro',mine:false,discoverable:false,icon:'📉',name:B('宏观与金融组','Macro & Finance Group'),desc:B('货币、银行、地方债','Money, banking, local debt'),members:11,dscount:3,myrole:B('',''),charter:B('公约：数据共享限组内。','Charter: data shared within group only.')},
+];
+const datasets=[
+ {id:'cod',group:'nsd',icon:'🏛',name:B('COD 地方官员数据库','COD Officials Dataset'),desc:B('官员个人—任期层面结构化数据，核心 ID：officerID / termID','Officer–term level data (officerID / termID)'),ver:'v1.3.0',date:'2026-06-24',officers:'2,847',terms:'9,120',vars:41,pending:7,members:9,founder:'lixy',contact:'lixy2024@pku.edu.cn',clog:B('新增 342 名地市级官员任期；修复 11 处编码错误','+342 prefecture terms; 11 fixes'),charter:B('COD 数据集专项公约：\n1. 官员数据属敏感数据，未加入本数据集处理的成员仅可查看 codebook 与数据看板，不可下载原始 .dta。\n2. 加入处理需发起人或管理员审批。\n3. 严禁将原始数据外传或上传至任何外部服务/AI。\n4. 引用本数据须标注版本号并致谢维护者。','COD dataset charter:\n1. Officials data is sensitive; non-members may view codebook & dashboard but cannot download raw .dta.\n2. Joining processing needs founder/admin approval.\n3. Never send raw data to any external service/AI.\n4. Cite version and credit maintainers.')},
+ {id:'fiscal',group:'nsd',icon:'💰',name:B('地级市财政数据','Prefecture Fiscal Data'),desc:B('2000–2020 地级市财政收支、转移支付面板','2000–2020 prefecture fiscal panel'),ver:'v0.9.2',date:'2026-06-10',officers:'333',terms:'6,993',vars:58,pending:3,members:5,founder:'zhangf',contact:'zhangf@pku.edu.cn',clog:B('补充 2019 转移支付','+2019 transfers'),charter:B('财政数据公约：注明数据来源与口径。','Fiscal data charter: note sources and definitions.')},
+ {id:'network',group:'nsd',icon:'🕸',name:B('政商关系网络','Political-Business Network'),desc:B('官员—企业关联边表','Officer–firm edge list'),ver:'v0.4.0',date:'2026-05-22',officers:'1,204',terms:'—',vars:12,pending:2,members:3,founder:'chenm',contact:'chenm@pku.edu.cn',clog:B('新增校友关系边','+alumni ties'),charter:B('网络数据公约。','Network data charter.')},
+ {id:'text',group:'nsd',icon:'📄',name:B('政府工作报告文本','Gov Work Report Corpus'),desc:B('地市政府工作报告全文+情感标注','Gov report corpus + sentiment'),ver:'v0.6.1',date:'2026-05-08',officers:'—',terms:'—',vars:9,pending:0,members:4,founder:'zhaoym',contact:'zhaoym@pku.edu.cn',clog:B('补充 2024 报告','+2024 reports'),charter:B('文本数据公约。','Text data charter.')},
+];
+const dsMembers={cod:[['lixy',B('发起人','Founder'),'role'],['chenm',B('维护者','Maintainer'),''],['wangp',B('成员','Member'),''],['zhangf',B('成员','Member'),'']]};
+const dsApprove={cod:[B('陈默 · 2026-05-10 加入 · 经 李小雨（发起人）同意','Chen Mo · joined 2026-05-10 · approved by Li Xiaoyu (founder)'),B('王沛 · 2026-05-22 加入 · 经 王教授（总管理员）同意','Wang Pei · joined 2026-05-22 · approved by Prof. Wang (super-admin)')]};
+const dsPubs={cod:[{t:B('Promotion Incentives and Land Finance','Promotion Incentives and Land Finance'),m:B('J. Public Economics · 2026 · 用 COD v1.2','J. Public Economics · 2026 · uses COD v1.2'),url:'https://example.org/paper1'},{t:B('官员任期与地方债务扩张','Officer Tenure and Local Debt'),m:B('经济研究 · 2025 · 用 COD v1.1','Economic Research · 2025 · uses COD v1.1'),url:'https://example.org/paper2'}]};
+const dsRefs={cod:[{t:'Li & Zhou (2005) Political turnover and economic performance',m:B('JPubE · 晋升锦标赛奠基','JPubE · foundational tournament paper'),url:'https://example.org/lizhou'},{t:'Xu (2011) Fundamental institutions of China\\'s reforms',m:B('JEL · 制度背景','JEL · institutional background'),url:'https://example.org/xu'}]};
+const mindmap={cod:{center:B('COD 研究用途','COD research uses'),branches:[{t:B('官员晋升','Promotion'),leaves:[B('晋升锦标赛','Tournament'),B('关系vs能力','Ties vs ability')]},{t:B('地方财政','Local fiscal'),leaves:[B('土地财政','Land finance'),B('地方债务','Local debt')]},{t:B('政策执行','Policy'),leaves:[B('政策扩散','Diffusion'),B('运动式治理','Campaigns')]},{t:B('政商关系','Pol-biz'),leaves:[B('旋转门','Revolving door'),B('校友网络','Alumni')]}]}};
+const versions=[{v:'v1.3.0',d:'2026-06-24',c:B('新增 342 名任期；修复 11 处编码错误','+342 terms; 11 fixes'),fixed:11,cur:true},{v:'v1.2.0',d:'2026-05-30',c:B('补充教育背景；更新 region_code','+education; region_code'),fixed:6},{v:'v1.1.1',d:'2026-05-12',c:B('紧急修复 begin_yr 越界','Hotfix begin_yr'),fixed:3,hot:true},{v:'v1.0.0',d:'2026-04-01',c:B('首个正式版本','Initial release'),fixed:0}];
+const rawbugs=[
+ {id:'B-112',oid:'100482',var:'region_code',cur:'110108',sug:'110105',type:B('地区代码错误','Region code error'),by:'wangp',st:'pending',mv:[['chenm',8],['zhangf',7]],ai:8,final:null},
+ {id:'B-111',oid:'203771',var:'end_yr',cur:'2019',sug:'2021',type:B('任期年份错误','Term year error'),by:'chenm',st:'accepted',mv:[['wangp',9]],ai:9,final:{adopt:B('全部采纳','Full'),score:9}},
+ {id:'B-108',oid:'118004',var:'edu_first',cur:B('本科','Bachelor'),sug:B('硕士','Master'),type:B('编码错误','Coding error'),by:'lixy',st:'fixed',mv:[['chenm',7]],ai:6,final:{adopt:B('部分采纳','Partial'),score:7}},
+];
+const codes=[{f:'build_officer_panel.do',lang:'Stata',by:'lixy',reuse:14,desc:B('官员-任期长面板构造','Officer-term panel builder'),src:`* build_officer_panel.do  构造 officer-term 长面板\nuse cod_raw.dta, clear\nbysort officerID (begin_yr): gen term_seq = _n\ngen tenure = end_yr - begin_yr + 1\ndrop if tenure <= 0            // 剔除年份逻辑错误\nsave officer_panel.dta, replace`},{f:'merge_fiscal_panel.py',lang:'Python',by:'zhangf',reuse:9,desc:B('按 地区-年份 合并财政','Merge fiscal by region-year'),src:`import pandas as pd\ncod = pd.read_stata("officer_panel.dta")\nfis = pd.read_parquet("fiscal.parquet")\ndf = cod.merge(fis, on=["region_code","year"],\n               how="left", validate="m:1", indicator=True)`}];
+const codebugs=[{id:'C-27',f:'build_officer_panel.do',line:'L4',by:'wangp',st:'pending',zh:B('tenure<=0 会误删跨年记录，应改为 <0','tenure<=0 wrongly drops cross-year records; use <0'),mv:[['chenm',7]],ai:8,final:null},{id:'C-24',f:'merge_fiscal_panel.py',line:'L4',by:'lixy',st:'accepted',zh:B('validate 应为 m:1','validate should be m:1'),mv:[['zhangf',9]],ai:9,final:{adopt:B('全部采纳','Full'),score:9}}];
+const ideas=[
+ {au:'chenm',t:'2h',ds:'cod',grp:'nsd',vis:'group',zh:B('1998 前后地市书记平均任期出现断点，可能与干部年轻化政策有关，值得做 event study。','A break in avg tenure of prefecture secretaries around 1998 — worth an event study.'),tags:['任期','政策断点'],like:7,fav:3,cm:2,comments:[['wangp',B('同意，可以配合任命年份做','Agree, pair with appointment year')]]},
+ {au:'wangp',t:'昨天',ds:'cod',grp:'nsd',vis:'plat',zh:B('想用 iscentral+jobrank 构造晋升速度指标，有人清过吗？','Want a promotion-speed index from iscentral+jobrank — anyone cleaned these?'),tags:['晋升'],like:12,fav:5,cm:4,comments:[['lixy',B('build_officer_panel 里有基础','Basics are in build_officer_panel')]]},
+ {au:'zhangf',t:'3天前',ds:'fiscal',grp:'nsd',vis:'group',zh:B('[图] 转移支付/本级收入 比值中西部更高。','[chart] transfer/own-revenue ratio higher in central-west.'),tags:['财政'],like:5,fav:2,cm:1,comments:[]},
+];
+const myposts=[{ic:'📈',t:B('官员任期与土地出让相关性初探','Tenure vs land sales: a first look'),body:B('用 COD v1.3 与财政数据做的相关性散点，控制省份年份后仍显著。','Scatter with COD v1.3 + fiscal data; significant after prov-year FE.'),m:['♡ 18','★ 6']},{ic:'🗂',t:B('COD v1.3 教育字段清洗踩坑','Pitfalls cleaning COD v1.3 education'),body:B('edu_first 有繁体/别名，clean_edu.do 已处理。','edu_first has variants; handled in clean_edu.do.'),m:['♡ 24','★ 11']},{ic:'💡',t:B('读《晋升锦标赛》后的三个题目','Three ideas after reading the tournament paper'),body:B('1) 任期×债务 2) 学历×晋升 3) 网络×补贴','1) tenure×debt 2) edu×promotion 3) network×subsidy'),m:['♡ 31','★ 15']}];
+const myprojects=[{ic:'🚧',t:B('官员晋升 × 土地财政：DID 识别','Promotion × land finance: DID'),tag:B('进行中','Ongoing'),body:B('用官员轮换作为准自然实验，识别土地出让变化。欢迎讨论识别策略与控制变量。','Using officer rotation as quasi-experiment. Discussion on ID strategy welcome.'),m:['💬 6','📎 2','#土地财政']},{ic:'🧪',t:B('政商网络对企业补贴的影响','Pol-biz network and firm subsidies'),tag:B('找数据中','Seeking data'),body:B('需要企业补贴数据与政商网络边表匹配。','Need firm subsidy data matched to network edges.'),m:['💬 3','#政商关系']}];
+const contribDetail=[
+ {zh:B('数据集发起人 · COD 地方官员数据库','Dataset founder · COD'),pt:'+30',src:{type:'dataset',id:'cod'}},
+ {zh:B('数据处理代码发起人 · build_officer_panel.do','Code founder · build_officer_panel.do'),pt:'+20',src:{type:'code',id:0}},
+ {zh:B('原始数据勘误分（终审加权：#B-108=7 …）','Data corrections (weighted: #B-108=7 …)'),pt:'+41',src:{type:'bug',id:'B-108'}},
+ {zh:B('原始数据勘误审核被采纳（6 次）','Reviews adopted (6×)'),pt:'+12',src:{type:'review'}},
+ {zh:B('数据处理代码勘误分（终审加权）','Code corrections (weighted)'),pt:'+15',src:{type:'codebug',id:'C-24'}},
+ {zh:B('数据处理代码被采纳（2 次）','Code adopted (2×)'),pt:'+10',src:{type:'code',id:0}},
+];
+const maintainDS=[{id:'cod',role:B('发起人','Founder')}];
+const maintainCode=[{i:0,role:B('发起人','Founder'),reuse:14}];
+const members=[{u:'chenm',score:141},{u:'lixy',score:128},{u:'zhangf',score:96},{u:'wangp',score:88}];
+const byds={cod:[['chenm',22,6,4,32],['lixy',18,9,3,30],['wangp',12,3,2,17]],fiscal:[['zhangf',20,5,6,31],['lixy',6,2,1,9]]};
+const dsJoin=[{n:B('刘洋','Liu Yang'),t:'2026-07-03'},{n:B('周舟','Zhou Zhou'),t:'2026-07-04'}];
+const groupJoin=[{n:B('刘洋','Liu Yang'),t:'2026-07-03'},{n:B('孙磊','Sun Lei'),t:'2026-07-05'}];
+const audits=[{u:'李小雨(超管)',a:'group.approve',o:'刘洋→NSD',t:'07-03 09:00'},{u:'李小雨(发起人)',a:'bug.finalize',o:'#B-111 · 9',t:'06-24 10:00'},{u:'陈默',a:'bug.create',o:'#B-112',t:'06-23 11:08'}];
+const dist={jobrank:{labels:['正省部','副省部','正厅','副厅','正处'],values:[4,9,22,38,27]},edu_first:{labels:['本科','硕士','博士','大专'],values:[31,42,19,8]},home_prov:{labels:['山东','江苏','广东','河南','其他'],values:[11,10,9,8,62]},begin_yr:{labels:['90-95','96-00','01-05','06-10','11-15','16-20'],values:[6,12,20,26,22,14]}};
+const sampleStats={tenure:{N:9120,mean:3.9,sd:1.8,min:1,p50:4,max:12},jobrank:{N:9120,mean:9.7,sd:1.6,min:6,p50:10,max:14},begin_yr:{N:9120,mean:2008,sd:7.4,min:1990,p50:2009,max:2020},edu_code:{N:8934,mean:2.1,sd:0.8,min:1,p50:2,max:4},iscentral:{N:9120,mean:0.08,sd:0.27,min:0,p50:0,max:1}};
+let curDS='cod',curGroup='nsd',curFounder='lixy';
+function uname(u){return users[u]?tf(users[u].name):u}
+
+/* ===== I18N ===== */
+const Z={login_sub:'跨课题组的科研数据共享 · 数据勘误 · 文献 · 学术交流',username:'用户名',password:'密码',login_btn:'登录',login_new:'注册新账户（体验空白视角）',login_hint:'原型演示 · 假数据。身份不在登录时选择——右上角"演示视角"可切换 成员/数据集管理员/课题组管理员/总管理员，仅用于预览不同后台。',charter_label:'课题组公约 · 请阅读并同意',charter_agree:'我已阅读并同意遵守本公约',enter:'进入',nav_home:'首页',nav_feed:'研究广场',nav_profile:'我的主页',nav_admin:'管理后台',demo_view:'演示视角',v_member:'成员',v_dsadmin:'数据集管理员',v_groupadmin:'课题组管理员',v_superadmin:'总管理员',home_title:'首页',home_sub:'你所在的课题组、可发现的课题组，以及全平台的近期研究动态。空白账户从这里创建或加入课题组。',my_groups:'我的课题组',discover_groups:'发现课题组',discover_hint:'— 仅显示公开课题组的简介、人数与公开想法',sec_recent:'研究广场 · 近期（全平台）',more:'全部 →',back_home:'首页',create_group:'创建课题组',view_full:'查看全文',edit:'编辑',discoverable:'在“发现课题组”页展示本课题组（关闭后其他人看不到本组）',group_charter:'课题组公约',group_datasets:'数据集',create_ds:'发起新数据集',group_members:'课题组成员',group_ideas:'本组近期研究想法',founder:'数据发起人',contact:'联系方式',apply_join:'申请加入处理',ds_charter:'数据集公约',tab_ov:'概览',tab_dash:'数据看板',tab_lit:'文献地图',tab_ver:'版本库',tab_rawbug:'原始数据勘误',tab_code:'处理代码库',tab_manage:'数据集后台',cur_ver:'当前推荐版本',members:'数据集成员',approve_log:'加入审批记录',recent_pub:'近期刊物',recent_ds_ideas:'近期研究想法（本数据集）',dash_sample:'① 样本描述性统计（选择多个变量）',dash_sample_sub:'勾选变量，生成 N / 均值 / 标准差 / 最小 / 中位 / 最大 的汇总表。只读，不改原始值。',c_var:'变量',c_mean:'均值',c_sd:'标准差',c_min:'最小',c_p50:'中位',c_max:'最大',export:'导出',dash_title:'② 分布图 · 自定义维度',dash_var:'分析变量',dash_group:'分组维度',grp_none:'不分组',grp_gender:'按性别',grp_central:'按是否中央任职',ai_title:'③ 代码 / AI 描述分析',readonly:'只读 · 不改原始值',ai_note:'用自然语言描述分析，AI 生成代码；或手写。代码在只读沙箱运行，永不写回原始数据。',ai_ask:'告诉 AI 你想分析什么',ai_gen:'✦ AI 生成分析代码',ai_run:'▶ 运行（只读）',lit_note:'AI 可自动总结本数据集研究用途/话题、生成文献思维导图；成员可上传/修改。完整显示与编辑需权限。',lit_map:'文献 · 研究话题思维导图',ai_summarize:'✦ AI 总结/更新',key_refs:'重点文献清单',add_ref:'＋ 添加',publish_new:'发布新版本（发起人 / 管理员）',f_version:'版本号',f_file:'数据文件',publish:'发布并设为当前推荐',c_version:'版本',c_date:'日期',c_changes:'更新摘要',c_fixed:'修复',c_status:'状态',rawbug_note:'原始数据勘误：审核分三步——① 成员评审打分（0–10）② AI 自动评审打分 ③ 管理员终审决定采纳程度并给最终分。',code_note:'处理代码勘误：清洗/构造脚本是公共资产，公开展示、可复用、可勘误。审核同上（成员 + AI 评分 → 管理员终审）。',code_lib:'公共处理代码库',submit_code:'＋ 提交新代码',code_view:'代码预览',report_code:'＋ 提交代码勘误',code_bug_queue:'代码勘误队列',ds_manage_note:'数据集管理后台（仅数据集管理员/发起人可见）。',join_reqs:'加入本数据集申请',ds_perm:'成员与授权',grant:'＋ 授权成员',ds_contrib:'本数据集贡献度',ds_charter_edit:'数据集公约',feed_title:'研究广场',feed_sub:'全平台的学术想法流。发帖可选择"全平台/本课题组/仅自己"，带数据集标签即进入对应数据集近期想法。',vis_plat:'全平台可见',vis_group2:'本课题组可见',vis_private:'仅自己可见',post:'发布',p_bio:'政治经济学 · 关注官员晋升与地方财政',p_score:'贡献度',pf_projects:'在做的项目',pf_posts:'我的发帖',pf_contrib:'我的贡献',pf_maintain:'我维护的数据/代码',post_proj:'发布项目',contrib_detail:'贡献明细',contrib_detail_sub:'勘误分按管理员终审评分加权。点每一条可溯源到来源。',maintain_ds:'维护/发起的数据集',maintain_code:'发起/贡献的处理代码',role_founder:'发起人',admin_title:'管理后台',admin_sub:'按你持有的角色展示：总管理员（全站）/ 课题组管理员 / 数据集管理员。',panel_super:'总管理员 · 全站',all_groups:'全部课题组',manage_groups:'管理课题组',site_admins:'总管理员（可多个）',role_super:'总管理员',add_admin:'＋ 新增 / 交接',audit_log:'全站审计日志',panel_group:'课题组管理员 · NSD 发展政经课题组',join_group_reqs:'加入课题组申请',contrib_total:'全员总贡献度',contrib_byds:'分数据集贡献度',pick_ds:'选择数据集',k_bugs:'数据勘误分',k_code:'代码勘误分',k_review:'审核被采纳',panel_ds:'数据集管理员',ds_admin_hint:'数据集后台在每个数据集详情的"数据集后台"页签内。',goto_ds:'进入 COD 数据集后台 →',c_user:'用户',c_action:'动作',c_obj:'对象',c_time:'时间',c_member:'成员',st_pending:'待审核',st_accepted:'已采纳',st_rejected:'已拒绝',st_fixed:'已修复',accept:'采纳',reject:'拒绝',approve:'同意',current:'当前',hotfix:'紧急修复',member_review:'成员评审',ai_review:'AI 评审',final_review:'管理员终审',finalize:'终审',save:'保存',del:'删除',jump:'跳转到来源',close:'关闭',comments:'评论',edit_post:'编辑',apply_join_group:'＋ 申请加入',joined:'已加入',nonmember_note:'你不是该课题组成员，仅显示公开信息（简介、人数、公开研究想法）。加入后可浏览数据集与组内内容。',ds_hidden:'加入本课题组后可浏览其数据集。',open_ds:'进入数据集',open_code:'查看代码',view_profile:'查看主页'};
+const E={login_sub:'Cross-group research data sharing · corrections · literature · exchange',username:'Username',password:'Password',login_btn:'Sign in',login_new:'Register (blank account)',login_hint:'Prototype · mock data. Identity is not chosen at login — use "Demo view" top-right to preview member / dataset-admin / group-admin / super-admin backends.',charter_label:'Group charter · please read and agree',charter_agree:'I have read and agree to this charter',enter:'Enter',nav_home:'Home',nav_feed:'Research Square',nav_profile:'My Profile',nav_admin:'Admin',demo_view:'Demo view',v_member:'Member',v_dsadmin:'Dataset admin',v_groupadmin:'Group admin',v_superadmin:'Super-admin',home_title:'Home',home_sub:'Your groups, discoverable groups, and recent platform-wide activity. New accounts create or join a group here.',my_groups:'My groups',discover_groups:'Discover groups',discover_hint:'— only public groups: intro, member count, public ideas',sec_recent:'Research Square · Recent (platform-wide)',more:'All →',back_home:'Home',create_group:'Create group',view_full:'View full',edit:'Edit',discoverable:'Show this group in “Discover” (off = others cannot see it)',group_charter:'Group charter',group_datasets:'Datasets',create_ds:'Create dataset',group_members:'Group members',group_ideas:'Recent ideas in this group',founder:'Data founder',contact:'Contact',apply_join:'Apply to join',ds_charter:'Dataset charter',tab_ov:'Overview',tab_dash:'Dashboard',tab_lit:'Literature Map',tab_ver:'Versions',tab_rawbug:'Raw-data Corrections',tab_code:'Processing Code',tab_manage:'Dataset Backend',cur_ver:'Current version',members:'Dataset members',approve_log:'Join approval log',recent_pub:'Recent publications',recent_ds_ideas:'Recent ideas (this dataset)',dash_sample:'① Sample descriptive statistics (select variables)',dash_sample_sub:'Tick variables to get N / mean / SD / min / median / max. Read-only, never mutates raw values.',c_var:'Variable',c_mean:'Mean',c_sd:'SD',c_min:'Min',c_p50:'Median',c_max:'Max',export:'Export',dash_title:'② Distribution · custom dimensions',dash_var:'Variable',dash_group:'Group by',grp_none:'None',grp_gender:'By gender',grp_central:'By central posting',ai_title:'③ Code / AI descriptive analysis',readonly:'Read-only · never mutates raw',ai_note:'Describe the analysis; AI writes code, or hand-write it. Runs in a read-only sandbox, never writes back to raw data.',ai_ask:'Tell the AI what to analyze',ai_gen:'✦ AI generate code',ai_run:'▶ Run (read-only)',lit_note:'AI can summarize research uses/topics and build a mind map; members can upload/refine. Full view & editing need permission.',lit_map:'Literature · topic mind map',ai_summarize:'✦ AI summarize/update',key_refs:'Key references',add_ref:'＋ Add',publish_new:'Publish new version (founder / admin)',f_version:'Version',f_file:'Data file',publish:'Publish & set current',c_version:'Version',c_date:'Date',c_changes:'Summary',c_fixed:'Fixed',c_status:'Status',rawbug_note:'Raw-data corrections: three-step review — ① member score (0–10) ② AI auto score ③ admin final decision (adopt level + final score).',code_note:'Processing-code corrections: cleaning scripts are shared assets — public, reusable, correctable. Same review flow (member + AI score → admin final).',code_lib:'Public processing-code library',submit_code:'＋ Submit new code',code_view:'Code preview',report_code:'＋ Report code issue',code_bug_queue:'Code-correction queue',ds_manage_note:'Dataset backend (dataset admin/founder only).',join_reqs:'Requests to join this dataset',ds_perm:'Members & grants',grant:'＋ Grant member',ds_contrib:'Contribution in this dataset',ds_charter_edit:'Dataset charter',feed_title:'Research Square',feed_sub:'Platform-wide idea stream. Posts can be platform / group / private; a dataset tag routes it into that dataset’s recent ideas.',vis_plat:'Platform-wide',vis_group2:'Group only',vis_private:'Private',post:'Post',p_bio:'Political economy · officer promotion & local fiscal',p_score:'contribution',pf_projects:'Ongoing projects',pf_posts:'My posts',pf_contrib:'My contributions',pf_maintain:'Data/code I maintain',post_proj:'Post project',contrib_detail:'Contribution detail',contrib_detail_sub:'Correction points weighted by admin final score. Click a row to trace its source.',maintain_ds:'Datasets founded/maintained',maintain_code:'Processing code founded/contributed',role_founder:'Founder',admin_title:'Admin',admin_sub:'Shown by roles you hold: super-admin (site) / group admin / dataset admin.',panel_super:'Super-admin · site',all_groups:'All groups',manage_groups:'Manage groups',site_admins:'Super-admins (multiple)',role_super:'Super-admin',add_admin:'＋ Add / transfer',audit_log:'Site audit log',panel_group:'Group admin · NSD Development PolEcon Group',join_group_reqs:'Group join requests',contrib_total:'Total contribution',contrib_byds:'Contribution by dataset',pick_ds:'Select dataset',k_bugs:'Data corr. pts',k_code:'Code corr. pts',k_review:'Reviews adopted',panel_ds:'Dataset admin',ds_admin_hint:'The dataset backend is the "Dataset Backend" tab inside each dataset.',goto_ds:'Open COD dataset backend →',c_user:'User',c_action:'Action',c_obj:'Object',c_time:'Time',c_member:'Member',st_pending:'Pending',st_accepted:'Accepted',st_rejected:'Rejected',st_fixed:'Fixed',accept:'Accept',reject:'Reject',approve:'Approve',current:'Current',hotfix:'Hotfix',member_review:'Member review',ai_review:'AI review',final_review:'Admin final',finalize:'Finalize',save:'Save',del:'Delete',jump:'Go to source',close:'Close',comments:'Comments',edit_post:'Edit',apply_join_group:'＋ Apply to join',joined:'Joined',nonmember_note:'You are not a member of this group; only public info is shown (intro, member count, public ideas). Join to browse datasets and internal content.',ds_hidden:'Join this group to browse its datasets.',open_ds:'Open dataset',open_code:'Open code',view_profile:'View profile'};
+const I={zh:Z,en:E};
+function t(k){return (I[lang][k]!==undefined)?I[lang][k]:(Z[k]!==undefined?Z[k]:k)}
+function setLang(l){lang=l;document.getElementById('lz').classList.toggle('on',l=='zh');document.getElementById('le').classList.toggle('on',l=='en');document.documentElement.lang=l;document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=t(e.dataset.i18n));render();if(document.getElementById('v-dataset').classList.contains('active'))openDataset(curDS);if(document.getElementById('v-group').classList.contains('active'))openGroup(curGroup);}
+
+/* ===== VIEW ROLE ===== */
+let joinedDS=false;
+function setView(v){document.body.classList.remove('is-dsadmin','is-groupadmin','is-superadmin');if(v=='dsadmin')document.body.classList.add('is-dsadmin');if(v=='groupadmin')document.body.classList.add('is-groupadmin','is-dsadmin');if(v=='superadmin')document.body.classList.add('is-superadmin','is-groupadmin','is-dsadmin');joinedDS=(v!='member');document.getElementById('nav-admin').style.display=(v=='member')?'none':'';render();if(document.getElementById('v-dataset').classList.contains('active'))openDataset(curDS);}
+
+/* ===== MODAL ===== */
+function showModal(kicker,title,bodyHTML,actions){document.getElementById('dm-kicker').textContent=kicker;document.getElementById('dm-title').textContent=title;document.getElementById('dm-body').innerHTML=bodyHTML;document.getElementById('dm-actions').innerHTML=(actions||[]).map(a=>`<button class="btn ${a.cls||''}" onclick="${a.on}">${a.label}</button>`).join('');document.getElementById('detail-modal').classList.remove('hidden');}
+function closeModal(){document.getElementById('detail-modal').classList.add('hidden')}
+function openUser(u){const usr=users[u]||{name:B(u,u),bio:B('平台成员','Platform member'),score:'—'};showModal(t('view_profile'),tf(usr.name),`<div style="display:flex;gap:14px;align-items:center"><div class="avatar-lg" style="width:56px;height:56px;font-size:22px">${tf(usr.name)[0]}</div><div><div class="muted small">${tf(usr.bio)}</div><div style="margin-top:6px"><b style="font-family:var(--serif);font-size:18px">${usr.score}</b> ${t('p_score')}</div></div></div><p class="small muted" style="margin-top:14px">${lang=='zh'?'原型：点击可进入该成员完整主页（含其发帖、项目、贡献）。':'Prototype: opens this member’s full profile (posts, projects, contributions).'}</p>`,[{label:t('view_profile'),on:'closeModal();go(\\'profile\\')'},{label:t('close'),cls:'ghost',on:'closeModal()'}]);}
+function openIdea(i){const x=ideas[i];const cm=(x.comments||[]).map(c=>`<div style="padding:6px 0;border-bottom:1px dashed var(--line-soft)"><span class="lk" onclick="closeModal();openUser('${c[0]}')">${uname(c[0])}</span>: ${tf(c[1])}</div>`).join('')||`<div class="muted small">${lang=='zh'?'暂无评论':'No comments'}</div>`;showModal(t('nav_feed'),uname(x.au),`<div>${tf(x.zh)}</div><div style="display:flex;gap:6px;margin:10px 0">${x.tags.map(tg=>`<span class="tag">#${tg}</span>`).join('')}</div><div class="label" style="margin-top:10px">${t('comments')}</div><div style="margin-top:6px">${cm}</div>`,[{label:t('view_profile'),on:`closeModal();openUser('${x.au}')`},{label:t('close'),cls:'ghost',on:'closeModal()'}]);}
+function openPost(i){const p=myposts[i];showModal(t('pf_posts'),tf(p.t),`<div class="post-cover" style="height:120px;border-radius:8px;font-size:40px">${p.ic}</div><p style="margin-top:12px">${tf(p.body)}</p><div class="muted small" style="margin-top:8px">${p.m.join(' · ')}</div>`,[{label:t('edit_post'),on:`alert('原型：编辑本帖')`},{label:t('del'),cls:'danger',on:`if(confirm('${lang=='zh'?'删除这条发帖？':'Delete this post?'}'))closeModal()`},{label:t('close'),cls:'ghost',on:'closeModal()'}]);}
+function openProject(i){const p=myprojects[i];showModal(t('pf_projects'),tf(p.t),`<div class="post-cover proj" style="height:120px;border-radius:8px;font-size:40px">${p.ic}</div><div style="margin:10px 0"><span class="chip">${tf(p.tag)}</span></div><p>${tf(p.body)}</p><div class="muted small" style="margin-top:8px">${p.m.join(' · ')}</div>`,[{label:t('edit_post'),on:`alert('原型：编辑项目（本人可改）')`},{label:t('del'),cls:'danger',on:`if(confirm('${lang=='zh'?'删除该项目？':'Delete this project?'}'))closeModal()`},{label:t('close'),cls:'ghost',on:'closeModal()'}]);}
+function openContrib(i){const c=contribDetail[i];const s=c.src;let jump='';if(s.type=='dataset')jump=`closeModal();openDataset('${s.id}')`;else if(s.type=='code')jump=`closeModal();openDataset('cod');ddTab('code');viewCode(${s.id})`;else if(s.type=='bug')jump=`closeModal();openDataset('cod');ddTab('rawbug')`;else if(s.type=='codebug')jump=`closeModal();openDataset('cod');ddTab('code')`;showModal(t('contrib_detail'),tf(c.zh),`<div style="display:flex;align-items:center;gap:12px"><span class="score final" style="font-size:16px">${c.pt}</span><span class="muted small">${lang=='zh'?'该分项的来源可溯源：':'Source of this item:'} ${s.type}${s.id!==undefined?' · '+s.id:''}</span></div>`,jump?[{label:t('jump'),on:jump},{label:t('close'),cls:'ghost',on:'closeModal()'}]:[{label:t('close'),cls:'ghost',on:'closeModal()'}]);}
+function submitCode(){showModal(t('code_lib'),t('submit_code'),`<div class="field"><label>${lang=='zh'?'文件名':'Filename'}</label><input placeholder="e.g. clean_edu.do"></div><div class="field"><label>${lang=='zh'?'语言':'Language'}</label><select><option>Stata</option><option>Python</option><option>R</option></select></div><div class="field"><label>${lang=='zh'?'说明':'Description'}</label><input></div><div class="field"><label>${lang=='zh'?'代码':'Code'}</label><textarea style="min-height:120px;font-family:var(--mono)"></textarea></div>`,[{label:t('save'),on:`alert('原型：提交后进入公共代码库，你成为该脚本发起人');closeModal()`},{label:t('close'),cls:'ghost',on:'closeModal()'}]);}
+function editCharter(kind){const o=kind=='ds'?datasets.find(x=>x.id==curDS):groups.find(g=>g.id==curGroup);showModal(kind=='ds'?t('ds_charter'):t('group_charter'),t('edit'),`<div class="field"><textarea style="min-height:180px">${tf(o.charter)}</textarea></div>`,[{label:t('save'),on:`alert('原型：保存公约新版本，成员下次进入需重新确认');closeModal()`},{label:t('close'),cls:'ghost',on:'closeModal()'}]);}
+
+/* ===== RENDER ===== */
+function stBadge(st){const m={pending:'a',accepted:'b',rejected:'r',fixed:'g'};return `<span class="badge ${m[st]}">${t('st_'+st)}</span>`}
+function visBadge(v){return v=='plat'?`<span class="vis plat">${lang=='zh'?'全平台':'Platform'}</span>`:v=='private'?`<span class="vis priv">${lang=='zh'?'仅自己':'Private'}</span>`:`<span class="vis">${lang=='zh'?'本组':'Group'}</span>`}
+function ideaHTML(arr){return arr.map(i=>{const idx=ideas.indexOf(i);const d=datasets.find(x=>x.id==i.ds);return `<div class="idea"><div class="idea-head"><div class="avatar-lg" onclick="openUser('${i.au}')">${uname(i.au)[0]}</div><b class="lk" onclick="openUser('${i.au}')">${uname(i.au)}</b>${visBadge(i.vis)}<span class="idea-meta">· ${i.t}${d?` · <span class="chip" style="cursor:pointer" onclick="openDataset('${i.ds}')">${tf(d.name).split(' ')[0]}</span>`:''}</span></div><div style="margin:4px 0 8px;cursor:pointer" onclick="openIdea(${idx})">${tf(i.zh)}</div><div style="display:flex;gap:6px;flex-wrap:wrap">${i.tags.map(x=>`<span class="tag">#${x}</span>`).join('')}</div><div class="idea-actions"><span>♡ ${i.like}</span><span>★ ${i.fav}</span><span onclick="openIdea(${idx})">💬 ${i.cm}</span></div></div>`}).join('')}
+function groupCard(g){return `<div class="ecard" onclick="openGroup('${g.id}')"><div class="et"><div class="eicon">${g.icon}</div><div><h3>${tf(g.name)}</h3>${tf(g.myrole)?`<span class="chip role" style="font-size:10px">${tf(g.myrole)}</span>`:''}</div></div><div class="edesc">${tf(g.desc)}</div><div class="emeta"><span>👥 <b>${g.members}</b> ${lang=='zh'?'成员':'members'}</span><span>📊 <b>${g.dscount}</b> ${lang=='zh'?'数据集':'datasets'}</span>${g.mine?'':`<span style="color:var(--accent)">${t('apply_join_group')} →</span>`}</div></div>`}
+function dsCard(d){return `<div class="ecard" onclick="openDataset('${d.id}')"><div class="et"><div class="eicon">${d.icon}</div><div><h3>${tf(d.name)}</h3><span class="badge current" style="font-size:10px">${d.ver}</span></div></div><div class="edesc">${tf(d.desc)}</div><div class="emeta"><span><b>${d.officers}</b> ID</span><span>👥 <b>${d.members}</b> ${lang=='zh'?'成员':'members'}</span><span>${d.pending>0?`<b style="color:var(--amber)">${d.pending}</b> ${t('st_pending')}`:'—'}</span></div></div>`}
+function render(){
+ document.getElementById('my-groups').innerHTML=groups.filter(g=>g.mine).map(groupCard).join('')+`<div class="ecard dashed" onclick="alert('原型：创建新课题组，你将成为课题组管理员')"><div class="plus">＋</div><div>${t('create_group')}</div></div>`;
+ document.getElementById('discover-groups').innerHTML=groups.filter(g=>!g.mine&&g.discoverable).map(groupCard).join('')||`<div class="muted small">${lang=='zh'?'暂无公开课题组':'No public groups'}</div>`;
+ document.getElementById('home-feed').innerHTML=ideaHTML(ideas);
+ document.getElementById('feed-list').innerHTML=ideaHTML(ideas);
+ document.getElementById('my-posts').innerHTML=myposts.map((p,i)=>`<div class="post-card" onclick="openPost(${i})"><div class="post-cover">${p.ic}</div><div class="post-body"><div class="pt">${tf(p.t)}</div><div class="pm">${p.m.map(x=>`<span>${x}</span>`).join('')}</div></div></div>`).join('');
+ document.getElementById('my-projects').innerHTML=myprojects.map((p,i)=>`<div class="post-card" onclick="openProject(${i})"><div class="post-cover proj">${p.ic}</div><div class="post-body"><div class="pt">${tf(p.t)} <span class="chip" style="font-size:10px">${tf(p.tag)}</span></div><div class="pm">${p.m.map(x=>`<span>${x}</span>`).join('')}</div></div></div>`).join('');
+ document.getElementById('contrib-detail').innerHTML=contribDetail.map((c,i)=>`<div class="contrib-row" onclick="openContrib(${i})"><span>${tf(c.zh)} <span class="lk small">${lang=='zh'?'· 溯源':'· trace'}</span></span><span class="mono" style="font-weight:600;color:var(--accent)">${c.pt}</span></div>`).join('')+`<div class="contrib-row" style="border-top:1.5px solid var(--ink-soft);border-bottom:none;margin-top:4px;cursor:default"><b>${lang=='zh'?'合计 贡献度':'Total contribution'}</b><span class="mono" style="font-weight:700;font-size:15px">128</span></div>`;
+ document.getElementById('maintain-ds').innerHTML=maintainDS.map(m=>{const d=datasets.find(x=>x.id==m.id);return `<div class="contrib-row" onclick="openDataset('${m.id}')"><span>${d.icon} ${tf(d.name)} <span class="chip role">${tf(m.role)}</span></span><span class="lk small">${t('open_ds')} →</span></div>`}).join('');
+ document.getElementById('maintain-code').innerHTML=maintainCode.map(m=>`<div class="contrib-row" onclick="openDataset('cod');ddTab('code');viewCode(${m.i})"><span class="mono">${codes[m.i].f} <span class="chip role">${tf(m.role)}</span></span><span class="lk small">${t('open_code')} →</span></div>`).join('');
+ document.getElementById('pf-groups').innerHTML=`<span class="small" style="opacity:.85">${lang=='zh'?'我的课题组（勾选=显示在主页）：':'My groups (checked = shown on profile):'}</span>`+groups.filter(g=>g.mine||g.id=='labor').map(g=>`<label class="grouptag"><input type="checkbox" ${g.mine?'checked':''}> <span class="lk" style="color:#fff" onclick="openGroup('${g.id}')">${tf(g.name)}</span></label>`).join('');
+ document.getElementById('admin-groups').innerHTML=groups.map(g=>`<div class="member-row"><div class="avatar-lg" onclick="openGroup('${g.id}')">${g.icon}</div><span class="lk" style="flex:1" onclick="openGroup('${g.id}')">${tf(g.name)}</span><span class="chip">${g.members} ${lang=='zh'?'成员':''}</span></div>`).join('');
+ document.getElementById('admin-groupjoin').innerHTML=groupJoin.map(j=>`<div class="member-row"><div class="avatar-lg">${tf(j.n)[0]}</div><span style="flex:1">${tf(j.n)} <span class="muted small">· ${j.t}</span></span><button class="btn small" onclick="alert('原型：同意加入 NSD 课题组，记录审批人')">${t('approve')}</button> <button class="btn small ghost" onclick="alert('拒绝')">${t('reject')}</button></div>`).join('');
+ document.getElementById('admin-groupcharter').textContent=tf(groups[0].charter);
+ const maxs=Math.max(...members.map(m=>m.score));
+ document.getElementById('rank-list').innerHTML=members.map((m,i)=>`<div class="rank-row"><span class="rank-no">${i+1}</span><div class="avatar-lg" onclick="openUser('${m.u}')">${uname(m.u)[0]}</div><span class="lk" style="width:90px" onclick="openUser('${m.u}')">${uname(m.u)}</span><div style="flex:1"><div class="rank-bar" style="width:${m.score/maxs*100}%"></div></div><span class="mono" style="font-weight:600">${m.score}</span></div>`).join('');
+ renderByDS();
+ document.getElementById('audit-body').innerHTML=audits.map(a=>`<tr><td>${a.u}</td><td class="mono small">${a.a}</td><td class="mono">${a.o}</td><td class="muted small">${a.t}</td></tr>`).join('');
+}
+function renderByDS(){const sel=document.getElementById('byds-sel').value;document.getElementById('byds-body').innerHTML=byds[sel].map(r=>`<tr><td class="lk" onclick="openUser('${r[0]}')">${uname(r[0])}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td class="mono" style="font-weight:600">${r[4]}</td></tr>`).join('');}
+function reviewBox(b){const mv=b.mv.map(v=>`<div class="review-row"><span class="muted">${t('member_review')}</span><b class="lk" onclick="openUser('${v[0]}')">${uname(v[0])}</b><span class="score" style="margin-left:auto">${v[1]}/10</span></div>`).join('');const ai=`<div class="review-row"><span class="muted">${t('ai_review')}</span><b>AI</b><span class="score ai" style="margin-left:auto">${b.ai}/10</span></div>`;const fin=b.final?`<div class="review-row"><span class="muted">${t('final_review')}</span><b>${tf(b.final.adopt)}</b><span class="score final" style="margin-left:auto">${b.final.score}/10</span></div>`:`<div class="review-row dsadmin-only" style="display:none"><span class="muted">${t('final_review')}</span><input type="number" min="0" max="10" placeholder="0-10" style="width:66px;padding:4px 8px;border:1px solid var(--line);border-radius:5px"><select style="padding:4px 6px;border:1px solid var(--line);border-radius:5px;font-size:12px"><option>${lang=='zh'?'全部采纳':'Full'}</option><option>${lang=='zh'?'部分采纳':'Partial'}</option><option>${lang=='zh'?'不采纳':'Reject'}</option></select><button class="btn small" style="margin-left:auto" onclick="alert('原型：管理员终审敲定，按分数加权计入贡献度')">${t('finalize')}</button></div><div class="review-row" style="color:var(--amber)">${t('final_review')} · ${lang=='zh'?'待管理员终审':'awaiting admin'}</div>`;return `<div class="review-box">${mv}${ai}${fin}</div>`;}
+function openDataset(id){curDS=id;const d=datasets.find(x=>x.id==id);curGroup=d.group;curFounder=d.founder;
+ document.getElementById('dd-icon').textContent=d.icon;document.getElementById('dd-name').textContent=tf(d.name);document.getElementById('dd-desc').textContent=tf(d.desc);document.getElementById('dd-ver').textContent=d.ver;document.getElementById('dd-date').textContent=d.date;document.getElementById('dd-ver2').textContent=d.ver;document.getElementById('dd-clog').textContent='· '+tf(d.clog);
+ document.getElementById('dd-founder').textContent='@'+d.founder+' ('+uname(d.founder)+')';document.getElementById('dd-contact').textContent=d.contact;
+ document.getElementById('dd-gcrumb').textContent=tf(groups.find(g=>g.id==d.group).name);document.getElementById('dd-crumb').textContent=tf(d.name);
+ document.getElementById('dd-charter-short').textContent=tf(d.charter).split('\n')[1]||tf(d.charter).slice(0,40);
+ document.getElementById('dd-stats').innerHTML=`<div class="card"><div class="stat">${d.officers}</div><div class="stat-label">officerID</div></div><div class="card"><div class="stat">${d.terms}</div><div class="stat-label">termID</div></div><div class="card"><div class="stat">${d.vars}</div><div class="stat-label">${lang=='zh'?'变量数':'variables'}</div></div>`;
+ document.getElementById('dd-dl').innerHTML=(joinedDS?`<div style="display:flex;gap:10px"><button class="btn" onclick="alert('原型：记录下载日志后返回 .dta')">↓ ${lang=='zh'?'下载数据':'Download data'}</button><button class="btn ghost" onclick="alert('下载 codebook')">↓ codebook</button></div>`:`<div class="locked">🔒 ${lang=='zh'?'未加入本数据集处理，暂不能下载原始 .dta。':'Not a member — raw .dta download locked.'}<b style="margin:0 6px">${lang=='zh'?'可看 codebook 与数据看板':'codebook & dashboard available'}</b><button class="btn small ghost" onclick="alert('下载 codebook')">↓ codebook</button><button class="btn small ghost" onclick="ddTab('dash')">${lang=='zh'?'数据看板':'Dashboard'} →</button></div>`);
+ document.getElementById('dd-join').style.display=joinedDS?'none':'';
+ const mem=dsMembers[id]||dsMembers.cod;document.getElementById('dd-mcount').textContent=`👥 ${d.members} ${lang=='zh'?'成员':'members'}`;
+ document.getElementById('dd-members').innerHTML=mem.map(m=>`<div class="member-row"><div class="avatar-lg" onclick="openUser('${m[0]}')">${uname(m[0])[0]}</div><span class="lk" style="flex:1" onclick="openUser('${m[0]}')">${uname(m[0])}</span><span class="chip ${m[2]}">${tf(m[1])}</span></div>`).join('');
+ document.getElementById('dd-approve').innerHTML=(dsApprove[id]||dsApprove.cod).map(a=>`<div class="approve-log">✓ ${tf(a)}</div>`).join('');
+ document.getElementById('dd-pubs').innerHTML=(dsPubs[id]||dsPubs.cod).map(p=>`<div class="pub" onclick="window.open('${p.url}','_blank')"><div class="pt">${tf(p.t)}</div><div class="pm">${tf(p.m)}</div></div>`).join('');
+ document.getElementById('dd-ideas').innerHTML=ideaHTML(ideas.filter(x=>x.ds==id).length?ideas.filter(x=>x.ds==id):ideas.slice(0,2));
+ document.getElementById('ver-body').innerHTML=versions.map(v=>`<tr><td class="mono" style="font-weight:600">${v.v}</td><td class="muted">${v.d}</td><td class="small">${tf(v.c)}</td><td>${v.fixed>0?`<span class="chip">${v.fixed}</span>`:'—'}</td><td>${v.cur?`<span class="badge current">${t('current')}</span>`:v.hot?`<span class="badge a">${t('hotfix')}</span>`:'<span class="muted small">—</span>'}</td></tr>`).join('');
+ document.getElementById('rawbug-list').innerHTML=rawbugs.map(b=>`<div class="card"><div style="display:flex;align-items:center;gap:8px"><span class="mono" style="font-weight:600">#${b.id}</span>${stBadge(b.st)}<span class="chip mono">${b.var}</span><span class="muted small" style="margin-left:auto">${tf(b.type)} · <span class="lk" onclick="openUser('${b.by}')">${uname(b.by)}</span></span></div><div class="small" style="margin-top:6px">officerID <span class="mono">${b.oid}</span> · <span class="muted">${tf(b.cur)}</span> → <b>${tf(b.sug)}</b></div>${reviewBox(b)}<div style="margin-top:8px"><button class="btn small ghost" onclick="alert('原型：成员评审打分 0-10')">＋ ${lang=='zh'?'我来评审打分':'Add my review'}</button></div></div>`).join('');
+ document.getElementById('code-list').innerHTML=codes.map((c,i)=>`<div class="code-item" onclick="viewCode(${i})"><div style="display:flex;align-items:center;gap:10px"><span class="mono" style="font-weight:600">${c.f}</span><span class="chip" style="margin-left:auto">${c.lang}</span></div><div class="small muted" style="margin-top:5px">${tf(c.desc)} · <span class="lk" onclick="event.stopPropagation();openUser('${c.by}')">${uname(c.by)}</span> · ${lang=='zh'?'被':'reused'} ${c.reuse} ${lang=='zh'?'人复用':'×'}</div></div>`).join('');
+ viewCode(0);
+ document.getElementById('codebug-list').innerHTML=codebugs.map(c=>`<div style="padding:9px 0;border-bottom:1px solid var(--line-soft)"><div style="display:flex;gap:8px;align-items:center"><span class="mono" style="font-weight:600">#${c.id}</span>${stBadge(c.st)}<span class="chip mono">${c.f} ${c.line}</span></div><div class="small" style="margin-top:4px">${tf(c.zh)}</div>${reviewBox(c)}</div>`).join('');
+ document.getElementById('dsmanage-join').innerHTML=dsJoin.map(j=>`<div class="member-row"><div class="avatar-lg">${tf(j.n)[0]}</div><span style="flex:1">${tf(j.n)} <span class="muted small">· ${j.t}</span></span><button class="btn small" onclick="alert('原型：同意，记录审批人与时间')">${t('approve')}</button> <button class="btn small ghost">${t('reject')}</button></div>`).join('');
+ document.getElementById('dsmanage-perm').innerHTML=mem.map(m=>`<div class="member-row"><div class="avatar-lg" onclick="openUser('${m[0]}')">${uname(m[0])[0]}</div><span style="flex:1">${uname(m[0])}</span><span class="chip ${m[2]}">${tf(m[1])}</span></div>`).join('');
+ document.getElementById('dsmanage-contrib').innerHTML=(byds.cod).map(r=>`<div class="contrib-row" onclick="openUser('${r[0]}')"><span>${uname(r[0])}</span><span class="mono" style="font-weight:600">${r[4]}</span></div>`).join('');
+ document.getElementById('dsmanage-charter').textContent=tf(d.charter);
+ renderMindmap(id);renderVarpick();renderDash();ddTab('ov');go('dataset');}
+function viewCode(i){document.getElementById('code-view-title').textContent=codes[i].f;document.getElementById('code-view').textContent=codes[i].src;}
+function renderVarpick(){const vs=Object.keys(sampleStats);document.getElementById('var-pick').innerHTML=vs.map((v,i)=>`<label><input type="checkbox" ${i<3?'checked':''} onchange="renderStats()"> ${v}</label>`).join('');renderStats();}
+function renderStats(){const picked=[...document.querySelectorAll('#var-pick input:checked')].map(c=>c.parentNode.textContent.trim());document.getElementById('stat-body').innerHTML=picked.map(v=>{const s=sampleStats[v];return `<tr><td class="mono">${v}</td><td>${s.N}</td><td>${s.mean}</td><td>${s.sd}</td><td>${s.min}</td><td>${s.p50}</td><td>${s.max}</td></tr>`}).join('');}
+function renderDash(){const vk=document.getElementById('dv-var').value,gk=document.getElementById('dv-grp').value,dd=dist[vk];const max=Math.max(...dd.values),tot=dd.values.reduce((a,b)=>a+b,0);let html='';dd.labels.forEach((lb,i)=>{const v=dd.values[i];if(gk=='none'){html+=`<div class="bar-row"><span class="bl">${lb}</span><div class="bar-track"><div class="bar" style="width:${v/max*70}%"></div><span class="bar-val">${(v/tot*100).toFixed(0)}%</span></div></div>`}else{const a=Math.round(v*(gk=='gender'?0.62:0.55)),b=v-a;html+=`<div class="bar-row"><span class="bl">${lb}</span><div class="bar-track" style="flex-direction:column;align-items:flex-start;gap:3px"><div style="display:flex;align-items:center;gap:6px;width:100%"><div class="bar" style="width:${a/max*70}%"></div><span class="bar-val">${a}</span></div><div style="display:flex;align-items:center;gap:6px;width:100%"><div class="bar s2" style="width:${b/max*70}%"></div><span class="bar-val">${b}</span></div></div></div>`}});document.getElementById('dash-chart').innerHTML=html;document.getElementById('dash-legend').innerHTML=gk=='none'?'':(gk=='gender'?`<span><i style="background:var(--accent)"></i>${lang=='zh'?'男':'M'}</span><span><i style="background:#9db4d6"></i>${lang=='zh'?'女':'F'}</span>`:`<span><i style="background:var(--accent)"></i>${lang=='zh'?'中央':'central'}</span><span><i style="background:#9db4d6"></i>${lang=='zh'?'地方':'local'}</span>`);}
+function aiGen(){document.getElementById('ai-code').style.display='block';document.getElementById('ai-code').textContent=`# AI 生成 · 只读分析（不修改原始数据）\nimport pandas as pd\ndf = load_readonly("cod", version="v1.3.0")\ng = df.groupby(["iscentral","edu_first"])["tenure"].mean().unstack()\nprint(g.round(2)); g.plot(kind="bar")`;document.getElementById('ai-result').innerHTML='';}
+function aiRun(){document.getElementById('ai-code').style.display='block';document.getElementById('ai-result').innerHTML=`<div class="notice ai" style="margin-bottom:10px">✓ ${lang=='zh'?'在只读沙箱中运行完成 · 原始数据未被修改':'Ran in read-only sandbox · raw data untouched'}</div><table class="tl"><thead><tr><th>edu_first</th><th>${lang=='zh'?'中央':'central'}</th><th>${lang=='zh'?'地方':'local'}</th></tr></thead><tbody><tr><td>${lang=='zh'?'本科':'BA'}</td><td>3.8</td><td>4.6</td></tr><tr><td>${lang=='zh'?'硕士':'MA'}</td><td>3.5</td><td>4.2</td></tr><tr><td>${lang=='zh'?'博士':'PhD'}</td><td>3.1</td><td>3.9</td></tr></tbody></table>`;}
+function renderMindmap(id){const m=mindmap[id]||mindmap.cod,cx=120,cy=150,ys=[60,120,180,240];let s='';ys.forEach(y=>s+=`<line x1="${cx}" y1="${cy}" x2="360" y2="${y}" stroke="#c9d4e6"/>`);s+=`<rect x="30" y="${cy-22}" width="180" height="44" rx="10" fill="#2d4a7c"/><text x="${cx}" y="${cy+5}" fill="#fff" font-size="15" text-anchor="middle" font-family="serif">${tf(m.center)}</text>`;m.branches.forEach((b,i)=>{const by=ys[i];s+=`<rect x="360" y="${by-16}" width="130" height="32" rx="8" fill="#eef1f7" stroke="#c9d4e6"/><text x="425" y="${by+5}" fill="#2d4a7c" font-size="13" text-anchor="middle">${tf(b.t)}</text>`;b.leaves.forEach((lf,j)=>{const ly=by-8+j*18;s+=`<line x1="490" y1="${by}" x2="530" y2="${ly}" stroke="#e0e0e0"/><text x="536" y="${ly+4}" fill="#6a665e" font-size="11">${tf(lf)}</text>`})});document.getElementById('mindmap').innerHTML=s;document.getElementById('lit-refs').innerHTML=(dsRefs[id]||dsRefs.cod).map(r=>`<div class="pub" onclick="window.open('${r.url}','_blank')"><div class="pt">${r.t}</div><div class="pm">${tf(r.m)}</div></div>`).join('');}
+function openGroup(id){curGroup=id;const g=groups.find(x=>x.id==id);document.getElementById('gd-icon').textContent=g.icon;document.getElementById('gd-name').textContent=tf(g.name);document.getElementById('gd-desc').textContent=tf(g.desc);document.getElementById('gd-crumb').textContent=tf(g.name);document.getElementById('gd-charter-short').textContent=tf(g.charter).split('\n')[0];
+ document.getElementById('gd-headbtn').innerHTML=g.mine?`<span class="chip role">${tf(g.myrole)||t('joined')}</span>`:`<button class="btn small ghost" onclick="alert('原型：申请加入课题组，待课题组管理员同意')">${t('apply_join_group')}</button>`;
+ document.getElementById('gd-stats').innerHTML=`<div class="card"><div class="stat">${g.dscount}</div><div class="stat-label">${lang=='zh'?'数据集':'datasets'}</div></div><div class="card"><div class="stat">${g.members}</div><div class="stat-label">${lang=='zh'?'成员':'members'}</div></div><div class="card"><div class="stat">${ideas.filter(i=>i.grp==id).length||3}</div><div class="stat-label">${lang=='zh'?'近期想法':'ideas'}</div></div>`;
+ if(g.mine){document.getElementById('gd-nonmember').innerHTML='';document.getElementById('gd-memberview').style.display='';
+  const dss=datasets.filter(d=>d.group==id);document.getElementById('gd-datasets').innerHTML=dss.map(dsCard).join('')+`<div class="ecard dashed" onclick="alert('原型：在本课题组下发起新数据集，你将成为该数据集发起人（需填联系方式）')"><div class="plus">＋</div><div>${t('create_ds')}</div></div>`;
+  document.getElementById('gd-mcount').textContent=g.members+' '+(lang=='zh'?'成员':'members');
+  document.getElementById('gd-members').innerHTML=(dsMembers.cod).map(m=>`<div class="member-row"><div class="avatar-lg" onclick="openUser('${m[0]}')">${uname(m[0])[0]}</div><span class="lk" style="flex:1" onclick="openUser('${m[0]}')">${uname(m[0])}</span><span class="chip ${m[2]}">${tf(m[1])=='发起人'||tf(m[1])=='Founder'?(lang=='zh'?'课题组管理员':'Group admin'):tf(m[1])}</span></div>`).join('');
+  document.getElementById('gd-ideas').innerHTML=ideaHTML(ideas.filter(i=>i.grp==id).length?ideas.filter(i=>i.grp==id):ideas);
+ }else{document.getElementById('gd-memberview').style.display='none';
+  const pubIdeas=ideas.filter(i=>i.grp==id&&i.vis=='plat');
+  document.getElementById('gd-nonmember').innerHTML=`<div class="notice">${t('nonmember_note')}</div><div class="card"><div class="label">${t('group_ideas')} · ${lang=='zh'?'公开':'public'}</div><div class="divider"></div>${pubIdeas.length?ideaHTML(pubIdeas):`<div class="muted small">${lang=='zh'?'暂无公开想法':'No public ideas'}</div>`}</div><div class="card"><div class="locked">🔒 ${t('ds_hidden')}</div></div>`;
+ }
+ go('group');}
+function openGroupFromDS(){openGroup(curGroup)}
+function openCharter(kind){const el=document.getElementById('charter-modal');document.getElementById('charter-ck').checked=true;if(kind=='ds'){const d=datasets.find(x=>x.id==curDS);document.getElementById('charter-title').textContent=tf(d.name)+' · '+t('ds_charter');document.getElementById('charter-body').innerHTML=tf(d.charter).replace(/\n/g,'<br>');}else{const g=groups.find(x=>x.id==curGroup)||groups[0];document.getElementById('charter-title').textContent=tf(g.name)+' · '+t('group_charter');document.getElementById('charter-body').innerHTML=tf(g.charter).replace(/\n/g,'<br>');}el.classList.remove('hidden');}
+function acceptCharter(){if(!document.getElementById('charter-ck').checked){alert(lang=='zh'?'请先勾选同意':'Please check to agree');return}document.getElementById('charter-modal').classList.add('hidden');}
+function go(view){document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById('v-'+view).classList.add('active');document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.view==view));window.scrollTo(0,0);}
+document.getElementById('nav').addEventListener('click',e=>{if(e.target.dataset.view)go(e.target.dataset.view)});
+function ddTab(tab){document.querySelectorAll('#dd-tabs a').forEach(a=>a.classList.toggle('on',a.dataset.tab==tab));document.querySelectorAll('#v-dataset .tabpane').forEach(p=>p.classList.remove('on'));document.getElementById('pane-'+tab).classList.add('on');window.scrollTo(0,0);}
+document.getElementById('dd-tabs').addEventListener('click',e=>{if(e.target.dataset.tab)ddTab(e.target.dataset.tab)});
+document.getElementById('pf-tabs').addEventListener('click',e=>{if(e.target.dataset.tab){document.querySelectorAll('#pf-tabs a').forEach(a=>a.classList.toggle('on',a==e.target));document.querySelectorAll('#v-profile .tabpane').forEach(p=>p.classList.remove('on'));document.getElementById('ppane-'+e.target.dataset.tab).classList.add('on');}});
+function login(newAcc){document.getElementById('login').classList.add('hidden');const g=groups[0];document.getElementById('charter-title').textContent=tf(g.name)+' · '+t('group_charter');document.getElementById('charter-body').innerHTML=tf(g.charter).replace(/\n/g,'<br>');document.getElementById('charter-ck').checked=false;document.getElementById('charter-modal').classList.remove('hidden');document.getElementById('app').classList.remove('hidden');document.getElementById('viewsel').value='member';setView('member');go('home');}
+function logout(){location.reload()}
+setLang('zh');
+</script>
+</body>
+</html>
