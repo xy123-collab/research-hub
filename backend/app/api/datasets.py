@@ -88,6 +88,7 @@ def list_versions(slug: str, db: Session = Depends(get_db),
 async def publish_version(slug: str, version_id: str = Form(...),
                           based_on_version: str = Form(""),
                           changelog_zh: str = Form(""), changelog_en: str = Form(""),
+                          fixed_bug_ids: str = Form(""),  # 逗号分隔：本次修复的已采纳勘误
                           data_file: UploadFile | None = File(None),
                           codebook_file: UploadFile | None = File(None),
                           db: Session = Depends(get_db),
@@ -107,7 +108,7 @@ async def publish_version(slug: str, version_id: str = Form(...),
     if codebook_file:
         codebook_key = f"versions/{d.slug}/{version_id}/{codebook_file.filename}"
         storage.save(codebook_key, codebook_file.file)
-    # 取消旧 current
+    # 取消旧 current（旧版本文件保留、不覆盖，只是不再是推荐版）
     db.query(DataVersion).filter_by(dataset_id=d.id, is_current=True).update(
         {"is_current": False, "valid_to": datetime.utcnow()})
     v = DataVersion(dataset_id=d.id, version_id=version_id, based_on_version=based_on_version,
@@ -117,9 +118,69 @@ async def publish_version(slug: str, version_id: str = Form(...),
                     valid_from=datetime.utcnow())
     db.add(v); db.flush()
     d.current_version_id = v.id
-    write_audit(db, user.id, "version.publish", "dataset", d.id, {"version": version_id})
+    # 核心闭环最后一环：本次修复的已采纳勘误标 fixed + fixed_in_version_id
+    from ..models.correction import Bug
+    fixed = []
+    for raw in [x.strip() for x in fixed_bug_ids.split(",") if x.strip()]:
+        bug = db.get(Bug, int(raw))
+        if bug and bug.dataset_id == d.id and bug.status == "accepted":
+            bug.status = "fixed"; bug.fixed_in_version_id = v.id
+            fixed.append(bug.id)
+    write_audit(db, user.id, "version.publish", "dataset", d.id,
+                {"version": version_id, "fixed_bugs": fixed})
     db.commit()
-    return {"id": v.id, "version_id": version_id}
+    return {"id": v.id, "version_id": version_id, "fixed_bugs": fixed}
+
+
+@router.patch("/datasets/{slug}")
+def edit_dataset(slug: str, body: dict, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """编辑数据集元信息（名称/简介/图标/联系方式/敏感标记）。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅发起人/管理员可编辑")
+    allowed = {"name_zh", "name_en", "desc_zh", "desc_en", "icon",
+               "founder_contact", "is_sensitive"}
+    for k, val in body.items():
+        if k in allowed:
+            setattr(d, k, val)
+    write_audit(db, user.id, "dataset.edit", "dataset", d.id)
+    db.commit()
+    return {"ok": True}
+
+
+@router.patch("/datasets/{slug}/versions/{vid}")
+def edit_version(slug: str, vid: int, body: dict, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """仅可改元数据 changelog（版本文件不可覆盖）。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅发起人/管理员可编辑")
+    v = db.get(DataVersion, vid)
+    if not v or v.dataset_id != d.id:
+        raise HTTPException(404, "版本不存在")
+    for k in ("changelog_zh", "changelog_en"):
+        if k in body:
+            setattr(v, k, body[k])
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/datasets/{slug}/members/{uid}")
+def remove_member(slug: str, uid: int, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅发起人/管理员可移除成员")
+    m = dataset_membership(db, d.id, uid)
+    if not m:
+        raise HTTPException(404, "该用户不是成员")
+    if m.ds_role == "founder":
+        raise HTTPException(400, "不能移除发起人")
+    db.delete(m)
+    write_audit(db, user.id, "dataset.member.remove", "dataset", d.id, {"user": uid})
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/datasets/{slug}/versions/{vid}/download")
@@ -269,3 +330,20 @@ def add_ref(slug: str, body: LitRefIn, db: Session = Depends(get_db),
     r = LitRef(dataset_id=d.id, added_by=user.id, **body.model_dump())
     db.add(r); db.commit()
     return {"id": r.id}
+
+
+# ================= AI 文献/用途总结（元数据-only，安全）=================
+@router.post("/datasets/{slug}/literature/ai-summarize")
+def ai_summarize_literature(slug: str, db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
+    refs = db.query(LitRef).filter_by(dataset_id=d.id).all()
+    vs = db.query(Variable).filter_by(dataset_id=d.id).all()
+    ctx = (f"数据集：{d.name_zh}。简介：{d.desc_zh}。变量："
+           + ", ".join(v.var_name for v in vs) + "。已有文献："
+           + "; ".join(f"{r.title}({r.year})" for r in refs))
+    sys = "你是研究助理。基于数据集元信息与文献，用中文总结该数据集的研究用途与3-5个研究话题，简洁分点。"
+    out = ai_client.complete(ctx, sys)
+    return {"summary": out, "ai_model": ai_client.provider}

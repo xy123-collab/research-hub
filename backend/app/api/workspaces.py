@@ -184,3 +184,44 @@ def del_note(wid: int, nid: int, db: Session = Depends(get_db),
     if n:
         db.delete(n); db.commit()
     return {"ok": True}
+
+
+# ================= 工作台文件上传/下载 =================
+from fastapi import UploadFile, File  # noqa: E402
+from fastapi.responses import StreamingResponse  # noqa: E402
+
+
+@router.post("/workspaces/{wid}/files")
+def upload_ws_file(wid: int, file: UploadFile = File(...), db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    from ..services.uploads import save_upload
+    _guard(db, wid, user)
+    meta = save_upload(file, f"workspace/{wid}")
+    f = WorkspaceFile(workspace_id=wid, **meta)
+    db.add(f); db.commit(); db.refresh(f)
+    return {"id": f.id, "file_name": f.file_name}
+
+
+@router.get("/workspaces/{wid}/files/{fid}/download")
+def download_ws_file(wid: int, fid: int, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    from ..core.storage import storage
+    _guard(db, wid, user)
+    f = db.get(WorkspaceFile, fid)
+    if not f or f.workspace_id != wid:
+        raise HTTPException(404, "文件不存在")
+    return StreamingResponse(storage.open(f.file_path), media_type=f.mime or "application/octet-stream",
+                             headers={"Content-Disposition": f'attachment; filename="{f.file_name}"'})
+
+
+@router.delete("/workspaces/{wid}/files/{fid}")
+def del_ws_file(wid: int, fid: int, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    _guard(db, wid, user)
+    f = db.get(WorkspaceFile, fid)
+    if f:
+        from ..core.storage import storage
+        try: storage.delete(f.file_path)
+        except Exception: pass
+        db.delete(f); db.commit()
+    return {"ok": True}

@@ -19,8 +19,17 @@ services:
         generateValue: true          # Render 自动生成强随机值
       - key: STORAGE_BACKEND
         value: local                 # 免费无持久盘：上传文件重启会清空（seed/数据在 PG 里持久）
+      # ---- AI（腾讯云 TokenHub，OpenAI 兼容）----
       - key: AI_PROVIDER
-        value: none
+        value: tokenhub               # 关闭填 none
+      - key: AI_BASE_URL
+        value: https://tokenhub.tencentmaas.com/v1
+      - key: AI_MODEL
+        value: deepseek-v4-flash      # 评分/标签/总结用快模型
+      - key: AI_MODEL_STRONG
+        value: deepseek-v4-pro        # 代码/写作用强模型
+      - key: AI_API_KEY
+        sync: false                   # ★ 不写进代码；部署后在 Render 面板手填（Environment）
       - key: ALLOWED_ORIGINS
         value: "*"
       - key: SEED_ON_START

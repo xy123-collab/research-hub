@@ -118,3 +118,31 @@ def finalize_code_bug(bid: int, body: FinalizeIn, db: Session = Depends(get_db),
                             c.dataset_id, weight=body.final_score)
     db.commit()
     return {"ok": True, "status": b.status}
+
+
+# ================= 处理代码文件上传（读入文本存 source_code）=================
+from fastapi import UploadFile, File, Form  # noqa: E402
+
+
+@router.post("/datasets/{slug}/code/upload")
+def upload_code(slug: str, title_zh: str = Form(...), lang: str = Form("Python"),
+                desc_zh: str = Form(""), file: UploadFile = File(...),
+                db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from ..services.uploads import save_upload, CODE_EXT
+    d = _ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
+    raw = file.file.read()
+    try:
+        source = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        source = raw.decode("latin-1", errors="replace")
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(400, "代码文件过大（>5MB）")
+    c = CodeScript(dataset_id=d.id, author_id=user.id, filename=file.filename,
+                   lang=lang, title_zh=title_zh, desc_zh=desc_zh, source_code=source)
+    db.add(c); db.flush()
+    record_contribution(db, user.id, "code_add", "code", c.id, d.id, weight=20)
+    write_audit(db, user.id, "code.upload", "code", c.id)
+    db.commit()
+    return {"id": c.id, "filename": c.filename}

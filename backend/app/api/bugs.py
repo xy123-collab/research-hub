@@ -141,3 +141,75 @@ def finalize_bug(bid: int, body: FinalizeIn, db: Session = Depends(get_db),
                 {"adopt": body.adopt_level, "score": body.final_score})
     db.commit()
     return {"ok": True, "status": b.status}
+
+
+# ================= bug 证据附件（真实文件上传）=================
+from fastapi import UploadFile, File  # noqa: E402
+from fastapi.responses import StreamingResponse  # noqa: E402
+
+
+@router.post("/bugs/{bid}/attachments")
+def upload_bug_attachment(bid: int, file: UploadFile = File(...),
+                          db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    from ..models.correction import BugAttachment
+    from ..services.uploads import save_upload
+    from datetime import datetime
+    b = db.get(Bug, bid)
+    if not b:
+        raise HTTPException(404, "勘误不存在")
+    if not is_dataset_member(db, b.dataset_id, user):
+        raise HTTPException(403, "需为数据集成员")
+    meta = save_upload(file, f"bug/{bid}")
+    a = BugAttachment(bug_id=bid, uploaded_by=user.id, uploaded_at=datetime.utcnow(), **meta)
+    db.add(a); db.commit(); db.refresh(a)
+    return {"id": a.id, "file_name": a.file_name, "size": a.size}
+
+
+@router.get("/bugs/{bid}/attachments")
+def list_bug_attachments(bid: int, db: Session = Depends(get_db),
+                         user: User = Depends(get_current_user)):
+    from ..models.correction import BugAttachment
+    rows = db.query(BugAttachment).filter_by(bug_id=bid).all()
+    return [{"id": a.id, "file_name": a.file_name, "size": a.size, "mime": a.mime}
+            for a in rows]
+
+
+@router.get("/bug-attachments/{aid}/download")
+def download_bug_attachment(aid: int, db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    from ..models.correction import BugAttachment
+    from ..core.storage import storage
+    a = db.get(BugAttachment, aid)
+    if not a:
+        raise HTTPException(404, "附件不存在")
+    b = db.get(Bug, a.bug_id)
+    if not is_dataset_member(db, b.dataset_id, user):
+        raise HTTPException(403, "需为数据集成员")
+    return StreamingResponse(storage.open(a.file_path), media_type=a.mime or "application/octet-stream",
+                             headers={"Content-Disposition": f'attachment; filename="{a.file_name}"'})
+
+
+@router.get("/bugs/{bid}")
+def bug_detail(bid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from ..models.correction import BugAttachment
+    from ..models.version import DataVersion
+    b = db.get(Bug, bid)
+    if not b:
+        raise HTTPException(404, "勘误不存在")
+    reporter = db.get(User, b.reporter_id)
+    reviews = db.query(CorrectionReview).filter_by(target_type="bug", target_id=bid).all()
+    fin = db.query(CorrectionFinal).filter_by(target_type="bug", target_id=bid).first()
+    atts = db.query(BugAttachment).filter_by(bug_id=bid).all()
+    fixed_v = db.get(DataVersion, b.fixed_in_version_id) if b.fixed_in_version_id else None
+    return {"id": b.id, "dataset_id": b.dataset_id, "officer_id": b.officer_id,
+            "term_id": b.term_id, "current_value": b.current_value,
+            "suggested_value": b.suggested_value, "description_zh": b.description_zh,
+            "evidence": b.evidence, "status": b.status,
+            "reporter": {"id": b.reporter_id, "name": reporter.display_name if reporter else ""},
+            "fixed_in_version": fixed_v.version_id if fixed_v else None,
+            "reviews": [{"reviewer_type": r.reviewer_type, "reviewer_id": r.reviewer_id,
+                         "score": r.acceptability_score, "comment": r.comment} for r in reviews],
+            "final": ({"adopt_level": fin.adopt_level, "final_score": fin.final_score,
+                       "comment": fin.comment} if fin else None),
+            "attachments": [{"id": a.id, "file_name": a.file_name, "size": a.size} for a in atts]}

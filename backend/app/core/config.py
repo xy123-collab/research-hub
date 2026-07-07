@@ -33,10 +33,13 @@ class Settings(BaseSettings):
     COS_SECRET_KEY: str = ""
     COS_SIGNED_URL_TTL: int = 600
 
-    # ---- AI 网关 ----
-    AI_GATEWAY_URL: str = ""
-    AI_PROVIDER: str = "none"            # none | claude | openai | local
-    AI_API_KEY: str = ""
+    # ---- AI 网关（OpenAI 兼容；默认腾讯云 TokenHub）----
+    AI_PROVIDER: str = "none"            # none | tokenhub | openai | local（none=关闭）
+    AI_BASE_URL: str = "https://tokenhub.tencentmaas.com/v1"
+    AI_MODEL: str = "deepseek-v4-flash"          # 常规任务（评分/标签/总结）用快模型
+    AI_MODEL_STRONG: str = "deepseek-v4-pro"     # 代码/写作等强任务
+    AI_API_KEY: str = ""                          # ★ 只在环境变量里配，切勿写进代码/提交
+    AI_GATEWAY_URL: str = ""                       # 兼容旧字段（留空即用 AI_BASE_URL）
 
     # ---- 其它 ----
     ALLOWED_ORIGINS: str = "*"

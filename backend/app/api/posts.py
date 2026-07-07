@@ -165,3 +165,24 @@ def del_project(pid: int, db: Session = Depends(get_db), user: User = Depends(ge
         raise HTTPException(403, "无权删除")
     db.delete(p); db.commit()
     return {"ok": True}
+
+
+# ================= 帖子附件上传 =================
+from fastapi import UploadFile, File  # noqa: E402
+
+
+@router.post("/posts/{pid}/attachments")
+def upload_post_attachment(pid: int, file: UploadFile = File(...),
+                           db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    from ..models.community import PostAttachment
+    from ..services.uploads import save_upload
+    p = db.get(Post, pid)
+    if not p:
+        raise HTTPException(404, "帖子不存在")
+    if p.author_id != user.id and not is_super_admin(user):
+        raise HTTPException(403, "只能给本人帖子加附件")
+    meta = save_upload(file, f"post/{pid}")
+    a = PostAttachment(post_id=pid, **meta)
+    db.add(a); db.commit(); db.refresh(a)
+    return {"id": a.id, "file_name": a.file_name}

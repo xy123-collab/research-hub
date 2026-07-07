@@ -32,6 +32,30 @@ async function addBlock() {
   newBlock.value = { type: 'p', text_zh: '' }; resume.value = (await api.get(`/users/${uid.value}/resume`)).data
 }
 async function delBlock(id: number) { await api.delete(`/me/resume/blocks/${id}`); resume.value = (await api.get(`/users/${uid.value}/resume`)).data }
+
+// ---------- 项目工作台 ----------
+const showWsCreate = ref(false)
+const wsForm = ref<any>({ title: '', overleaf_url: '' })
+const wsModal = ref<any>(null)
+const wsInput = ref<any>({ update: '', todo: '', note: '' })
+const wsFile = ref<File | null>(null)
+async function reloadWs() { workspaces.value = (await api.get('/workspaces')).data }
+async function createWs() {
+  try {
+    await api.post('/workspaces', { title: wsForm.value.title, overleaf_url: wsForm.value.overleaf_url || null, member_ids: [] })
+    showWsCreate.value = false; wsForm.value = { title: '', overleaf_url: '' }; reloadWs()
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+async function openWs(id: number) { wsModal.value = (await api.get(`/workspaces/${id}`)).data }
+async function addUpdate() { await api.post(`/workspaces/${wsModal.value.id}/updates`, { body: wsInput.value.update }); wsInput.value.update=''; openWs(wsModal.value.id) }
+async function addTodo() { await api.post(`/workspaces/${wsModal.value.id}/todos`, { text: wsInput.value.todo }); wsInput.value.todo=''; openWs(wsModal.value.id) }
+async function toggleTodo(t: any) { await api.patch(`/workspaces/${wsModal.value.id}/todos/${t.id}`, { done: !t.done }); openWs(wsModal.value.id) }
+async function addNote() { await api.post(`/workspaces/${wsModal.value.id}/notes`, { body: wsInput.value.note }); wsInput.value.note=''; openWs(wsModal.value.id) }
+async function uploadWsFile() {
+  if (!wsFile.value) return
+  const fd = new FormData(); fd.append('file', wsFile.value)
+  await api.post(`/workspaces/${wsModal.value.id}/files`, fd); wsFile.value = null; openWs(wsModal.value.id)
+}
 </script>
 <template>
   <div v-if="profile">
@@ -99,11 +123,74 @@ async function delBlock(id: number) { await api.delete(`/me/resume/blocks/${id}`
       </div>
 
       <div v-else-if="tab==='ws'">
-        <div v-for="w in workspaces" :key="w.id" class="card mb-2 flex items-center justify-between">
-          <span>{{ w.title }}</span>
-          <a v-if="w.overleaf_url" :href="w.overleaf_url" target="_blank" class="text-accent text-xs">Overleaf ↗</a>
+        <div v-if="isMe" class="mb-3"><button class="btn-primary" @click="showWsCreate=true">＋新建工作台</button></div>
+        <div v-for="w in workspaces" :key="w.id" class="card mb-2 flex items-center justify-between cursor-pointer" @click="openWs(w.id)">
+          <span>{{ w.title }} <span v-if="w.is_owner" class="tag ml-1">owner</span></span>
+          <a v-if="w.overleaf_url" :href="w.overleaf_url" target="_blank" class="text-accent text-xs" @click.stop>Overleaf ↗</a>
         </div>
-        <p v-if="!workspaces.length" class="text-gray-400 text-sm">暂无项目工作台（私密协作）。</p>
+        <p v-if="!workspaces.length" class="text-gray-400 text-sm">暂无项目工作台（私密协作，仅选定成员可见）。</p>
+      </div>
+    </div>
+
+    <!-- 新建工作台 -->
+    <div v-if="showWsCreate" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showWsCreate=false">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
+        <h3 class="text-lg mb-3">新建项目工作台</h3>
+        <input v-model="wsForm.title" class="input mb-2" placeholder="标题" />
+        <input v-model="wsForm.overleaf_url" class="input mb-3" placeholder="Overleaf 链接（https://www.overleaf.com/...，可选）" />
+        <div class="flex justify-end gap-2">
+          <button class="btn-ghost" @click="showWsCreate=false">取消</button>
+          <button class="btn-primary" @click="createWs">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 工作台详情 -->
+    <div v-if="wsModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="wsModal=null">
+      <div class="bg-white rounded-lg max-w-2xl w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
+        <div class="flex items-center justify-between">
+          <h3 class="text-lg">{{ wsModal.title }}</h3>
+          <button @click="wsModal=null" class="text-gray-400">×</button>
+        </div>
+        <a v-if="wsModal.overleaf_url" :href="wsModal.overleaf_url" target="_blank" class="text-accent text-xs">Overleaf ↗</a>
+
+        <div class="grid md:grid-cols-2 gap-4 mt-4">
+          <div>
+            <div class="label-cap mb-1">进展记录</div>
+            <div class="flex gap-2 mb-2">
+              <input v-model="wsInput.update" class="input" placeholder="＋更新进展" @keyup.enter="addUpdate" />
+              <button class="btn-ghost text-xs" @click="addUpdate">加</button>
+            </div>
+            <div v-for="u in wsModal.updates" :key="u.id" class="text-sm border-t border-line py-1">{{ u.body }}</div>
+          </div>
+          <div>
+            <div class="label-cap mb-1">待办</div>
+            <div class="flex gap-2 mb-2">
+              <input v-model="wsInput.todo" class="input" placeholder="＋新增待办" @keyup.enter="addTodo" />
+              <button class="btn-ghost text-xs" @click="addTodo">加</button>
+            </div>
+            <label v-for="t in wsModal.todos" :key="t.id" class="flex items-center gap-2 text-sm py-1">
+              <input type="checkbox" :checked="t.done" @change="toggleTodo(t)" />
+              <span :class="t.done?'line-through text-gray-400':''">{{ t.text }}</span>
+            </label>
+          </div>
+          <div>
+            <div class="label-cap mb-1">讨论/结果存档</div>
+            <div class="flex gap-2 mb-2">
+              <input v-model="wsInput.note" class="input" placeholder="＋新增讨论" @keyup.enter="addNote" />
+              <button class="btn-ghost text-xs" @click="addNote">加</button>
+            </div>
+            <div v-for="n in wsModal.notes" :key="n.id" class="text-sm border-t border-line py-1">{{ n.body }}</div>
+          </div>
+          <div>
+            <div class="label-cap mb-1">结果文件</div>
+            <div class="flex gap-2 mb-2">
+              <input type="file" @change="(e:any)=>wsFile=e.target.files[0]" class="text-xs" />
+              <button class="btn-ghost text-xs" @click="uploadWsFile">上传</button>
+            </div>
+            <a v-for="f in wsModal.files" :key="f.id" :href="`/api/workspaces/${wsModal.id}/files/${f.id}/download`" target="_blank" class="text-accent text-xs block hover:underline">📎 {{ f.file_name }}</a>
+          </div>
+        </div>
       </div>
     </div>
   </div>
