@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useAuth } from './stores/auth'
 import api from './api'
 import PlatformFooter from './components/PlatformFooter.vue'
+import NotificationCenter from './components/NotificationCenter.vue'
 
 const auth = useAuth()
 const route = useRoute()
@@ -54,5 +55,8 @@ function toggleLang() {
     </main>
 
     <PlatformFooter :cfg="cfg" />
+
+    <!-- 集中消息入口：登录后显示右下角悬浮铃铛 -->
+    <NotificationCenter v-if="auth.user && showNav" />
   </div>
 </template>

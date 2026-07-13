@@ -2,7 +2,8 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from ..core.db import get_db
-from ..core.permissions import get_current_user, is_super_admin, is_group_admin, group_role
+from ..core.permissions import (get_current_user, is_super_admin, is_group_admin,
+                                group_role, is_group_member, count_group_admins)
 from ..core.audit import write_audit
 from ..models.user import User
 from ..models.group import ResearchGroup, GroupMember, GroupJoinRequest, Charter
@@ -68,12 +69,21 @@ def group_detail(slug: str, user: User = Depends(get_current_user),
               "datasets": [{"id": d.id, "slug": d.slug, "name_zh": d.name_zh,
                             "icon": d.icon} for d in datasets]}
     # 非成员只见公开信息 + 成员数，不见成员名单明细
+    # 原则一：总管理员不因平台身份自动查看课题组内部（此处不给 super_admin 开口子）
     n_members = db.query(GroupMember).filter_by(group_id=g.id, status="active").count()
     result["member_count"] = n_members
-    if is_member or is_super_admin(user):
+    if is_member:
         members = db.query(GroupMember).filter_by(group_id=g.id, status="active").all()
-        result["members"] = [{"user_id": m.user_id, "group_role": m.group_role}
+        result["members"] = [{"user_id": m.user_id, "group_role": m.group_role,
+                              "name": (db.get(User, m.user_id).display_name
+                                       if db.get(User, m.user_id) else "")}
                              for m in members]
+    if result["is_admin"]:
+        pend = db.query(GroupJoinRequest).filter_by(group_id=g.id, status="pending").all()
+        result["join_requests"] = [
+            {"id": r.id, "user_id": r.user_id, "message": r.message,
+             "name": (db.get(User, r.user_id).display_name
+                      if db.get(User, r.user_id) else "")} for r in pend]
     return result
 
 
@@ -85,6 +95,9 @@ def join_group(slug: str, message: str = "", user: User = Depends(get_current_us
         raise HTTPException(404, "课题组不存在")
     if db.query(GroupMember).filter_by(group_id=g.id, user_id=user.id).first():
         raise HTTPException(400, "已是成员")
+    if db.query(GroupJoinRequest).filter_by(group_id=g.id, user_id=user.id,
+                                            status="pending").first():
+        raise HTTPException(400, "已提交申请，等待审批")
     req = GroupJoinRequest(group_id=g.id, user_id=user.id, message=message, status="pending")
     db.add(req); db.commit()
     return {"id": req.id, "status": "pending"}
@@ -119,6 +132,78 @@ def update_group(slug: str, body: GroupIn, user: User = Depends(get_current_user
         raise HTTPException(403, "需要课题组管理员")
     for k, v in body.model_dump(exclude={"slug"}).items():
         setattr(g, k, v)
+    write_audit(db, user.id, "group.edit", "group", g.id)
+    db.commit()
+    return {"ok": True}
+
+
+def _get_group(db, slug):
+    g = db.query(ResearchGroup).filter_by(slug=slug, is_deleted=False).first()
+    if not g:
+        raise HTTPException(404, "课题组不存在")
+    return g
+
+
+# ---------- 课题组成员/管理员管理（三节 2、五节 3）----------
+@router.get("/groups/{slug}/join-requests")
+def group_join_requests(slug: str, user: User = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    g = _get_group(db, slug)
+    if not is_group_admin(db, g.id, user):
+        raise HTTPException(403, "需要课题组管理员")
+    out = []
+    for r in db.query(GroupJoinRequest).filter_by(group_id=g.id, status="pending").all():
+        u = db.get(User, r.user_id)
+        out.append({"id": r.id, "user_id": r.user_id, "message": r.message,
+                    "name": u.display_name if u else ""})
+    return out
+
+
+@router.post("/groups/{slug}/admins/{uid}")
+def add_group_admin(slug: str, uid: int, user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    g = _get_group(db, slug)
+    if not is_group_admin(db, g.id, user):
+        raise HTTPException(403, "需要课题组管理员")
+    m = db.query(GroupMember).filter_by(group_id=g.id, user_id=uid, status="active").first()
+    if not m:
+        raise HTTPException(404, "该用户不是本组成员")
+    m.group_role = "group_admin"
+    write_audit(db, user.id, "group.admin.add", "group", g.id, {"user": uid})
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/groups/{slug}/admins/{uid}")
+def remove_group_admin(slug: str, uid: int, user: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
+    g = _get_group(db, slug)
+    if not is_group_admin(db, g.id, user):
+        raise HTTPException(403, "需要课题组管理员")
+    m = db.query(GroupMember).filter_by(group_id=g.id, user_id=uid, status="active").first()
+    if not m or m.group_role != "group_admin":
+        raise HTTPException(404, "该用户不是课题组管理员")
+    if count_group_admins(db, g.id) <= 1:
+        raise HTTPException(400, "至少保留一名课题组管理员")
+    m.group_role = "member"
+    write_audit(db, user.id, "group.admin.remove", "group", g.id, {"user": uid})
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/groups/{slug}/members/{uid}")
+def remove_group_member(slug: str, uid: int, user: User = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    g = _get_group(db, slug)
+    if not is_group_admin(db, g.id, user):
+        raise HTTPException(403, "需要课题组管理员")
+    m = db.query(GroupMember).filter_by(group_id=g.id, user_id=uid, status="active").first()
+    if not m:
+        raise HTTPException(404, "该用户不是本组成员")
+    if m.group_role == "group_admin" and count_group_admins(db, g.id) <= 1:
+        raise HTTPException(400, "该用户是唯一管理员，不能移除")
+    db.delete(m)
+    write_audit(db, user.id, "group.member.remove", "group", g.id, {"user": uid})
     db.commit()
     return {"ok": True}
 
@@ -130,7 +215,8 @@ def create_dataset(slug: str, body: DatasetIn, user: User = Depends(get_current_
     if not g:
         raise HTTPException(404, "课题组不存在")
     role = group_role(db, g.id, user.id)
-    if not (is_super_admin(user) or role in ("group_admin", "member")):
+    # 原则一 + 二：仅本组成员/管理员可在组内发起数据集；总管理员不因平台身份获得此权
+    if role not in ("group_admin", "member"):
         raise HTTPException(403, "需先加入课题组")
     if db.query(Dataset).filter_by(slug=body.slug).first():
         raise HTTPException(400, "数据集 slug 已存在")

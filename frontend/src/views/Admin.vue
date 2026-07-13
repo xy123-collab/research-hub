@@ -2,12 +2,18 @@
 import { ref, onMounted } from 'vue'
 import api from '../api'
 const board = ref<any[]>([]); const audit = ref<any[]>([]); const supers = ref<any[]>([])
-const err = ref('')
-onMounted(async () => {
+const err = ref(''); const newSuper = ref<number | null>(null)
+onMounted(load)
+async function load() {
   try { board.value = (await api.get('/admin/contributions', { params: { scope: 'total' } })).data } catch(e:any){ err.value = e.response?.data?.detail }
   try { audit.value = (await api.get('/admin/audit-log', { params: { limit: 30 } })).data } catch {}
   try { supers.value = (await api.get('/admin/super-admins')).data } catch {}
-})
+}
+async function addSuper() {
+  if (!newSuper.value) return
+  try { await api.post('/admin/super-admins', null, { params: { uid: newSuper.value } }); newSuper.value = null; load() }
+  catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
 </script>
 <template>
   <h1 class="text-2xl mb-4">管理后台</h1>
@@ -30,7 +36,12 @@ onMounted(async () => {
   <section class="mb-6" v-if="supers.length">
     <h2 class="text-lg mb-2">总管理员（可多个·可交接）</h2>
     <div class="card text-sm">
-      <span v-for="s in supers" :key="s.id" class="tag mr-2">{{ s.display_name }}</span>
+      <div class="mb-3"><span v-for="s in supers" :key="s.id" class="tag mr-2">{{ s.display_name }}（#{{ s.id }}）</span></div>
+      <div class="flex items-center gap-2">
+        <input v-model.number="newSuper" type="number" class="input w-40" placeholder="用户 ID" />
+        <button class="btn-primary text-sm" @click="addSuper">添加/交接总管理员</button>
+      </div>
+      <p class="text-xs text-gray-400 mt-2">按用户 ID 添加总管理员。总管理员只负责平台运行，不接触课题组/数据集内容。</p>
     </div>
   </section>
 

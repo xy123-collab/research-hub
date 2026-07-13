@@ -68,8 +68,9 @@ def run():
     db.add_all([cod, fiscal]); db.flush()
     db.add(DatasetMember(dataset_id=cod.id, user_id=lixiaoyu.id, ds_role="founder",
                          joined_at=datetime.utcnow(), approved_by=lixiaoyu.id))
+    # 原则三：加入数据集不自动获得下载/在线分析等权限，需管理员单独授权
     db.add(DatasetMember(dataset_id=cod.id, user_id=chenmo.id, ds_role="member",
-                         granted_perms_json=["bug.review", "download"],
+                         granted_perms_json=[],
                          joined_at=datetime.utcnow(), approved_by=lixiaoyu.id))
     db.add(DatasetMember(dataset_id=fiscal.id, user_id=chenmo.id, ds_role="founder",
                          joined_at=datetime.utcnow(), approved_by=chenmo.id))

@@ -1,7 +1,9 @@
 # 汇总导入，确保 Alembic / Base.metadata 能发现全部表
 from .user import User, Role, Permission, RolePermission
 from .group import ResearchGroup, GroupMember, GroupJoinRequest, Charter, CharterAck
-from .dataset import Dataset, DatasetMember, JoinRequest, Variable
+from .dataset import Dataset, DatasetMember, JoinRequest, Variable, DatasetGroupRequest
+from .access import (DatasetGrant, DatasetSettings, DownloadRequest,
+                     VersionCandidate, CodebookDraft)
 from .version import DataVersion, DownloadLog
 from .correction import Bug, BugAttachment, CorrectionReview, CorrectionFinal
 from .code import CodeScript, CodeBug, CodeWriteup

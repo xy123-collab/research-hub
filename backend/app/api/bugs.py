@@ -2,7 +2,8 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from ..core.db import get_db
-from ..core.permissions import (get_current_user, is_dataset_member, is_dataset_admin)
+from ..core.permissions import (get_current_user, is_dataset_member, is_dataset_admin,
+                                count_dataset_admins, get_settings)
 from ..core.audit import write_audit, record_contribution
 from ..models.user import User
 from ..models.dataset import Dataset
@@ -35,6 +36,8 @@ def submit_bug(slug: str, body: BugIn, db: Session = Depends(get_db),
     d = _ds(db, slug)
     if not is_dataset_member(db, d.id, user):
         raise HTTPException(403, "非成员不能提交勘误，请先申请加入处理")
+    if get_settings(db, d.id).is_closed:
+        raise HTTPException(400, "数据集已关闭，不再接受新勘误")
     b = Bug(dataset_id=d.id, reporter_id=user.id, status="pending", **body.model_dump())
     db.add(b); db.flush()
     write_audit(db, user.id, "bug.submit", "bug", b.id)
@@ -119,7 +122,13 @@ def finalize_bug(bid: int, body: FinalizeIn, db: Session = Depends(get_db),
     if not b:
         raise HTTPException(404, "勘误不存在")
     if not is_dataset_admin(db, b.dataset_id, user):
-        raise HTTPException(403, "仅数据集管理员可终审")
+        raise HTTPException(403, "仅数据集管理员可审核勘误")
+    if b.status != "pending":
+        raise HTTPException(400, "该勘误已处理")
+    # 八节 4：管理员本人提交的勘误，若还有其他管理员，应由另一名管理员审核
+    self_review = (b.reporter_id == user.id)
+    if self_review and count_dataset_admins(db, b.dataset_id) > 1:
+        raise HTTPException(403, "这是你本人提交的勘误，请由另一名数据集管理员审核")
     db.add(CorrectionFinal(target_type="bug", target_id=bid, decided_by=user.id,
                            adopt_level=body.adopt_level, final_score=body.final_score,
                            comment=body.comment, decided_at=datetime.utcnow()))
@@ -138,7 +147,8 @@ def finalize_bug(bid: int, body: FinalizeIn, db: Session = Depends(get_db),
                 record_contribution(db, r.reviewer_id, "review_adopted", "bug", bid,
                                     b.dataset_id, weight=3)
     write_audit(db, user.id, "bug.finalize", "bug", bid,
-                {"adopt": body.adopt_level, "score": body.final_score})
+                {"adopt": body.adopt_level, "score": body.final_score,
+                 "self_review": self_review})
     db.commit()
     return {"ok": True, "status": b.status}
 

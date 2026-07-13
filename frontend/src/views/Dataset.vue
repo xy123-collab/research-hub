@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import api from '../api'
@@ -26,18 +26,68 @@ const aiPrompt = ref(''); const aiCode = ref(''); const aiResult = ref<any>(null
 const litForm = ref<any>({ title: '', authors: '', venue: '', year: null, url: '', note_zh: '' })
 const posts = ref<any[]>([]); const postForm = ref({ content_zh: '' })
 const acts = ref<any[]>([]); const actFilter = ref('all')
+// 权限相关：成员/授权/下载申请/设置
+const mem = ref<any>({ members: [], requests: [], download_requests: [], grant_catalog: [] })
+const showDlReq = ref(false)
+const dlReq = ref<any>({ purpose: '', scope_version: '', planned_until: '', share_with_others: false, agree_charter: false })
+const showGrant = ref(false); const grantTarget = ref<any>(null)
+const grantForm = ref<any>({ perm: '', scope_type: 'permanent', valid_to: '', scope_version: '', project_note: '' })
+const showSettings = ref(false)
+const settingsForm = ref<any>({})
+const showCand = ref(false); const candFile = ref<File | null>(null); const candNote = ref('')
+const candidates = ref<any[]>([])
 
-const tabs = [
-  ['overview', 'ds.overview'], ['activity', 'ds.activity'], ['dashboard', 'ds.dashboard'],
-  ['versions', 'ds.versions'], ['bugs', 'ds.bugs'], ['code', 'ds.code'],
-  ['literature', 'ds.literature'], ['verify', 'ds.verify'], ['feed', 'ds.feed']
-]
+const tabs = computed(() => {
+  const base: string[][] = [
+    ['overview', 'ds.overview'], ['activity', 'ds.activity'], ['dashboard', 'ds.dashboard'],
+    ['versions', 'ds.versions'], ['bugs', 'ds.bugs'], ['code', 'ds.code'],
+    ['literature', 'ds.literature'], ['verify', 'ds.verify'], ['feed', 'ds.feed']
+  ]
+  if (d.value?.is_admin) base.push(['access', 'ds.access'])
+  return base
+})
+
+// 权限派生：当前用户对「当前版本」的下载能力（用于按钮显隐，后端仍会二次校验）
+const canDownloadCurrent = computed(() => {
+  if (!d.value) return false
+  if (d.value.is_admin) return true
+  if (!d.value.is_member) return false
+  const p = d.value.settings?.download_policy
+  const perms = d.value.my_perms || []
+  if (p === 'member' || p === 'public') return true
+  if (p === 'approval') return perms.includes('download.current') || d.value.my_download_request?.status === 'approved'
+  if (p === 'masked_only') return perms.includes('download.masked')
+  return false
+})
+const canAnalyze = computed(() => {
+  if (!d.value) return false
+  if (d.value.is_admin || d.value.settings?.analysis_open) return true
+  return (d.value.my_perms || []).includes('analysis.online')
+})
+const canUploadCandidate = computed(() =>
+  d.value && (d.value.is_admin || (d.value.my_perms || []).includes('upload.candidate')))
+const permLabel: Record<string, string> = {
+  'download.current': '下载当前完整正式版本', 'download.masked': '下载脱敏数据',
+  'version.history.view': '查看历史版本', 'download.history': '下载历史版本',
+  'analysis.online': '在线分析功能', 'upload.candidate': '上传版本候选文件',
+  'codebook.draft': '编辑 codebook 草稿', 'code.maintain': '上传和维护处理代码',
+}
+const policyLabel: Record<string, string> = {
+  public: '公开数据（登录可下）', member: '成员可下载', approval: '审批后下载',
+  masked_only: '仅脱敏数据可下载', forbidden: '禁止下载（仅在线分析）',
+}
 
 onMounted(async () => {
   d.value = (await api.get(`/datasets/${slug}`)).data
   vars.value = (await api.get(`/datasets/${slug}/variables`)).data
-  loadTab('overview')
+  if (d.value.is_admin) { try { await loadMembers() } catch {} }
+  const q = route.query.tab as string
+  loadTab(q && tabs.value.some(x => x[0] === q) ? q : 'overview')
+  const bugId = route.query.bug as string
+  if (bugId) openBug(Number(bugId))
 })
+
+async function reloadDetail() { d.value = (await api.get(`/datasets/${slug}`)).data }
 
 async function loadTab(x: string) {
   tab.value = x
@@ -49,6 +99,83 @@ async function loadTab(x: string) {
   if (x === 'dashboard') dash.value = (await api.get(`/datasets/${slug}/dashboard`, { params: { var: 'gender' } })).data
   if (x === 'feed') posts.value = (await api.get('/posts', { params: { dataset_id: d.value.id } })).data
   if (x === 'activity') acts.value = (await api.get(`/datasets/${slug}/activity`, { params: { kind: actFilter.value } })).data
+  if (x === 'access') await loadMembers()
+}
+
+// ---------- 成员与权限管理 ----------
+async function loadMembers() {
+  mem.value = (await api.get(`/datasets/${slug}/members`)).data
+}
+async function decideJoin(id: number, approve: boolean) {
+  await api.post(`/join-requests/${id}/decide`, null, { params: { approve } })
+  await loadMembers(); await reloadDetail()
+}
+async function decideDownload(id: number, approve: boolean) {
+  let valid_to = ''
+  if (approve) valid_to = prompt('可选：授权有效期（YYYY-MM-DD，留空为长期有效）', '') || ''
+  await api.post(`/download-requests/${id}/decide`, null, { params: { approve, valid_to } })
+  await loadMembers()
+}
+async function addAdmin(uid: number) {
+  await api.post(`/datasets/${slug}/admins/${uid}`); await loadMembers(); await reloadDetail()
+}
+async function removeAdmin(uid: number) {
+  try { await api.delete(`/datasets/${slug}/admins/${uid}`); await loadMembers(); await reloadDetail() }
+  catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+async function removeDsMember(uid: number) {
+  if (!confirm('确认移除该成员？其单独授权将一并撤销。')) return
+  try { await api.delete(`/datasets/${slug}/members/${uid}`); await loadMembers() }
+  catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+function openGrant(m: any) {
+  grantTarget.value = m
+  grantForm.value = { perm: mem.value.grant_catalog?.[0]?.perm || 'download.current', scope_type: 'permanent', valid_to: '', scope_version: '', project_note: '' }
+  showGrant.value = true
+}
+async function doGrant() {
+  try {
+    await api.post(`/datasets/${slug}/members/${grantTarget.value.user_id}/grant`, grantForm.value)
+    showGrant.value = false; await loadMembers()
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+async function revokePerm(uid: number, perm: string) {
+  await api.post(`/datasets/${slug}/members/${uid}/revoke`, null, { params: { perm } }); await loadMembers()
+}
+// ---------- 下载申请（成员）----------
+function openDlReq() {
+  dlReq.value = { purpose: '', scope_version: d.value.current_version?.version_id || '', planned_until: '', share_with_others: false, agree_charter: false }
+  showDlReq.value = true
+}
+async function submitDlReq() {
+  try {
+    await api.post(`/datasets/${slug}/download-requests`, dlReq.value)
+    showDlReq.value = false; await reloadDetail(); alert('下载申请已提交，等待管理员审批')
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+// ---------- 数据集设置（管理员）----------
+function openSettings() {
+  settingsForm.value = { ...(d.value.settings || {}) }
+  showSettings.value = true
+}
+async function saveSettings() {
+  await api.patch(`/datasets/${slug}/settings`, settingsForm.value)
+  showSettings.value = false; await reloadDetail()
+}
+async function toggleClose() {
+  const closed = !d.value.settings?.is_closed
+  if (!confirm(closed ? '确认关闭数据集？将不再接受新成员/勘误/发版。' : '确认重新开放数据集？')) return
+  await api.post(`/datasets/${slug}/close`, null, { params: { closed } }); await reloadDetail()
+}
+// ---------- 版本候选文件 ----------
+async function loadCandidates() { candidates.value = (await api.get(`/datasets/${slug}/candidates`)).data }
+async function uploadCandidate() {
+  if (!candFile.value) { alert('请选择文件'); return }
+  const fd = new FormData(); fd.append('file', candFile.value); fd.append('note', candNote.value)
+  try {
+    await api.post(`/datasets/${slug}/candidates`, fd)
+    showCand.value = false; candFile.value = null; candNote.value = ''; await loadCandidates()
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 
 async function setActFilter(k: string) {
@@ -186,21 +313,33 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <span v-else class="italic">{{ t('ds.standalone') }}</span>
         </p>
       </div>
-      <div class="flex gap-2">
+      <div class="flex gap-2 flex-wrap justify-end">
+        <span v-if="d.settings?.is_closed" class="tag border-accent2 text-accent2 self-center">已关闭</span>
         <button v-if="d.is_admin" class="btn-ghost" @click="openEdit">编辑数据集</button>
-        <button v-if="!d.is_member" class="btn-ghost" @click="api.post(`/datasets/${slug}/join-requests`).then(()=>alert('已申请'))">
+        <button v-if="d.is_admin" class="btn-ghost" @click="openSettings">数据集设置</button>
+        <button v-if="d.is_admin" class="btn-ghost" @click="toggleClose">{{ d.settings?.is_closed ? '重新开放' : '关闭数据集' }}</button>
+        <button v-if="!d.is_member && !d.settings?.is_closed" class="btn-ghost" @click="api.post(`/datasets/${slug}/join-requests`).then(()=>alert('已申请，等待管理员审批')).catch((e)=>alert(e.response?.data?.detail||'失败'))">
           {{ t('ds.joinProcess') }}
         </button>
       </div>
     </div>
     <p v-if="!d.is_member" class="text-xs text-accent2 mt-2 flex items-center gap-1">
       <Icon name="info" class="ico" style="width:14px;height:14px" /> {{ t('ds.notMemberTip') }}</p>
+    <p v-if="d.is_member && !d.is_admin" class="text-xs text-gray-500 mt-2">
+      当前下载策略：<b>{{ policyLabel[d.settings?.download_policy] || d.settings?.download_policy }}</b>。
+      我的授权：<span v-if="(d.my_perms||[]).length"><span v-for="p in d.my_perms" :key="p" class="tag mr-1">{{ permLabel[p]||p }}</span></span><span v-else class="text-gray-400">暂无单独授权（加入数据集不等于获得下载权）</span>
+    </p>
 
     <!-- 成员协作快捷条：核心协作动作一键直达 -->
     <div v-if="d.is_member" class="flex flex-wrap gap-2 mt-4">
       <button class="btn-ghost text-xs flex items-center gap-1.5" @click="loadTab('bugs')"><Icon name="edit" class="ico" style="width:15px;height:15px" /> {{ t('ds.submitBug') }}</button>
       <button class="btn-ghost text-xs flex items-center gap-1.5" @click="loadTab('code'); showCodeAdd=true"><Icon name="code" class="ico" style="width:15px;height:15px" /> {{ t('ds.code') }}</button>
       <button class="btn-ghost text-xs flex items-center gap-1.5" @click="loadTab('verify')"><Icon name="verify" class="ico" style="width:15px;height:15px" /> {{ t('ds.verify') }}</button>
+      <button v-if="!d.is_admin && d.settings?.download_policy==='approval' && !canDownloadCurrent" class="btn-ghost text-xs flex items-center gap-1.5" @click="openDlReq"><Icon name="data" class="ico" style="width:15px;height:15px" /> 申请下载权限</button>
+      <button v-if="canUploadCandidate" class="btn-ghost text-xs flex items-center gap-1.5" @click="showCand=true; loadCandidates()"><Icon name="publish" class="ico" style="width:15px;height:15px" /> 上传候选文件</button>
+      <button v-if="d.is_admin" class="btn-ghost text-xs flex items-center gap-1.5" @click="loadTab('access')"><Icon name="users" class="ico" style="width:15px;height:15px" /> 成员与权限
+        <span v-if="(mem.requests?.length||0)+(mem.download_requests?.length||0)>0" class="inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-accent2 text-white text-[10px]">{{ (mem.requests?.length||0)+(mem.download_requests?.length||0) }}</span>
+      </button>
       <button v-if="d.is_admin" class="btn-primary text-xs flex items-center gap-1.5" @click="loadTab('versions'); openPublish()"><Icon name="publish" class="ico" style="width:15px;height:15px" /> {{ t('ds.publishVersion') }}</button>
     </div>
 
@@ -277,13 +416,16 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
         <div class="card mt-4">
           <div class="label-cap">AI / 手写描述分析（只读沙箱，绝不改原始值）</div>
-          <input v-model="aiPrompt" class="input mt-2" placeholder="用自然语言描述分析需求，如：统计各变量分布" />
-          <div class="flex gap-2 mt-2">
-            <button class="btn-ghost" @click="aiGen">AI 生成代码</button>
-            <button class="btn-primary" @click="aiRun" :disabled="!aiCode">在沙箱运行</button>
-          </div>
-          <textarea v-model="aiCode" class="input mt-2 font-mono text-xs" rows="4" placeholder="生成/手写的 pandas 代码（result=...）"></textarea>
-          <pre v-if="aiResult" class="mt-2">{{ JSON.stringify(aiResult, null, 2) }}</pre>
+          <template v-if="canAnalyze">
+            <input v-model="aiPrompt" class="input mt-2" placeholder="用自然语言描述分析需求，如：统计各变量分布" />
+            <div class="flex gap-2 mt-2">
+              <button class="btn-ghost" @click="aiGen">AI 生成代码</button>
+              <button class="btn-primary" @click="aiRun" :disabled="!aiCode">在沙箱运行</button>
+            </div>
+            <textarea v-model="aiCode" class="input mt-2 font-mono text-xs" rows="4" placeholder="生成/手写的 pandas 代码（result=...）"></textarea>
+            <pre v-if="aiResult" class="mt-2">{{ JSON.stringify(aiResult, null, 2) }}</pre>
+          </template>
+          <p v-else class="text-sm text-gray-400 mt-2">在线分析功能需数据集管理员单独授权后开放。</p>
         </div>
       </div>
 
@@ -297,11 +439,16 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <span v-if="v.based_on" class="text-xs text-gray-400 ml-2">基于 {{ v.based_on }}</span>
             <p class="text-sm text-gray-500 mt-1">{{ v.changelog_zh }}</p>
           </div>
-          <div class="flex gap-2">
+          <div class="flex gap-2 items-center">
             <button class="btn-ghost text-xs" @click="download(v,'codebook')">Codebook</button>
-            <button class="btn-ghost text-xs" @click="download(v,'data')">.dta</button>
+            <button v-if="d.is_admin || (v.is_current ? canDownloadCurrent : (d.settings?.history_downloadable || (d.my_perms||[]).includes('download.history')))"
+              class="btn-ghost text-xs" @click="download(v,'data')">.dta</button>
+            <button v-else-if="d.is_member && v.is_current && d.settings?.download_policy==='approval'"
+              class="btn-ghost text-xs text-accent" @click="openDlReq">申请下载</button>
+            <span v-else class="text-xs text-gray-400">无下载权限</span>
           </div>
         </div>
+        <p v-if="d.is_member && !d.is_admin" class="text-xs text-gray-400 mb-2">下载权限由数据集管理员单独授予；历史版本另需授权。</p>
         <p v-if="!versions.length" class="text-gray-400 text-sm">暂无版本。</p>
       </div>
 
@@ -390,6 +537,62 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <div class="mt-2 flex gap-1"><span v-for="tg in p.tags" :key="tg" class="tag">{{ tg }}</span></div>
         </div>
         <p v-if="!posts.length" class="text-gray-400 text-sm">{{ t('ds.noPosts') }}</p>
+      </div>
+
+      <!-- access 成员与权限（仅管理员） -->
+      <div v-else-if="tab==='access'">
+        <!-- 加入申请 -->
+        <div class="card mb-4">
+          <div class="label-cap mb-2">加入申请审批</div>
+          <div v-for="r in mem.requests" :key="r.id" class="flex items-center gap-2 text-sm border-t border-line py-2">
+            <router-link :to="`/users/${r.user_id}`" class="text-accent hover:underline">{{ r.name }}</router-link>
+            <span class="text-gray-400 truncate">{{ r.message }}</span>
+            <div class="ml-auto flex gap-2">
+              <button class="btn-primary text-xs" @click="decideJoin(r.id,true)">通过</button>
+              <button class="btn-ghost text-xs" @click="decideJoin(r.id,false)">拒绝</button>
+            </div>
+          </div>
+          <p v-if="!mem.requests?.length" class="text-gray-400 text-sm">暂无待审批的加入申请。</p>
+        </div>
+        <!-- 下载申请 -->
+        <div class="card mb-4">
+          <div class="label-cap mb-2">下载申请审批</div>
+          <div v-for="r in mem.download_requests" :key="r.id" class="border-t border-line py-2 text-sm">
+            <div class="flex items-center gap-2">
+              <router-link :to="`/users/${r.user_id}`" class="text-accent hover:underline">{{ r.name }}</router-link>
+              <span class="text-gray-400">版本 {{ r.scope_version || '当前' }}</span>
+              <span v-if="r.share_with_others" class="tag">拟共享</span>
+              <div class="ml-auto flex gap-2">
+                <button class="btn-primary text-xs" @click="decideDownload(r.id,true)">批准</button>
+                <button class="btn-ghost text-xs" @click="decideDownload(r.id,false)">拒绝</button>
+              </div>
+            </div>
+            <p class="text-gray-500 mt-1">用途：{{ r.purpose }}<span v-if="r.planned_until"> · 预计使用至 {{ r.planned_until }}</span></p>
+          </div>
+          <p v-if="!mem.download_requests?.length" class="text-gray-400 text-sm">暂无待审批的下载申请。</p>
+        </div>
+        <!-- 成员列表 + 授权 -->
+        <div class="card">
+          <div class="label-cap mb-2">成员与单独授权</div>
+          <div v-for="m in mem.members" :key="m.user_id" class="border-t border-line py-2 text-sm">
+            <div class="flex items-center gap-2 flex-wrap">
+              <router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link>
+              <span class="tag">{{ m.is_admin ? '管理员' : '成员' }}</span>
+              <div class="ml-auto flex gap-2">
+                <button v-if="!m.is_admin" class="btn-ghost text-xs" @click="openGrant(m)">授权</button>
+                <button v-if="!m.is_admin" class="btn-ghost text-xs" @click="addAdmin(m.user_id)">设为管理员</button>
+                <button v-else class="btn-ghost text-xs" @click="removeAdmin(m.user_id)">取消管理员</button>
+                <button v-if="!m.is_admin" class="text-xs text-accent2" @click="removeDsMember(m.user_id)">移除</button>
+              </div>
+            </div>
+            <div v-if="m.perms?.length" class="mt-1 flex flex-wrap gap-1">
+              <span v-for="p in m.perms" :key="p" class="tag flex items-center gap-1">
+                {{ permLabel[p]||p }}
+                <button class="text-accent2" @click="revokePerm(m.user_id,p)">×</button>
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- verify -->
@@ -514,6 +717,93 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <div class="flex justify-end gap-2 mt-3">
           <button class="btn-ghost" @click="showCodeAdd=false">取消</button>
           <button class="btn-primary" @click="addCode">提交</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 下载申请（成员）-->
+    <div v-if="showDlReq" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showDlReq=false">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
+        <h3 class="text-lg mb-3">申请数据下载权限</h3>
+        <label class="label-cap">研究用途（必填）</label>
+        <textarea v-model="dlReq.purpose" class="input mb-2" placeholder="说明数据将用于什么研究"></textarea>
+        <label class="label-cap">数据版本</label>
+        <input v-model="dlReq.scope_version" class="input mb-2 font-mono" placeholder="如 v1.0.0" />
+        <label class="label-cap">预计使用时间</label>
+        <input v-model="dlReq.planned_until" class="input mb-2" placeholder="如 2026-12" />
+        <label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" v-model="dlReq.share_with_others" /> 可能与他人共享</label>
+        <label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" v-model="dlReq.agree_charter" /> 我已阅读并同意数据使用公约</label>
+        <div class="flex justify-end gap-2">
+          <button class="btn-ghost" @click="showDlReq=false">取消</button>
+          <button class="btn-primary" :disabled="!dlReq.agree_charter" @click="submitDlReq">提交申请</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 授予单独授权（管理员）-->
+    <div v-if="showGrant" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showGrant=false">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
+        <h3 class="text-lg mb-1">授予单独授权</h3>
+        <p class="text-xs text-gray-500 mb-3">给「{{ grantTarget?.name }}」授予一项权限（加入数据集不自动获得，需在此单独授予）。</p>
+        <label class="label-cap">授权项</label>
+        <select v-model="grantForm.perm" class="input mb-2">
+          <option v-for="c in mem.grant_catalog" :key="c.perm" :value="c.perm">{{ c.label }}</option>
+        </select>
+        <label class="label-cap">有效范围</label>
+        <select v-model="grantForm.scope_type" class="input mb-2">
+          <option value="permanent">永久有效</option>
+          <option value="until_date">指定日期前有效</option>
+          <option value="version">仅对指定版本有效</option>
+          <option value="project">仅用于指定研究项目</option>
+        </select>
+        <input v-if="grantForm.scope_type==='until_date'" v-model="grantForm.valid_to" class="input mb-2" placeholder="有效期 YYYY-MM-DD" />
+        <input v-if="grantForm.scope_type==='version'" v-model="grantForm.scope_version" class="input mb-2 font-mono" placeholder="版本号 如 v1.0.0" />
+        <input v-if="grantForm.scope_type==='project'" v-model="grantForm.project_note" class="input mb-2" placeholder="研究项目名称" />
+        <div class="flex justify-end gap-2 mt-2">
+          <button class="btn-ghost" @click="showGrant=false">取消</button>
+          <button class="btn-primary" @click="doGrant">授予</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 数据集设置（管理员）-->
+    <div v-if="showSettings" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showSettings=false">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
+        <h3 class="text-lg mb-3">数据集设置</h3>
+        <label class="label-cap">下载策略</label>
+        <select v-model="settingsForm.download_policy" class="input mb-3">
+          <option value="public">公开数据（登录可下）</option>
+          <option value="member">成员可下载</option>
+          <option value="approval">审批后下载</option>
+          <option value="masked_only">仅脱敏数据可下载</option>
+          <option value="forbidden">禁止下载（仅在线分析）</option>
+        </select>
+        <label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" v-model="settingsForm.history_visible" /> 成员默认可见历史版本信息</label>
+        <label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" v-model="settingsForm.history_downloadable" /> 成员默认可下载历史版本</label>
+        <label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" v-model="settingsForm.analysis_open" /> 在线分析对全体成员开放</label>
+        <label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" v-model="settingsForm.codebook_public" /> 公开 codebook 非成员可见</label>
+        <label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" v-model="settingsForm.dashboard_public" /> 公开看板非成员可见</label>
+        <div class="flex justify-end gap-2">
+          <button class="btn-ghost" @click="showSettings=false">取消</button>
+          <button class="btn-primary" @click="saveSettings">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 上传候选文件 -->
+    <div v-if="showCand" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showCand=false">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
+        <h3 class="text-lg mb-1">上传版本候选文件</h3>
+        <p class="text-xs text-gray-500 mb-3">候选文件供数据集管理员审阅后正式发版；候选不等于正式版本。</p>
+        <input type="file" @change="(e:any)=>candFile=e.target.files[0]" class="text-xs mb-2 block" />
+        <textarea v-model="candNote" class="input mb-2" placeholder="说明（可选）"></textarea>
+        <div v-if="candidates.length" class="mt-2">
+          <div class="label-cap mb-1">已上传候选</div>
+          <div v-for="c in candidates" :key="c.id" class="text-xs text-gray-500 border-t border-line py-1">{{ c.file_name }} · {{ c.status }}</div>
+        </div>
+        <div class="flex justify-end gap-2 mt-3">
+          <button class="btn-ghost" @click="showCand=false">取消</button>
+          <button class="btn-primary" @click="uploadCandidate">上传</button>
         </div>
       </div>
     </div>

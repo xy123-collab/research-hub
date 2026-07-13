@@ -6,11 +6,16 @@ from ..core.db import get_db
 from ..core.storage import storage
 from ..core.ai_client import ai_client
 from ..core.permissions import (get_current_user, is_super_admin, is_dataset_member,
-                                is_dataset_admin, dataset_membership, has_dataset_perm)
+                                is_dataset_admin, dataset_membership, has_dataset_perm,
+                                count_dataset_admins, get_settings, active_grants,
+                                DS_ADMIN_ROLES)
 from ..core.audit import write_audit, record_contribution
 from ..models.user import User
 from ..models.dataset import (Dataset, DatasetMember, JoinRequest, Variable,
                               DatasetGroupRequest)
+from ..models.access import (DatasetGrant, DatasetSettings, DownloadRequest,
+                             VersionCandidate, CodebookDraft, GRANTABLE_PERMS,
+                             PERM_LABELS_ZH, DOWNLOAD_POLICIES)
 from ..models.version import DataVersion, DownloadLog
 from ..models.literature import (LitTopic, LitRef, Publication, DatasetSummary)
 from ..models.group import ResearchGroup, Charter
@@ -179,6 +184,19 @@ def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_cu
     pend = db.query(DatasetGroupRequest).filter_by(
         dataset_id=d.id, status="pending").first()
     pend_group = db.get(ResearchGroup, pend.group_id) if pend else None
+    is_admin = is_dataset_admin(db, d.id, user)
+    st = get_settings(db, d.id)
+    # 我拥有的单独授权码（成员用于前端按钮显隐；管理员视为全部）
+    if is_admin:
+        my_perms = list(GRANTABLE_PERMS)
+    elif member:
+        my_perms = sorted({g.perm for g in active_grants(db, d.id, user.id)} |
+                          set((dataset_membership(db, d.id, user.id).granted_perms_json) or []))
+    else:
+        my_perms = []
+    # 我是否已有有效的下载申请（审批后下载策略下用）
+    my_dl_req = db.query(DownloadRequest).filter_by(
+        dataset_id=d.id, user_id=user.id).order_by(DownloadRequest.id.desc()).first()
     return {
         "id": d.id, "slug": d.slug, "name_zh": d.name_zh, "name_en": d.name_en,
         "desc_zh": d.desc_zh, "icon": d.icon, "is_sensitive": d.is_sensitive,
@@ -188,7 +206,13 @@ def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_cu
                                   if pend else None),
         "founder": {"id": d.founder_id, "name": founder.display_name if founder else "",
                     "contact": d.founder_contact},
-        "is_member": member, "is_admin": is_dataset_admin(db, d.id, user),
+        "is_member": member, "is_admin": is_admin,
+        "my_perms": my_perms,
+        "settings": {"download_policy": st.download_policy,
+                     "history_visible": st.history_visible,
+                     "history_downloadable": st.history_downloadable,
+                     "analysis_open": st.analysis_open, "is_closed": st.is_closed},
+        "my_download_request": ({"status": my_dl_req.status} if my_dl_req else None),
         "current_version": ({"id": cur.id, "version_id": cur.version_id,
                              "changelog_zh": cur.changelog_zh} if cur else None),
         "members": approvals,
@@ -230,6 +254,8 @@ async def publish_version(slug: str, version_id: str = Form(...),
     d = _get_ds(db, slug)
     if not is_dataset_admin(db, d.id, user):
         raise HTTPException(403, "仅发起人/管理员可发版")
+    if get_settings(db, d.id).is_closed:
+        raise HTTPException(400, "数据集已关闭，不再发布新版本")
     # 版本不可覆盖：同 (dataset, version_id) 不允许重复
     if db.query(DataVersion).filter_by(dataset_id=d.id, version_id=version_id).first():
         raise HTTPException(400, f"版本 {version_id} 已存在，版本不可覆盖")
@@ -309,12 +335,63 @@ def remove_member(slug: str, uid: int, db: Session = Depends(get_db),
     m = dataset_membership(db, d.id, uid)
     if not m:
         raise HTTPException(404, "该用户不是成员")
-    if m.ds_role == "founder":
-        raise HTTPException(400, "不能移除发起人")
+    # 至少保留一名数据集管理员
+    if m.ds_role in DS_ADMIN_ROLES and count_dataset_admins(db, d.id) <= 1:
+        raise HTTPException(400, "该用户是唯一管理员，不能移除；请先指定其他管理员")
     db.delete(m)
+    # 连带撤销其所有单独授权
+    db.query(DatasetGrant).filter_by(dataset_id=d.id, user_id=uid).update({"revoked": True})
     write_audit(db, user.id, "dataset.member.remove", "dataset", d.id, {"user": uid})
     db.commit()
     return {"ok": True}
+
+
+def _has_approved_download(db, dataset_id, user_id, version_id) -> bool:
+    """审批后下载：存在已批准且未过期、覆盖该版本的下载申请。"""
+    now = datetime.utcnow()
+    for r in db.query(DownloadRequest).filter_by(
+            dataset_id=dataset_id, user_id=user_id, status="approved").all():
+        if r.valid_to and now > r.valid_to:
+            continue
+        if r.scope_version and version_id and r.scope_version != version_id:
+            continue
+        return True
+    return False
+
+
+def check_download(db, d, v, user):
+    """返回 (允许?, 权限来源/原因)。落实 原则三 与 七节 下载权限类型。"""
+    admin = is_dataset_admin(db, d.id, user)
+    if admin:
+        return True, "admin"
+    if not is_dataset_member(db, d.id, user):
+        return False, "非成员不能下载原始数据，请先申请加入该数据集"
+    st = get_settings(db, d.id)
+    ver = v.version_id
+    # 历史版本单独控制（六节 查看/下载历史版本 授权）
+    if not v.is_current:
+        if has_dataset_perm(db, d.id, user, "download.history", version=ver):
+            return True, "grant:download.history"
+        if st.history_downloadable:
+            return True, "policy:history_downloadable"
+        return False, "历史版本需单独授权（下载历史版本）"
+    # 当前推荐版本，按数据集下载策略
+    policy = st.download_policy
+    if policy == "forbidden":
+        return False, "本数据集已关闭下载通道，仅可使用在线分析"
+    if policy == "masked_only":
+        if has_dataset_perm(db, d.id, user, "download.masked", version=ver):
+            return True, "grant:download.masked"
+        return False, "本数据集仅提供脱敏数据下载，需单独授权"
+    if policy == "approval":
+        if has_dataset_perm(db, d.id, user, "download.current", version=ver):
+            return True, "grant:download.current"
+        if _has_approved_download(db, d.id, user.id, ver):
+            return True, "download_request"
+        return False, "需提交下载申请并经管理员批准"
+    if policy in ("member", "public"):
+        return True, f"policy:{policy}"
+    return False, "无下载权限"
 
 
 @router.get("/datasets/{slug}/versions/{vid}/download")
@@ -325,19 +402,24 @@ def download(slug: str, vid: int, file: str = "data", db: Session = Depends(get_
     if not v or v.dataset_id != d.id:
         raise HTTPException(404, "版本不存在")
     if file == "codebook":
-        key = v.codebook_file_path  # 任意登录用户可下
+        # 公开 codebook：成员可下；非成员仅当设置为 codebook_public 时可下
+        st = get_settings(db, d.id)
+        if not is_dataset_member(db, d.id, user) and not st.codebook_public:
+            raise HTTPException(403, "该数据集 codebook 未公开，请先加入")
+        source = "codebook"
+        key = v.codebook_file_path
     else:
-        # 下载分级：成员下当前版；管理员下全部历史；非成员不可下原始数据
-        if not is_dataset_member(db, d.id, user):
-            raise HTTPException(403, "非成员不能下载原始数据，请先申请加入处理")
-        if not is_dataset_admin(db, d.id, user) and not v.is_current:
-            raise HTTPException(403, "成员仅可下载当前推荐版本；历史版本需管理员权限")
+        ok, source = check_download(db, d, v, user)
+        if not ok:
+            raise HTTPException(403, source)
         key = v.data_file_path
     if not key:
         raise HTTPException(404, "文件不存在")
+    # 四节 原则六 / 七节 4：留痕（含权限来源）
     db.add(DownloadLog(user_id=user.id, dataset_id=d.id, version_id=v.id, file_type=file,
                        file_name=key.split("/")[-1], downloaded_at=datetime.utcnow()))
-    write_audit(db, user.id, "download", "dataset", d.id, {"version": v.version_id, "file": file})
+    write_audit(db, user.id, "download", "dataset", d.id,
+                {"version": v.version_id, "file": file, "source": source})
     db.commit()
     return StreamingResponse(storage.open(key), media_type="application/octet-stream",
                              headers={"Content-Disposition":
@@ -348,20 +430,293 @@ def download(slug: str, vid: int, file: str = "data", db: Session = Depends(get_
 @router.get("/datasets/{slug}/members")
 def members(slug: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
+    admin = is_dataset_admin(db, d.id, user)
     ms = db.query(DatasetMember).filter_by(dataset_id=d.id).all()
-    reqs = db.query(JoinRequest).filter_by(dataset_id=d.id).all()
-    return {"members": [{"user_id": m.user_id, "ds_role": m.ds_role,
-                         "perms": m.granted_perms_json} for m in ms],
-            "requests": [{"id": r.id, "user_id": r.user_id, "status": r.status,
-                          "message": r.message} for r in reqs]}
+
+    def uname(uid):
+        u = db.get(User, uid)
+        return u.display_name if u else ""
+
+    def perms_of(uid):
+        gs = active_grants(db, d.id, uid)
+        return sorted({g.perm for g in gs})
+
+    out_members = [{"user_id": m.user_id, "name": uname(m.user_id), "ds_role": m.ds_role,
+                    "is_admin": m.ds_role in DS_ADMIN_ROLES,
+                    "perms": perms_of(m.user_id)} for m in ms]
+    result = {"members": out_members}
+    # 仅管理员可见待办：加入申请 + 下载申请
+    if admin:
+        reqs = db.query(JoinRequest).filter_by(dataset_id=d.id, status="pending").all()
+        result["requests"] = [{"id": r.id, "user_id": r.user_id, "name": uname(r.user_id),
+                               "status": r.status, "message": r.message} for r in reqs]
+        dls = db.query(DownloadRequest).filter_by(dataset_id=d.id, status="pending").all()
+        result["download_requests"] = [
+            {"id": r.id, "user_id": r.user_id, "name": uname(r.user_id),
+             "purpose": r.purpose, "scope_version": r.scope_version,
+             "planned_until": r.planned_until, "share_with_others": r.share_with_others,
+             "agree_charter": r.agree_charter} for r in dls]
+        result["grant_catalog"] = [{"perm": p, "label": PERM_LABELS_ZH[p]}
+                                   for p in GRANTABLE_PERMS]
+    return result
+
+
+# -------- 单独授权（六节：可带到期规则）--------
+@router.post("/datasets/{slug}/members/{uid}/grant")
+def grant(slug: str, uid: int, body: dict, db: Session = Depends(get_db),
+          user: User = Depends(get_current_user)):
+    """授予一项单独授权。body: {perm, scope_type, valid_to?, scope_version?, project_note?}。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集管理员可授权")
+    m = dataset_membership(db, d.id, uid)
+    if not m:
+        raise HTTPException(404, "该用户不是成员")
+    perm = body.get("perm")
+    if perm not in GRANTABLE_PERMS:
+        raise HTTPException(400, "未知的授权项")
+    scope_type = body.get("scope_type", "permanent")
+    valid_to = None
+    if scope_type == "until_date" and body.get("valid_to"):
+        try:
+            valid_to = datetime.fromisoformat(body["valid_to"][:19])
+        except ValueError:
+            raise HTTPException(400, "有效期格式应为 ISO 日期")
+    # 同一权限先撤旧再发新，避免叠加
+    db.query(DatasetGrant).filter_by(dataset_id=d.id, user_id=uid, perm=perm,
+                                     revoked=False).update({"revoked": True})
+    g = DatasetGrant(dataset_id=d.id, user_id=uid, perm=perm, scope_type=scope_type,
+                     valid_to=valid_to, scope_version=body.get("scope_version"),
+                     project_note=body.get("project_note"), granted_by=user.id,
+                     granted_at=datetime.utcnow())
+    db.add(g)
+    write_audit(db, user.id, "dataset.grant", "dataset", d.id,
+                {"user": uid, "perm": perm, "scope": scope_type})
+    db.commit()
+    return {"ok": True, "grant_id": g.id}
+
+
+@router.post("/datasets/{slug}/members/{uid}/revoke")
+def revoke_grant(slug: str, uid: int, perm: str, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集管理员可撤销授权")
+    n = db.query(DatasetGrant).filter_by(dataset_id=d.id, user_id=uid, perm=perm,
+                                         revoked=False).update({"revoked": True})
+    write_audit(db, user.id, "dataset.revoke", "dataset", d.id, {"user": uid, "perm": perm})
+    db.commit()
+    return {"ok": True, "revoked": n}
+
+
+# -------- 数据集管理员的增/删/交接（三节 4：至少保留一名）--------
+@router.post("/datasets/{slug}/admins/{uid}")
+def add_dataset_admin(slug: str, uid: int, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集管理员可增加管理员")
+    m = dataset_membership(db, d.id, uid)
+    if not m:
+        raise HTTPException(404, "该用户不是成员，请先审批其加入")
+    m.ds_role = "admin"
+    write_audit(db, user.id, "dataset.admin.add", "dataset", d.id, {"user": uid})
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/datasets/{slug}/admins/{uid}")
+def remove_dataset_admin(slug: str, uid: int, db: Session = Depends(get_db),
+                         user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集管理员可取消管理员")
+    m = dataset_membership(db, d.id, uid)
+    if not m or m.ds_role not in DS_ADMIN_ROLES:
+        raise HTTPException(404, "该用户不是管理员")
+    if count_dataset_admins(db, d.id) <= 1:
+        raise HTTPException(400, "至少保留一名数据集管理员")
+    m.ds_role = "member"
+    write_audit(db, user.id, "dataset.admin.remove", "dataset", d.id, {"user": uid})
+    db.commit()
+    return {"ok": True}
+
+
+# -------- 数据集设置：下载策略 / 历史版本 / 在线分析 / 关闭（五、七、十节）--------
+@router.patch("/datasets/{slug}/settings")
+def update_settings(slug: str, body: dict, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集管理员可设置")
+    st = get_settings(db, d.id)
+    if "download_policy" in body:
+        if body["download_policy"] not in DOWNLOAD_POLICIES:
+            raise HTTPException(400, "未知的下载策略")
+        st.download_policy = body["download_policy"]
+    for k in ("history_visible", "history_downloadable", "analysis_open",
+              "codebook_public", "dashboard_public"):
+        if k in body:
+            setattr(st, k, bool(body[k]))
+    write_audit(db, user.id, "dataset.settings", "dataset", d.id, body)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/datasets/{slug}/close")
+def close_dataset(slug: str, closed: bool = True, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """关闭/重开数据集（十节 4）。彻底删除不作为普通页面按钮。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集管理员可关闭数据集")
+    st = get_settings(db, d.id)
+    st.is_closed = bool(closed)
+    write_audit(db, user.id, "dataset.close" if closed else "dataset.reopen",
+                "dataset", d.id)
+    db.commit()
+    return {"ok": True, "is_closed": st.is_closed}
+
+
+# -------- 下载申请与审批（七节 3）--------
+@router.post("/datasets/{slug}/download-requests")
+def create_download_request(slug: str, body: dict, db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需先加入数据集才能申请下载")
+    if not body.get("agree_charter"):
+        raise HTTPException(400, "需同意数据使用公约")
+    if not (body.get("purpose") or "").strip():
+        raise HTTPException(400, "请填写研究用途")
+    r = DownloadRequest(dataset_id=d.id, user_id=user.id, purpose=body.get("purpose"),
+                        scope_version=body.get("scope_version"),
+                        planned_until=body.get("planned_until"),
+                        share_with_others=bool(body.get("share_with_others")),
+                        agree_charter=True, status="pending",
+                        created_at=datetime.utcnow())
+    db.add(r); db.flush()
+    write_audit(db, user.id, "download.request", "dataset", d.id, {"req": r.id})
+    db.commit()
+    return {"id": r.id, "status": "pending"}
+
+
+@router.post("/download-requests/{rid}/decide")
+def decide_download_request(rid: int, approve: bool, valid_to: str = "",
+                            scope_version: str = "", db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    r = db.get(DownloadRequest, rid)
+    if not r or r.status != "pending":
+        raise HTTPException(404, "申请不存在或已处理")
+    if not is_dataset_admin(db, r.dataset_id, user):
+        raise HTTPException(403, "仅数据集管理员可审批下载")
+    r.status = "approved" if approve else "rejected"
+    r.decided_by = user.id; r.decided_at = datetime.utcnow()
+    if scope_version:
+        r.scope_version = scope_version
+    if approve and valid_to:
+        try:
+            r.valid_to = datetime.fromisoformat(valid_to[:19])
+        except ValueError:
+            raise HTTPException(400, "有效期格式应为 ISO 日期")
+    write_audit(db, user.id, "download.request.decide", "dataset", r.dataset_id,
+                {"req": rid, "approve": approve})
+    db.commit()
+    return {"ok": True, "status": r.status}
+
+
+@router.post("/download-requests/{rid}/revoke")
+def revoke_download_request(rid: int, db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    r = db.get(DownloadRequest, rid)
+    if not r:
+        raise HTTPException(404, "申请不存在")
+    if not is_dataset_admin(db, r.dataset_id, user):
+        raise HTTPException(403, "仅数据集管理员可撤销")
+    r.status = "revoked"
+    write_audit(db, user.id, "download.request.revoke", "dataset", r.dataset_id, {"req": rid})
+    db.commit()
+    return {"ok": True}
+
+
+# -------- 版本候选文件（九节 1：获授权成员上传，管理员发布）--------
+@router.get("/datasets/{slug}/candidates")
+def list_candidates(slug: str, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
+    cs = db.query(VersionCandidate).filter_by(dataset_id=d.id).order_by(
+        VersionCandidate.id.desc()).all()
+    return [{"id": c.id, "file_name": c.file_name, "note": c.note, "status": c.status,
+             "uploaded_by": c.uploaded_by,
+             "created_at": str(c.created_at) if c.created_at else None} for c in cs]
+
+
+@router.post("/datasets/{slug}/candidates")
+def upload_candidate(slug: str, note: str = Form(""), file: UploadFile = File(...),
+                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    if get_settings(db, d.id).is_closed:
+        raise HTTPException(400, "数据集已关闭，不再接受候选文件")
+    if not has_dataset_perm(db, d.id, user, "upload.candidate"):
+        raise HTTPException(403, "需获得「上传版本候选文件」授权")
+    key = f"candidates/{d.slug}/{datetime.utcnow():%Y%m%d%H%M%S}_{file.filename}"
+    storage.save(key, file.file)
+    c = VersionCandidate(dataset_id=d.id, uploaded_by=user.id, file_path=key,
+                         file_name=file.filename, note=note, status="pending",
+                         created_at=datetime.utcnow())
+    db.add(c); db.flush()
+    write_audit(db, user.id, "version.candidate.upload", "dataset", d.id, {"cand": c.id})
+    db.commit()
+    return {"id": c.id, "file_name": c.file_name}
+
+
+# -------- codebook 草稿（六节：codebook.draft 授权）--------
+@router.get("/datasets/{slug}/codebook-draft")
+def get_codebook_draft(slug: str, db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
+    draft = db.query(CodebookDraft).filter_by(dataset_id=d.id).order_by(
+        CodebookDraft.id.desc()).first()
+    can_edit = has_dataset_perm(db, d.id, user, "codebook.draft")
+    return {"body_zh": draft.body_zh if draft else "", "can_edit": can_edit,
+            "updated_at": str(draft.updated_at) if draft and draft.updated_at else None}
+
+
+@router.put("/datasets/{slug}/codebook-draft")
+def save_codebook_draft(slug: str, body: dict, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    if not has_dataset_perm(db, d.id, user, "codebook.draft"):
+        raise HTTPException(403, "需获得「编辑 codebook 草稿」授权")
+    draft = db.query(CodebookDraft).filter_by(dataset_id=d.id).order_by(
+        CodebookDraft.id.desc()).first()
+    if not draft:
+        draft = CodebookDraft(dataset_id=d.id)
+        db.add(draft)
+    draft.body_zh = body.get("body_zh", "")
+    draft.updated_by = user.id; draft.updated_at = datetime.utcnow()
+    write_audit(db, user.id, "codebook.draft.save", "dataset", d.id)
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/datasets/{slug}/join-requests")
 def join_dataset(slug: str, message: str = "", db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
     d = _get_ds(db, slug)
+    if get_settings(db, d.id).is_closed:
+        raise HTTPException(400, "该数据集已关闭，不再接受新成员申请")
     if dataset_membership(db, d.id, user.id):
         raise HTTPException(400, "已是成员")
+    if db.query(JoinRequest).filter_by(dataset_id=d.id, user_id=user.id,
+                                       status="pending").first():
+        raise HTTPException(400, "已提交申请，等待审批")
     r = JoinRequest(dataset_id=d.id, user_id=user.id, message=message, status="pending")
     db.add(r); db.commit()
     return {"id": r.id}
@@ -378,8 +733,9 @@ def decide_join(rid: int, approve: bool, db: Session = Depends(get_db),
     r.status = "approved" if approve else "rejected"
     r.decided_by = user.id; r.decided_at = datetime.utcnow()
     if approve:
+        # 原则三：加入数据集 ≠ 获得下载权。成员默认无任何单独授权，需管理员另行授予。
         db.add(DatasetMember(dataset_id=r.dataset_id, user_id=r.user_id, ds_role="member",
-                             granted_perms_json=["bug.review", "download"],
+                             granted_perms_json=[],
                              joined_at=datetime.utcnow(), approved_by=user.id))
     write_audit(db, user.id, "dataset.join.decide", "dataset", r.dataset_id,
                 {"approve": approve, "applicant": r.user_id})
@@ -387,26 +743,14 @@ def decide_join(rid: int, approve: bool, db: Session = Depends(get_db),
     return {"ok": True, "status": r.status}
 
 
-@router.post("/datasets/{slug}/members/{uid}/grant")
-def grant(slug: str, uid: int, perms: list[str], db: Session = Depends(get_db),
-          user: User = Depends(get_current_user)):
-    d = _get_ds(db, slug)
-    if not is_dataset_admin(db, d.id, user):
-        raise HTTPException(403, "仅发起人可授权")
-    m = dataset_membership(db, d.id, uid)
-    if not m:
-        raise HTTPException(404, "该用户不是成员")
-    m.granted_perms_json = perms
-    write_audit(db, user.id, "dataset.grant", "dataset", d.id, {"user": uid, "perms": perms})
-    db.commit()
-    return {"ok": True}
-
-
 # -------- 数据看板（从派生汇总表出图，只读）--------
 @router.get("/datasets/{slug}/dashboard")
 def dashboard(slug: str, var: str, group: str = "", db: Session = Depends(get_db),
               user: User = Depends(get_current_user)):
-    d = _get_ds(db, slug)  # 非成员也可看
+    d = _get_ds(db, slug)
+    # 公开看板：成员可看；非成员仅当设置为 dashboard_public 时可看
+    if not is_dataset_member(db, d.id, user) and not get_settings(db, d.id).dashboard_public:
+        raise HTTPException(403, "该数据集看板未公开，请先加入")
     q = db.query(DatasetSummary).filter_by(dataset_id=d.id, var_name=var)
     if group:
         q = q.filter_by(group_key=group)
@@ -414,11 +758,24 @@ def dashboard(slug: str, var: str, group: str = "", db: Session = Depends(get_db
     return [{"bucket": r.bucket, "value": r.value, "group_key": r.group_key} for r in rows]
 
 
+def _require_analysis(db, d, user):
+    """在线分析需授权（原则三 / 速查表）。管理员或获 analysis.online 授权，或数据集开放。"""
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需先加入数据集")
+    if is_dataset_admin(db, d.id, user):
+        return
+    if get_settings(db, d.id).analysis_open:
+        return
+    if not has_dataset_perm(db, d.id, user, "analysis.online"):
+        raise HTTPException(403, "在线分析需单独授权")
+
+
 @router.post("/datasets/{slug}/analysis/generate")
 def gen_analysis(slug: str, prompt: str, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
     """AI 只接收变量名/codebook/需求，返回分析代码；不接收原始数据行。"""
     d = _get_ds(db, slug)
+    _require_analysis(db, d, user)
     vs = db.query(Variable).filter_by(dataset_id=d.id).all()
     schema = ", ".join(v.var_name for v in vs)
     sys = ("你是数据分析助手。只可基于给定变量名生成 pandas 只读描述性分析代码，"
@@ -433,6 +790,7 @@ def run_analysis(slug: str, code: str, db: Session = Depends(get_db),
     """只读沙箱执行；使用派生汇总，不加载敏感原始行。"""
     from ..services.sandbox import run_readonly, SandboxViolation
     d = _get_ds(db, slug)
+    _require_analysis(db, d, user)
     rows = db.query(DatasetSummary).filter_by(dataset_id=d.id).all()
     records = [{"var_name": r.var_name, "group_key": r.group_key,
                 "bucket": r.bucket, "value": r.value} for r in rows]

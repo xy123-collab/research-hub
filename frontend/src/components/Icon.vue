@@ -16,6 +16,9 @@ const P: Record<string, string> = {
   users: '<circle cx="9" cy="8" r="3"/><path d="M3.5 20c0-3 2.7-5 5.5-5s5.5 2 5.5 5"/><path d="M16 5.5a3 3 0 0 1 0 6"/><path d="M20.5 20c0-2.4-1.7-3.9-3.5-4.4"/>',
   puzzle: '<path d="M9 4h6v3a2 2 0 1 0 4 0V4h1v6h-3a2 2 0 1 0 0 4h3v6h-6v-3a2 2 0 1 0-4 0v3H4v-6h3a2 2 0 1 0 0-4H4V4h5z"/>',
   data: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
+  bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
+  check: '<path d="M20 6L9 17l-5-5"/>',
+  close: '<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
 }
 const path = () => P[props.name] || P.data
 </script>

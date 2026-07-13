@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from . import (auth, users, groups, charters, datasets, bugs, code,
-               posts, workspaces, skills, verify, admin)
+               posts, workspaces, skills, verify, admin, notifications)
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(auth.router)
@@ -15,3 +15,4 @@ api_router.include_router(workspaces.router)
 api_router.include_router(skills.router)
 api_router.include_router(verify.router)
 api_router.include_router(admin.router)
+api_router.include_router(notifications.router)
