@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import api from '../api'
 
 const { t } = useI18n(); const router = useRouter()
-const mine = ref<any[]>([]); const discover = ref<any[]>([])
+const mine = ref<any[]>([]); const discover = ref<any[]>([]); const q = ref('')
 const showCreate = ref(false); const form = ref({ slug: '', name_zh: '', desc_zh: '' })
 
 onMounted(load)
@@ -13,6 +13,13 @@ async function load() {
   const g = (await api.get('/groups')).data
   mine.value = g.mine; discover.value = g.discover
 }
+function matchG(g: any) {
+  const kw = q.value.trim().toLowerCase()
+  if (!kw) return true
+  return [g.id, g.slug, g.name_zh, g.desc_zh].map((x: any) => String(x ?? '').toLowerCase()).some(s => s.includes(kw))
+}
+const mineShown = computed(() => mine.value.filter(matchG))
+const discoverShown = computed(() => discover.value.filter(matchG))
 async function createGroup() {
   if (!form.value.slug || !form.value.name_zh) { alert('请填写标识与名称'); return }
   await api.post('/groups', form.value); showCreate.value = false
@@ -33,37 +40,43 @@ async function joinGroup(slug: string) {
     <button class="btn-primary" @click="showCreate = true">{{ t('home.createGroup') }}</button>
   </div>
 
+  <div class="mb-6">
+    <input v-model="q" class="input" :placeholder="t('home.searchGroup')" />
+  </div>
+
   <section class="mb-8">
     <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line">{{ t('home.myGroups') }}</h2>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div v-for="g in mine" :key="g.id" class="card cursor-pointer group"
+      <div v-for="g in mineShown" :key="g.id" class="card cursor-pointer group"
            @click="router.push(`/groups/${g.slug}`)">
         <div class="flex items-center justify-between">
           <h3 class="text-base group-hover:text-accent transition">{{ g.name_zh }}</h3>
           <span v-if="g.my_role" class="tag">{{ g.my_role }}</span>
         </div>
+        <p class="text-xs text-gray-300 mt-1">ID {{ g.id }}</p>
         <p class="text-sm text-gray-500 mt-1 line-clamp-2">{{ g.desc_zh }}</p>
         <div class="mt-4 pt-3 border-t border-line text-xs text-gray-400 flex gap-4">
           <span>{{ g.member_count }} {{ t('home.members') }}</span>
           <span>{{ g.dataset_count }} {{ t('home.datasets') }}</span>
         </div>
       </div>
-      <p v-if="!mine.length" class="text-gray-400 text-sm">{{ t('home.noGroups') }}</p>
+      <p v-if="!mineShown.length" class="text-gray-400 text-sm">{{ t('home.noGroups') }}</p>
     </div>
   </section>
 
   <section>
     <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line">{{ t('home.discover') }}</h2>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div v-for="g in discover" :key="g.id" class="card">
+      <div v-for="g in discoverShown" :key="g.id" class="card">
         <h3 class="text-base">{{ g.name_zh }}</h3>
+        <p class="text-xs text-gray-300 mt-1">ID {{ g.id }}</p>
         <p class="text-sm text-gray-500 mt-1 line-clamp-2">{{ g.desc_zh }}</p>
         <div class="mt-4 pt-3 border-t border-line flex items-center justify-between">
           <span class="text-xs text-gray-400">{{ g.member_count }} {{ t('home.members') }}</span>
           <button class="btn-ghost text-xs" @click="joinGroup(g.slug)">{{ t('home.join') }}</button>
         </div>
       </div>
-      <p v-if="!discover.length" class="text-gray-400 text-sm">—</p>
+      <p v-if="!discoverShown.length" class="text-gray-400 text-sm">—</p>
     </div>
   </section>
 

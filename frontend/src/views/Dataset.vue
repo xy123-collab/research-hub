@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import api from '../api'
 import CharterModal from '../components/CharterModal.vue'
+import Icon from '../components/Icon.vue'
 
 const route = useRoute(); const { t } = useI18n()
 const slug = route.params.slug as string
@@ -25,7 +26,6 @@ const aiPrompt = ref(''); const aiCode = ref(''); const aiResult = ref<any>(null
 const litForm = ref<any>({ title: '', authors: '', venue: '', year: null, url: '', note_zh: '' })
 const posts = ref<any[]>([]); const postForm = ref({ content_zh: '' })
 const acts = ref<any[]>([]); const actFilter = ref('all')
-const groupsForAttach = ref<any[]>([]); const showAttach = ref(false); const attachSlug = ref('')
 
 const tabs = [
   ['overview', 'ds.overview'], ['activity', 'ds.activity'], ['dashboard', 'ds.dashboard'],
@@ -60,25 +60,6 @@ async function submitPost() {
   await api.post('/posts', { content_zh: postForm.value.content_zh, dataset_id: d.value.id,
                              visibility: 'platform', tags: [d.value.slug] })
   postForm.value.content_zh = ''; loadTab('feed')
-}
-async function openAttach() {
-  const gg = (await api.get('/groups')).data
-  groupsForAttach.value = [...gg.mine, ...gg.discover]; attachSlug.value = ''; showAttach.value = true
-}
-async function doAttach() {
-  if (!attachSlug.value) { alert('请选择课题组'); return }
-  try {
-    await api.post(`/datasets/${slug}/attach-request`, null, { params: { group_slug: attachSlug.value } })
-    showAttach.value = false; d.value = (await api.get(`/datasets/${slug}`)).data
-    alert('已提交并入申请，待课题组管理员审批')
-  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
-}
-async function doDetach() {
-  if (!confirm('确认申请移出当前课题组？需课题组管理员同意')) return
-  try {
-    await api.post(`/datasets/${slug}/detach-request`)
-    d.value = (await api.get(`/datasets/${slug}`)).data; alert('已提交移出申请')
-  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 const actColor = (x: string) => x === 'version' ? '#2d4a7c' : x === 'code' ? '#4b5563' : '#7c2d3a'
 const actLabel = (x: string) => x === 'version' ? '版本' : x === 'code' ? '代码' : '勘误'
@@ -200,14 +181,9 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           · {{ t('ds.contact') }}：{{ d.founder.contact }}
         </p>
         <p class="text-sm mt-1 text-gray-500">
+          <span class="text-gray-400">ID {{ d.id }}</span> ·
           <template v-if="d.group">{{ t('ds.groupOf') }}：<router-link :to="`/groups/${d.group.slug}`" class="text-accent hover:underline">{{ d.group.name_zh }}</router-link></template>
           <span v-else class="italic">{{ t('ds.standalone') }}</span>
-          <template v-if="d.is_admin && !d.pending_group_request">
-            <span class="text-gray-300"> · </span>
-            <button v-if="!d.group" class="text-accent hover:underline" @click="openAttach">{{ t('ds.attachToGroup') }}</button>
-            <button v-else class="text-accent2 hover:underline" @click="doDetach">{{ t('ds.detachFromGroup') }}</button>
-          </template>
-          <span v-if="d.pending_group_request" class="text-accent2"> · {{ t('ds.requestPending') }}（{{ d.pending_group_request.kind==='attach'?'并入':'移出' }} {{ d.pending_group_request.group_name }}）</span>
         </p>
       </div>
       <div class="flex gap-2">
@@ -217,14 +193,15 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </button>
       </div>
     </div>
-    <p v-if="!d.is_member" class="text-xs text-accent2 mt-2">⚠ {{ t('ds.notMemberTip') }}</p>
+    <p v-if="!d.is_member" class="text-xs text-accent2 mt-2 flex items-center gap-1">
+      <Icon name="info" class="ico" style="width:14px;height:14px" /> {{ t('ds.notMemberTip') }}</p>
 
     <!-- 成员协作快捷条：核心协作动作一键直达 -->
     <div v-if="d.is_member" class="flex flex-wrap gap-2 mt-4">
-      <button class="btn-ghost text-xs" @click="loadTab('bugs')">📝 {{ t('ds.submitBug') }}</button>
-      <button class="btn-ghost text-xs" @click="loadTab('code'); showCodeAdd=true">💻 {{ t('ds.code') }}</button>
-      <button class="btn-ghost text-xs" @click="loadTab('verify')">🔍 {{ t('ds.verify') }}</button>
-      <button v-if="d.is_admin" class="btn-primary text-xs" @click="loadTab('versions'); openPublish()">🗂️ {{ t('ds.publishVersion') }}</button>
+      <button class="btn-ghost text-xs flex items-center gap-1.5" @click="loadTab('bugs')"><Icon name="edit" class="ico" style="width:15px;height:15px" /> {{ t('ds.submitBug') }}</button>
+      <button class="btn-ghost text-xs flex items-center gap-1.5" @click="loadTab('code'); showCodeAdd=true"><Icon name="code" class="ico" style="width:15px;height:15px" /> {{ t('ds.code') }}</button>
+      <button class="btn-ghost text-xs flex items-center gap-1.5" @click="loadTab('verify')"><Icon name="verify" class="ico" style="width:15px;height:15px" /> {{ t('ds.verify') }}</button>
+      <button v-if="d.is_admin" class="btn-primary text-xs flex items-center gap-1.5" @click="loadTab('versions'); openPublish()"><Icon name="publish" class="ico" style="width:15px;height:15px" /> {{ t('ds.publishVersion') }}</button>
     </div>
 
     <div class="flex gap-1 border-b border-line mt-5 text-sm overflow-x-auto">
@@ -430,22 +407,6 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
       </div>
     </div>
 
-    <!-- 申请并入课题组 -->
-    <div v-if="showAttach" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showAttach=false">
-      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
-        <h3 class="text-lg mb-1">{{ t('ds.attachToGroup') }}</h3>
-        <p class="text-xs text-gray-400 mb-3">并入需所选课题组的管理员同意；并入后如需移出，同样需该组管理员同意。</p>
-        <select v-model="attachSlug" class="input mb-3">
-          <option value="">选择课题组…</option>
-          <option v-for="gg in groupsForAttach" :key="gg.slug" :value="gg.slug">{{ gg.name_zh }}</option>
-        </select>
-        <div class="flex justify-end gap-2">
-          <button class="btn-ghost" @click="showAttach=false">{{ t('common.cancel') }}</button>
-          <button class="btn-primary" @click="doAttach">{{ t('common.submit') }}</button>
-        </div>
-      </div>
-    </div>
-
     <!-- ========== 弹窗 ========== -->
     <!-- bug 详情 -->
     <div v-if="bugModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="bugModal=null">
@@ -459,7 +420,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <p v-if="bugModal.fixed_in_version" class="text-xs text-accent mt-1">已在版本 {{ bugModal.fixed_in_version }} 修复</p>
         <div v-if="bugModal.attachments.length" class="mt-2">
           <div class="label-cap">证据附件</div>
-          <a v-for="a in bugModal.attachments" :key="a.id" :href="`/api/bug-attachments/${a.id}/download`" target="_blank" class="text-accent text-xs block hover:underline">📎 {{ a.file_name }}</a>
+          <a v-for="a in bugModal.attachments" :key="a.id" :href="`/api/bug-attachments/${a.id}/download`" target="_blank" class="text-accent text-xs flex items-center gap-1 hover:underline"><Icon name="clip" class="ico" style="width:13px;height:13px" /> {{ a.file_name }}</a>
         </div>
         <div class="mt-3 border-t border-line pt-3">
           <div class="label-cap">评审记录</div>

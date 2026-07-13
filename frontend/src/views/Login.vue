@@ -25,7 +25,7 @@ async function submit() {
   <div class="min-h-screen flex flex-col items-center justify-center bg-paper px-6">
     <div class="text-center mb-6">
       <h1 class="text-2xl text-accent">{{ cfg.name_zh || '科研数据共享平台' }}</h1>
-      <p class="text-gray-500 text-sm mt-1">{{ cfg.slogan_zh || '让每一份自建数据都可信、可复用、可归属' }}</p>
+      <p class="text-gray-500 text-sm mt-1">{{ cfg.slogan_zh || '让每一份自建数据都可信、可迭代、可复用' }}</p>
     </div>
     <div class="card w-full max-w-sm">
       <div class="flex gap-2 mb-4 text-sm">

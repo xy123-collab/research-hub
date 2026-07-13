@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import api from '../api'
+import Icon from '../components/Icon.vue'
 const skills = ref<any[]>([]); const recos = ref<any[]>([])
 const show = ref(false); const form = ref({ name_zh: '', desc_zh: '', github_url: '' })
 onMounted(load)
@@ -20,7 +21,7 @@ async function create() {
   </div>
   <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
     <div v-for="s in skills" :key="s.id" class="card">
-      <h3>🧩 {{ s.name_zh }}</h3>
+      <h3 class="flex items-center gap-2"><Icon name="puzzle" class="ico text-accent" /> {{ s.name_zh }}</h3>
       <p class="text-sm text-gray-500 mt-1">{{ s.desc_zh }}</p>
       <a v-if="s.github_url" :href="s.github_url" target="_blank" class="text-accent text-xs mt-2 inline-block">GitHub ↗</a>
     </div>

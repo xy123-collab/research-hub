@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuth } from '../stores/auth'
 import api from '../api'
+import Icon from '../components/Icon.vue'
 
 const route = useRoute(); const { t } = useI18n(); const auth = useAuth()
 const uid = ref<number>(0)
@@ -61,7 +62,7 @@ async function uploadWsFile() {
   <div v-if="profile">
     <div class="rounded-lg p-6 text-white" style="background: linear-gradient(135deg,#2d4a7c,#3d5a8c)">
       <div class="flex items-center gap-4">
-        <div class="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center text-2xl">👤</div>
+        <div class="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center"><Icon name="users" class="ico" style="width:26px;height:26px" /></div>
         <div>
           <h1 class="text-2xl font-serif">{{ profile.display_name }}</h1>
           <p class="text-white/80 text-sm">{{ profile.bio_zh }}</p>
@@ -188,7 +189,7 @@ async function uploadWsFile() {
               <input type="file" @change="(e:any)=>wsFile=e.target.files[0]" class="text-xs" />
               <button class="btn-ghost text-xs" @click="uploadWsFile">上传</button>
             </div>
-            <a v-for="f in wsModal.files" :key="f.id" :href="`/api/workspaces/${wsModal.id}/files/${f.id}/download`" target="_blank" class="text-accent text-xs block hover:underline">📎 {{ f.file_name }}</a>
+            <a v-for="f in wsModal.files" :key="f.id" :href="`/api/workspaces/${wsModal.id}/files/${f.id}/download`" target="_blank" class="text-accent text-xs flex items-center gap-1 hover:underline"><Icon name="clip" class="ico" style="width:13px;height:13px" /> {{ f.file_name }}</a>
           </div>
         </div>
       </div>

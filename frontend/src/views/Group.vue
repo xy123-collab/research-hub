@@ -38,7 +38,7 @@ const evLabel = (x: string) => x === 'version' ? '版本' : x === 'post' ? '发�
 
     <div class="flex items-start justify-between">
       <div>
-        <p class="eyebrow">Research Group</p>
+        <p class="eyebrow">Research Group · ID {{ g.id }}</p>
         <h1 class="text-2xl mt-1">{{ g.name_zh }}</h1>
         <p class="text-gray-500 mt-1">{{ g.desc_zh }}</p>
         <div class="mt-2 text-xs text-gray-400">{{ g.member_count }} {{ t('home.members') }}</div>

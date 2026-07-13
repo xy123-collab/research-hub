@@ -46,8 +46,8 @@ class Settings(BaseSettings):
     MAX_UPLOAD_MB: int = 50
     PLATFORM_NAME_ZH: str = "科研数据共享平台"
     PLATFORM_NAME_EN: str = "Research Hub"
-    PLATFORM_SLOGAN_ZH: str = "让每一份自建数据都可信、可复用、可归属"
-    PLATFORM_SLOGAN_EN: str = "Make every self-built dataset trustworthy, reusable and attributable"
+    PLATFORM_SLOGAN_ZH: str = "让每一份自建数据都可信、可迭代、可复用"
+    PLATFORM_SLOGAN_EN: str = "Make every self-built dataset trustworthy, iterable and reusable"
 
     @property
     def origins_list(self):

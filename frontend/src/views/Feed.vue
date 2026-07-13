@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import api from '../api'
+import Icon from '../components/Icon.vue'
 
 const { t } = useI18n()
 const posts = ref<any[]>([])
@@ -34,7 +35,7 @@ async function like(p: any) { await api.post(`/posts/${p.id}/react`, null, { par
   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
     <div v-for="p in posts" :key="p.id" class="card">
       <div class="flex items-center gap-2 text-sm">
-        <span class="text-lg">{{ p.cover_icon || '💡' }}</span>
+        <Icon name="bulb" class="ico text-accent" />
         <router-link :to="`/users/${p.author_id}`" class="text-accent hover:underline">{{ p.author_name }}</router-link>
         <span class="tag ml-auto">{{ p.visibility }}</span>
       </div>
