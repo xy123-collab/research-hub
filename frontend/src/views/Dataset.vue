@@ -23,10 +23,14 @@ const codeAdd = ref<any>({ title_zh: '', lang: 'Python', desc_zh: '', source_cod
 const codeFile = ref<File | null>(null)
 const aiPrompt = ref(''); const aiCode = ref(''); const aiResult = ref<any>(null); const aiSummary = ref('')
 const litForm = ref<any>({ title: '', authors: '', venue: '', year: null, url: '', note_zh: '' })
+const posts = ref<any[]>([]); const postForm = ref({ content_zh: '' })
+const acts = ref<any[]>([]); const actFilter = ref('all')
+const groupsForAttach = ref<any[]>([]); const showAttach = ref(false); const attachSlug = ref('')
 
 const tabs = [
-  ['overview', 'ds.overview'], ['dashboard', 'ds.dashboard'], ['versions', 'ds.versions'],
-  ['bugs', 'ds.bugs'], ['code', 'ds.code'], ['literature', 'ds.literature'], ['verify', 'ds.verify']
+  ['overview', 'ds.overview'], ['activity', 'ds.activity'], ['dashboard', 'ds.dashboard'],
+  ['versions', 'ds.versions'], ['bugs', 'ds.bugs'], ['code', 'ds.code'],
+  ['literature', 'ds.literature'], ['verify', 'ds.verify'], ['feed', 'ds.feed']
 ]
 
 onMounted(async () => {
@@ -43,7 +47,41 @@ async function loadTab(x: string) {
   if (x === 'verify') flags.value = (await api.get(`/datasets/${slug}/verify-flags`)).data
   if (x === 'literature') lit.value = (await api.get(`/datasets/${slug}/literature`)).data
   if (x === 'dashboard') dash.value = (await api.get(`/datasets/${slug}/dashboard`, { params: { var: 'gender' } })).data
+  if (x === 'feed') posts.value = (await api.get('/posts', { params: { dataset_id: d.value.id } })).data
+  if (x === 'activity') acts.value = (await api.get(`/datasets/${slug}/activity`, { params: { kind: actFilter.value } })).data
 }
+
+async function setActFilter(k: string) {
+  actFilter.value = k
+  acts.value = (await api.get(`/datasets/${slug}/activity`, { params: { kind: k } })).data
+}
+async function submitPost() {
+  if (!postForm.value.content_zh.trim()) return
+  await api.post('/posts', { content_zh: postForm.value.content_zh, dataset_id: d.value.id,
+                             visibility: 'platform', tags: [d.value.slug] })
+  postForm.value.content_zh = ''; loadTab('feed')
+}
+async function openAttach() {
+  const gg = (await api.get('/groups')).data
+  groupsForAttach.value = [...gg.mine, ...gg.discover]; attachSlug.value = ''; showAttach.value = true
+}
+async function doAttach() {
+  if (!attachSlug.value) { alert('请选择课题组'); return }
+  try {
+    await api.post(`/datasets/${slug}/attach-request`, null, { params: { group_slug: attachSlug.value } })
+    showAttach.value = false; d.value = (await api.get(`/datasets/${slug}`)).data
+    alert('已提交并入申请，待课题组管理员审批')
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+async function doDetach() {
+  if (!confirm('确认申请移出当前课题组？需课题组管理员同意')) return
+  try {
+    await api.post(`/datasets/${slug}/detach-request`)
+    d.value = (await api.get(`/datasets/${slug}`)).data; alert('已提交移出申请')
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+const actColor = (x: string) => x === 'version' ? '#2d4a7c' : x === 'code' ? '#4b5563' : '#7c2d3a'
+const actLabel = (x: string) => x === 'version' ? '版本' : x === 'code' ? '代码' : '勘误'
 
 // ---------- bug ----------
 async function submitBug() {
@@ -161,6 +199,16 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           {{ t('ds.founder') }}：<router-link :to="`/users/${d.founder.id}`" class="text-accent hover:underline">{{ d.founder.name }}</router-link>
           · {{ t('ds.contact') }}：{{ d.founder.contact }}
         </p>
+        <p class="text-sm mt-1 text-gray-500">
+          <template v-if="d.group">{{ t('ds.groupOf') }}：<router-link :to="`/groups/${d.group.slug}`" class="text-accent hover:underline">{{ d.group.name_zh }}</router-link></template>
+          <span v-else class="italic">{{ t('ds.standalone') }}</span>
+          <template v-if="d.is_admin && !d.pending_group_request">
+            <span class="text-gray-300"> · </span>
+            <button v-if="!d.group" class="text-accent hover:underline" @click="openAttach">{{ t('ds.attachToGroup') }}</button>
+            <button v-else class="text-accent2 hover:underline" @click="doDetach">{{ t('ds.detachFromGroup') }}</button>
+          </template>
+          <span v-if="d.pending_group_request" class="text-accent2"> · {{ t('ds.requestPending') }}（{{ d.pending_group_request.kind==='attach'?'并入':'移出' }} {{ d.pending_group_request.group_name }}）</span>
+        </p>
       </div>
       <div class="flex gap-2">
         <button v-if="d.is_admin" class="btn-ghost" @click="openEdit">编辑数据集</button>
@@ -213,6 +261,28 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <span v-else>{{ p.title }}</span> · {{ p.venue }} ({{ p.year }})
             </li>
           </ul>
+        </div>
+      </div>
+
+      <!-- activity 更新记录 -->
+      <div v-else-if="tab==='activity'">
+        <div class="flex gap-1 mb-4">
+          <button v-for="[k,l] in [['all','ds.filterAll'],['version','ds.filterVersion'],['bug','ds.filterBug'],['code','ds.filterCode']]" :key="k"
+            @click="setActFilter(k)"
+            :class="['px-3 py-1 rounded text-xs border transition', actFilter===k ? 'bg-accent text-white border-accent' : 'border-line text-gray-500 bg-white hover:bg-paper']">
+            {{ t(l) }}
+          </button>
+        </div>
+        <div class="rounded-lg border border-line bg-white divide-y divide-line">
+          <div v-for="(e,i) in acts" :key="i" class="px-4 py-3 flex items-start gap-3">
+            <span class="dot mt-1.5" :style="{ background: actColor(e.type) }"></span>
+            <div class="min-w-0 flex-1">
+              <div class="text-sm text-gray-800">{{ e.title }}</div>
+              <div v-if="e.detail" class="text-xs text-gray-500 mt-0.5 line-clamp-2">{{ e.detail }}</div>
+            </div>
+            <div class="text-xs text-gray-400 whitespace-nowrap">{{ actLabel(e.type) }}<span v-if="e.at"> · {{ (e.at||'').slice(0,10) }}</span></div>
+          </div>
+          <p v-if="!acts.length" class="px-4 py-4 text-gray-400 text-sm">{{ t('ds.noActivity') }}</p>
         </div>
       </div>
 
@@ -329,6 +399,22 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
       </div>
 
+      <!-- feed 研究广场（该数据集相关讨论） -->
+      <div v-else-if="tab==='feed'">
+        <div v-if="d.is_member" class="card mb-4">
+          <textarea v-model="postForm.content_zh" class="input" :placeholder="t('ds.postHere')"></textarea>
+          <div class="flex justify-end mt-2"><button class="btn-primary text-sm" @click="submitPost">{{ t('feed.post') }}</button></div>
+        </div>
+        <div v-for="p in posts" :key="p.id" class="card mb-2">
+          <div class="flex items-center gap-2 text-sm">
+            <router-link :to="`/users/${p.author_id}`" class="text-accent hover:underline">{{ p.author_name }}</router-link>
+          </div>
+          <p class="mt-1 text-sm">{{ p.content_zh }}</p>
+          <div class="mt-2 flex gap-1"><span v-for="tg in p.tags" :key="tg" class="tag">{{ tg }}</span></div>
+        </div>
+        <p v-if="!posts.length" class="text-gray-400 text-sm">{{ t('ds.noPosts') }}</p>
+      </div>
+
       <!-- verify -->
       <div v-else-if="tab==='verify'">
         <p class="text-xs text-gray-500 mb-3">规则/AI 只发现与起草，绝不静默改原始数据；一键生成勘误草稿走评分制审核。</p>
@@ -341,6 +427,22 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <span v-else class="tag">{{ f.status }}</span>
         </div>
         <p v-if="!flags.length" class="text-gray-400 text-sm">暂无核验标记。</p>
+      </div>
+    </div>
+
+    <!-- 申请并入课题组 -->
+    <div v-if="showAttach" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showAttach=false">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
+        <h3 class="text-lg mb-1">{{ t('ds.attachToGroup') }}</h3>
+        <p class="text-xs text-gray-400 mb-3">并入需所选课题组的管理员同意；并入后如需移出，同样需该组管理员同意。</p>
+        <select v-model="attachSlug" class="input mb-3">
+          <option value="">选择课题组…</option>
+          <option v-for="gg in groupsForAttach" :key="gg.slug" :value="gg.slug">{{ gg.name_zh }}</option>
+        </select>
+        <div class="flex justify-end gap-2">
+          <button class="btn-ghost" @click="showAttach=false">{{ t('common.cancel') }}</button>
+          <button class="btn-primary" @click="doAttach">{{ t('common.submit') }}</button>
+        </div>
       </div>
     </div>
 

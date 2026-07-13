@@ -7,15 +7,17 @@ from ..core.storage import storage
 from ..core.ai_client import ai_client
 from ..core.permissions import (get_current_user, is_super_admin, is_dataset_member,
                                 is_dataset_admin, dataset_membership, has_dataset_perm)
-from ..core.audit import write_audit
+from ..core.audit import write_audit, record_contribution
 from ..models.user import User
-from ..models.dataset import Dataset, DatasetMember, JoinRequest, Variable
+from ..models.dataset import (Dataset, DatasetMember, JoinRequest, Variable,
+                              DatasetGroupRequest)
 from ..models.version import DataVersion, DownloadLog
 from ..models.literature import (LitTopic, LitRef, Publication, DatasetSummary)
-from ..models.group import ResearchGroup
+from ..models.group import ResearchGroup, Charter
 from ..models.correction import Bug
+from ..models.code import CodeScript
 from ..models.governance import VerifyFlag
-from ..schemas.models import VersionIn, LitRefIn
+from ..schemas.models import VersionIn, LitRefIn, DatasetIn
 
 router = APIRouter(tags=["datasets"])
 
@@ -30,7 +32,7 @@ def _get_ds(db, slug) -> Dataset:
 def _ds_card(db, d, user):
     """首页/发现页用的数据集卡片：带课题组、当前版本、协作活跃度信号（只读）。"""
     n = db.query(DatasetMember).filter_by(dataset_id=d.id).count()
-    g = db.get(ResearchGroup, d.group_id)
+    g = db.get(ResearchGroup, d.group_id) if d.group_id else None
     cur = db.query(DataVersion).filter_by(dataset_id=d.id, is_current=True).first()
     pending = db.query(Bug).filter_by(dataset_id=d.id, status="pending").count()
     open_flags = db.query(VerifyFlag).filter_by(dataset_id=d.id, status="open").count()
@@ -51,6 +53,20 @@ def wall(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
             db.query(Dataset).filter_by(is_deleted=False, is_public=True).all()]
 
 
+def _recent_events(db, d):
+    """数据集近期消息：最新版本 + 最新勘误，供首页直观展示。"""
+    ev = []
+    v = db.query(DataVersion).filter_by(dataset_id=d.id).order_by(DataVersion.id.desc()).first()
+    if v:
+        ev.append({"type": "version", "text": f"发布 {v.version_id}",
+                   "at": str(v.release_date)[:10] if v.release_date else ""})
+    b = db.query(Bug).filter_by(dataset_id=d.id).order_by(Bug.id.desc()).first()
+    if b:
+        ev.append({"type": "bug", "text": f"勘误 #{b.id}（{b.status}）",
+                   "at": str(b.reviewed_at)[:10] if b.reviewed_at else ""})
+    return ev
+
+
 @router.get("/datasets/mine")
 def my_datasets(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """我参与（成员/维护者/发起人）的数据集，按待办协作量排序，供首页直达协作。"""
@@ -59,9 +75,90 @@ def my_datasets(db: Session = Depends(get_db), user: User = Depends(get_current_
     cards = []
     for d in db.query(Dataset).filter(Dataset.id.in_(ds_ids or [-1]),
                                        Dataset.is_deleted == False).all():
-        cards.append(_ds_card(db, d, user))
+        card = _ds_card(db, d, user)
+        card["recent"] = _recent_events(db, d)
+        cards.append(card)
     cards.sort(key=lambda c: (c["pending_bugs"] + c["open_flags"]), reverse=True)
     return cards
+
+
+@router.post("/datasets")
+def create_standalone_dataset(body: DatasetIn, db: Session = Depends(get_db),
+                              user: User = Depends(get_current_user)):
+    """独立创建数据集（不归属任何课题组）。创建者即发起人/数据集管理员。"""
+    if db.query(Dataset).filter_by(slug=body.slug).first():
+        raise HTTPException(400, "数据集 slug 已存在")
+    d = Dataset(group_id=None, founder_id=user.id, **body.model_dump())
+    db.add(d); db.flush()
+    db.add(DatasetMember(dataset_id=d.id, user_id=user.id, ds_role="founder",
+                         joined_at=datetime.utcnow(), approved_by=user.id))
+    db.add(Charter(scope="dataset", ref_id=d.id,
+                   body_zh="（请数据集发起人编辑本数据集公约）", version=1, updated_by=user.id))
+    record_contribution(db, user.id, "dataset_founder", "dataset", d.id, d.id, weight=30)
+    write_audit(db, user.id, "dataset.create_standalone", "dataset", d.id)
+    db.commit()
+    return {"id": d.id, "slug": d.slug}
+
+
+@router.get("/datasets/{slug}/activity")
+def dataset_activity(slug: str, kind: str = "all", db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """更新记录时间线：版本发布 / 勘误 / 处理代码，可用 kind 过滤（all|version|bug|code）。"""
+    d = _get_ds(db, slug)
+    items = []
+    if kind in ("all", "version"):
+        for v in db.query(DataVersion).filter_by(dataset_id=d.id).all():
+            items.append({"type": "version", "title": f"发布版本 {v.version_id}",
+                          "detail": v.changelog_zh or "", "ref": v.version_id,
+                          "at": str(v.release_date) if v.release_date else None, "sort": v.id})
+    if kind in ("all", "bug"):
+        for b in db.query(Bug).filter_by(dataset_id=d.id).all():
+            items.append({"type": "bug", "title": f"勘误 #{b.id}（{b.status}）",
+                          "detail": b.description_zh or "", "ref": b.id,
+                          "at": str(b.reviewed_at) if b.reviewed_at else None, "sort": b.id})
+    if kind in ("all", "code"):
+        for c in db.query(CodeScript).filter_by(dataset_id=d.id).all():
+            items.append({"type": "code", "title": f"处理代码 {c.filename}",
+                          "detail": c.title_zh or "", "ref": c.id, "at": None, "sort": c.id})
+    items.sort(key=lambda x: (x["at"] is not None, x["at"] or "", x["sort"]), reverse=True)
+    return items
+
+
+@router.post("/datasets/{slug}/attach-request")
+def attach_request(slug: str, group_slug: str, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """数据集管理员申请把（独立）数据集并入某课题组，待该组管理员审批。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集发起人/管理员可申请归属")
+    if d.group_id:
+        raise HTTPException(400, "数据集已归属某课题组，请先申请移出")
+    g = db.query(ResearchGroup).filter_by(slug=group_slug, is_deleted=False).first()
+    if not g:
+        raise HTTPException(404, "课题组不存在")
+    if db.query(DatasetGroupRequest).filter_by(dataset_id=d.id, status="pending").first():
+        raise HTTPException(400, "已有待处理的归属申请")
+    r = DatasetGroupRequest(dataset_id=d.id, group_id=g.id, kind="attach",
+                            requested_by=user.id, status="pending", created_at=datetime.utcnow())
+    db.add(r); db.commit()
+    return {"id": r.id, "status": "pending"}
+
+
+@router.post("/datasets/{slug}/detach-request")
+def detach_request(slug: str, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """数据集管理员申请把数据集移出当前课题组（变为独立），需该组管理员同意。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集发起人/管理员可申请移出")
+    if not d.group_id:
+        raise HTTPException(400, "数据集当前不属于任何课题组")
+    if db.query(DatasetGroupRequest).filter_by(dataset_id=d.id, status="pending").first():
+        raise HTTPException(400, "已有待处理的归属申请")
+    r = DatasetGroupRequest(dataset_id=d.id, group_id=d.group_id, kind="detach",
+                            requested_by=user.id, status="pending", created_at=datetime.utcnow())
+    db.add(r); db.commit()
+    return {"id": r.id, "status": "pending"}
 
 
 @router.get("/datasets/{slug}")
@@ -78,9 +175,17 @@ def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_cu
                           "ds_role": m.ds_role, "joined_at": str(m.joined_at),
                           "approved_by": m.approved_by})
     pubs = db.query(Publication).filter_by(dataset_id=d.id).all()
+    grp = db.get(ResearchGroup, d.group_id) if d.group_id else None
+    pend = db.query(DatasetGroupRequest).filter_by(
+        dataset_id=d.id, status="pending").first()
+    pend_group = db.get(ResearchGroup, pend.group_id) if pend else None
     return {
         "id": d.id, "slug": d.slug, "name_zh": d.name_zh, "name_en": d.name_en,
         "desc_zh": d.desc_zh, "icon": d.icon, "is_sensitive": d.is_sensitive,
+        "group": ({"slug": grp.slug, "name_zh": grp.name_zh} if grp else None),
+        "pending_group_request": ({"kind": pend.kind, "group_name": pend_group.name_zh
+                                   if pend_group else "", "status": pend.status}
+                                  if pend else None),
         "founder": {"id": d.founder_id, "name": founder.display_name if founder else "",
                     "contact": d.founder_contact},
         "is_member": member, "is_admin": is_dataset_admin(db, d.id, user),

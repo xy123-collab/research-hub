@@ -6,7 +6,9 @@ from ..core.permissions import get_current_user, is_super_admin, is_group_admin,
 from ..core.audit import write_audit
 from ..models.user import User
 from ..models.group import ResearchGroup, GroupMember, GroupJoinRequest, Charter
-from ..models.dataset import Dataset, DatasetMember
+from ..models.dataset import Dataset, DatasetMember, DatasetGroupRequest
+from ..models.version import DataVersion
+from ..models.community import Post
 from ..schemas.models import GroupIn, DatasetIn
 
 router = APIRouter(tags=["groups"])
@@ -144,3 +146,75 @@ def create_dataset(slug: str, body: DatasetIn, user: User = Depends(get_current_
     write_audit(db, user.id, "dataset.create", "dataset", d.id)
     db.commit()
     return {"id": d.id, "slug": d.slug}
+
+
+# ---------- 组内动态（成员发帖 + 数据更新）----------
+@router.get("/groups/{slug}/activity")
+def group_activity(slug: str, user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    g = db.query(ResearchGroup).filter_by(slug=slug, is_deleted=False).first()
+    if not g:
+        raise HTTPException(404, "课题组不存在")
+    member_ids = [m.user_id for m in db.query(GroupMember)
+                  .filter_by(group_id=g.id, status="active").all()]
+    ds = db.query(Dataset).filter_by(group_id=g.id, is_deleted=False).all()
+    ds_ids = [d.id for d in ds]
+    ds_name = {d.id: d.name_zh for d in ds}
+    ds_slug = {d.id: d.slug for d in ds}
+    items = []
+    for p in (db.query(Post).filter(Post.author_id.in_(member_ids or [-1]))
+              .order_by(Post.id.desc()).limit(20).all()):
+        if p.visibility == "private":
+            continue
+        u = db.get(User, p.author_id)
+        items.append({"type": "post", "who": u.display_name if u else "",
+                      "title": (p.content_zh or "")[:80], "ref": p.id,
+                      "at": None, "sort": p.id})
+    for v in (db.query(DataVersion).filter(DataVersion.dataset_id.in_(ds_ids or [-1]))
+              .order_by(DataVersion.id.desc()).limit(20).all()):
+        u = db.get(User, v.created_by)
+        items.append({"type": "version", "who": u.display_name if u else "",
+                      "title": f"{ds_name.get(v.dataset_id,'')} 发布 {v.version_id}",
+                      "ref": ds_slug.get(v.dataset_id), "sort": v.id,
+                      "at": str(v.release_date) if v.release_date else None})
+    items.sort(key=lambda x: (x["at"] is not None, x["at"] or "", x["sort"]), reverse=True)
+    return items[:25]
+
+
+# ---------- 数据集归属申请（课题组管理员审批）----------
+@router.get("/groups/{slug}/dataset-requests")
+def list_dataset_requests(slug: str, user: User = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    g = db.query(ResearchGroup).filter_by(slug=slug, is_deleted=False).first()
+    if not g:
+        raise HTTPException(404, "课题组不存在")
+    if not is_group_admin(db, g.id, user):
+        raise HTTPException(403, "需要课题组管理员")
+    out = []
+    for r in db.query(DatasetGroupRequest).filter_by(group_id=g.id, status="pending").all():
+        d = db.get(Dataset, r.dataset_id)
+        u = db.get(User, r.requested_by)
+        out.append({"id": r.id, "kind": r.kind,
+                    "dataset_name": d.name_zh if d else "", "dataset_slug": d.slug if d else "",
+                    "requested_by": u.display_name if u else ""})
+    return out
+
+
+@router.post("/dataset-group-requests/{rid}/decide")
+def decide_dataset_request(rid: int, approve: bool, user: User = Depends(get_current_user),
+                           db: Session = Depends(get_db)):
+    r = db.get(DatasetGroupRequest, rid)
+    if not r or r.status != "pending":
+        raise HTTPException(404, "申请不存在或已处理")
+    if not is_group_admin(db, r.group_id, user):
+        raise HTTPException(403, "需要课题组管理员")
+    r.status = "approved" if approve else "rejected"
+    r.decided_by = user.id; r.decided_at = datetime.utcnow()
+    if approve:
+        d = db.get(Dataset, r.dataset_id)
+        if d:
+            d.group_id = r.group_id if r.kind == "attach" else None
+    write_audit(db, user.id, f"dataset.{r.kind}.decide", "dataset", r.dataset_id,
+                {"approve": approve})
+    db.commit()
+    return {"ok": True, "status": r.status}

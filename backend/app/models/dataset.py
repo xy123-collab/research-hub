@@ -29,6 +29,20 @@ class DatasetMember(Base):
     approved_by = Column(Integer, ForeignKey("users.id"))
 
 
+class DatasetGroupRequest(Base):
+    """数据集归属申请：数据集管理员申请并入/移出某课题组，需课题组管理员审批。"""
+    __tablename__ = "dataset_group_requests"
+    id = Column(Integer, primary_key=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    group_id = Column(Integer, ForeignKey("research_groups.id"))
+    kind = Column(String(10))            # attach | detach
+    requested_by = Column(Integer, ForeignKey("users.id"))
+    status = Column(String(20), default="pending")   # pending|approved|rejected
+    decided_by = Column(Integer, ForeignKey("users.id"))
+    decided_at = Column(DateTime)
+    created_at = Column(DateTime)
+
+
 class JoinRequest(Base):
     __tablename__ = "join_requests"
     id = Column(Integer, primary_key=True)

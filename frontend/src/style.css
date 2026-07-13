@@ -3,13 +3,30 @@
 @tailwind utilities;
 
 :root { --accent: #2d4a7c; }
-body { background: #faf9f6; color: #1a1a1a; }
-.card { @apply bg-card border border-line rounded-lg p-5 transition hover:shadow-md; }
+body { background: #faf9f6; color: #1a1a1a; -webkit-font-smoothing: antialiased; }
+
+/* 卡片：克制的边框、极轻的悬停反馈，无重阴影 */
+.card { @apply bg-card border border-line rounded-lg p-5 transition duration-150; }
+.card:hover { border-color: #d3cfc4; box-shadow: 0 1px 3px rgba(26,26,26,.05); }
+
 .btn { @apply px-4 py-2 rounded-md text-sm font-medium transition; }
 .btn-primary { @apply btn bg-accent text-white hover:opacity-90; }
 .btn-ghost { @apply btn border border-line bg-white hover:bg-paper; }
-.tag { @apply inline-block text-[11px] uppercase tracking-wide px-2 py-0.5 rounded bg-paper border border-line text-accent; }
+
+/* 标签：中性；版本号用等宽 chip */
+.tag { @apply inline-block text-[11px] tracking-wide px-2 py-0.5 rounded bg-paper border border-line text-gray-600; }
+.chip-ver { @apply inline-block font-mono text-[11px] px-1.5 py-0.5 rounded border border-line text-accent bg-white; }
+
 .input { @apply w-full border border-line rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:border-accent; }
 .label-cap { @apply text-[11px] uppercase tracking-wider text-gray-500; }
+.eyebrow { @apply text-[11px] uppercase tracking-[0.18em] text-gray-400; }
+
+/* 极简线性图标：细描边、随文字色 */
+.ico { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.5; fill: none;
+       stroke-linecap: round; stroke-linejoin: round; }
+
 h1,h2,h3 { @apply font-serif; }
+h1 { letter-spacing: -0.01em; }
 pre { @apply bg-ink text-gray-100 rounded-md p-4 text-xs overflow-x-auto font-mono; }
+
+.dot { width: 7px; height: 7px; border-radius: 9999px; display: inline-block; }

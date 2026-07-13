@@ -34,9 +34,10 @@ function toggleLang() {
           </router-link>
           <nav class="flex gap-4 text-sm">
             <router-link to="/" class="hover:text-accent">{{ t('nav.home') }}</router-link>
+            <router-link to="/groups" class="hover:text-accent">{{ t('nav.groups') }}</router-link>
             <router-link to="/feed" class="hover:text-accent">{{ t('nav.feed') }}</router-link>
-            <router-link to="/skills" class="hover:text-accent">{{ t('nav.skills') }}</router-link>
             <router-link to="/me" class="hover:text-accent">{{ t('nav.profile') }}</router-link>
+            <router-link to="/skills" class="hover:text-accent">{{ t('nav.skills') }}</router-link>
             <router-link to="/admin" class="hover:text-accent">{{ t('nav.admin') }}</router-link>
           </nav>
         </div>
