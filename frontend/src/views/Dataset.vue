@@ -171,6 +171,14 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
     <p v-if="!d.is_member" class="text-xs text-accent2 mt-2">⚠ {{ t('ds.notMemberTip') }}</p>
 
+    <!-- 成员协作快捷条：核心协作动作一键直达 -->
+    <div v-if="d.is_member" class="flex flex-wrap gap-2 mt-4">
+      <button class="btn-ghost text-xs" @click="loadTab('bugs')">📝 {{ t('ds.submitBug') }}</button>
+      <button class="btn-ghost text-xs" @click="loadTab('code'); showCodeAdd=true">💻 {{ t('ds.code') }}</button>
+      <button class="btn-ghost text-xs" @click="loadTab('verify')">🔍 {{ t('ds.verify') }}</button>
+      <button v-if="d.is_admin" class="btn-primary text-xs" @click="loadTab('versions'); openPublish()">🗂️ {{ t('ds.publishVersion') }}</button>
+    </div>
+
     <div class="flex gap-1 border-b border-line mt-5 text-sm overflow-x-auto">
       <button v-for="[k,label] in tabs" :key="k" @click="loadTab(k)"
         :class="['px-3 py-2 whitespace-nowrap', tab===k?'border-b-2 border-accent text-accent':'text-gray-500']">

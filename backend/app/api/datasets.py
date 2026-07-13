@@ -12,6 +12,9 @@ from ..models.user import User
 from ..models.dataset import Dataset, DatasetMember, JoinRequest, Variable
 from ..models.version import DataVersion, DownloadLog
 from ..models.literature import (LitTopic, LitRef, Publication, DatasetSummary)
+from ..models.group import ResearchGroup
+from ..models.correction import Bug
+from ..models.governance import VerifyFlag
 from ..schemas.models import VersionIn, LitRefIn
 
 router = APIRouter(tags=["datasets"])
@@ -24,15 +27,41 @@ def _get_ds(db, slug) -> Dataset:
     return d
 
 
+def _ds_card(db, d, user):
+    """首页/发现页用的数据集卡片：带课题组、当前版本、协作活跃度信号（只读）。"""
+    n = db.query(DatasetMember).filter_by(dataset_id=d.id).count()
+    g = db.get(ResearchGroup, d.group_id)
+    cur = db.query(DataVersion).filter_by(dataset_id=d.id, is_current=True).first()
+    pending = db.query(Bug).filter_by(dataset_id=d.id, status="pending").count()
+    open_flags = db.query(VerifyFlag).filter_by(dataset_id=d.id, status="open").count()
+    m = dataset_membership(db, d.id, user.id)
+    return {"id": d.id, "slug": d.slug, "name_zh": d.name_zh, "name_en": d.name_en,
+            "icon": d.icon, "desc_zh": d.desc_zh, "group_id": d.group_id,
+            "group_name": g.name_zh if g else "", "group_slug": g.slug if g else "",
+            "member_count": n, "is_sensitive": d.is_sensitive,
+            "current_version": cur.version_id if cur else None,
+            "pending_bugs": pending, "open_flags": open_flags,
+            "is_member": m is not None, "my_role": m.ds_role if m else None}
+
+
 @router.get("/datasets")
 def wall(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    out = []
-    for d in db.query(Dataset).filter_by(is_deleted=False, is_public=True).all():
-        n = db.query(DatasetMember).filter_by(dataset_id=d.id).count()
-        out.append({"id": d.id, "slug": d.slug, "name_zh": d.name_zh, "icon": d.icon,
-                    "desc_zh": d.desc_zh, "group_id": d.group_id, "member_count": n,
-                    "is_sensitive": d.is_sensitive})
-    return out
+    """全平台公开数据集墙（发现用）。字段向后兼容，仅新增协作信号。"""
+    return [_ds_card(db, d, user) for d in
+            db.query(Dataset).filter_by(is_deleted=False, is_public=True).all()]
+
+
+@router.get("/datasets/mine")
+def my_datasets(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """我参与（成员/维护者/发起人）的数据集，按待办协作量排序，供首页直达协作。"""
+    ds_ids = [m.dataset_id for m in
+              db.query(DatasetMember).filter_by(user_id=user.id).all()]
+    cards = []
+    for d in db.query(Dataset).filter(Dataset.id.in_(ds_ids or [-1]),
+                                       Dataset.is_deleted == False).all():
+        cards.append(_ds_card(db, d, user))
+    cards.sort(key=lambda c: (c["pending_bugs"] + c["open_flags"]), reverse=True)
+    return cards
 
 
 @router.get("/datasets/{slug}")
