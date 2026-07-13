@@ -26,6 +26,9 @@ if [ "${SEED_ON_START:-true}" = "true" ]; then
 fi
 
 echo "[entrypoint] 启动 Gunicorn..."
+# 免费档 512MB：默认单 worker；--max-requests 让 worker 处理一定请求数后回收，
+# 释放偶发的 pandas 沙箱内存，避免缓慢增长触发 OOM 重启。
 exec gunicorn app.main:app \
   -k uvicorn.workers.UvicornWorker \
-  -w "${WEB_CONCURRENCY:-3}" -b 0.0.0.0:8000 --timeout 120
+  -w "${WEB_CONCURRENCY:-1}" -b 0.0.0.0:8000 --timeout 120 \
+  --max-requests 400 --max-requests-jitter 50

@@ -35,7 +35,7 @@ services:
       - key: SEED_ON_START
         value: "true"                # 首次自动灌入 seed 假数据；之后库非空会自动跳过
       - key: WEB_CONCURRENCY
-        value: "2"
+        value: "1"                   # 免费档 512MB：单 worker 最稳；多 worker 易 OOM 重启
       - key: PYTHONPATH
         value: "/app"
 
