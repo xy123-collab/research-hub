@@ -42,7 +42,7 @@ const tabs = computed(() => {
   const base: string[][] = [
     ['overview', 'ds.overview'], ['activity', 'ds.activity'], ['dashboard', 'ds.dashboard'],
     ['versions', 'ds.versions'], ['bugs', 'ds.bugs'], ['code', 'ds.code'],
-    ['literature', 'ds.literature'], ['verify', 'ds.verify'], ['feed', 'ds.feed']
+    ['literature', 'ds.literature'], ['feed', 'ds.feed']
   ]
   if (d.value?.is_admin) base.push(['access', 'ds.access'])
   return base
@@ -434,9 +434,14 @@ async function matchCitation() {
 
 function exportLit() { downloadFile(`/datasets/${slug}/literature/export`, `${slug}_literature.xlsx`) }
 
+const summaryPrompt = ref(''); const summarizing = ref(false)
 async function aiSummarize() {
-  aiSummary.value = '生成中…'
-  aiSummary.value = (await api.post(`/datasets/${slug}/literature/ai-summarize`)).data.summary
+  summarizing.value = true; aiSummary.value = '生成中…'
+  try {
+    aiSummary.value = (await api.post(`/datasets/${slug}/literature/ai-summarize`,
+      { prompt: summaryPrompt.value })).data.summary
+  } catch (e: any) { aiSummary.value = e.response?.data?.detail || '生成失败' }
+  finally { summarizing.value = false }
 }
 
 // ---------- 批量文献导入 + AI 真实性核验 ----------
@@ -524,24 +529,33 @@ const cloud = computed(() => {
   const clusters: Record<number, string[]> = {}
   words.forEach(w => { const c = find(idx[w]); (clusters[c] = clusters[c] || []).push(w) })
   const groups = Object.values(clusters).sort((a, b) => b.length - a.length)
-  // 分区网格排布
-  const W = 900, H = 500, cols = Math.ceil(Math.sqrt(groups.length)) || 1
-  const rows = Math.ceil(groups.length / cols)
-  const cw = W / cols, ch = H / rows
-  const palette = ['#2d4a7c', '#7c2d3a', '#a15c2b', '#3f6f4f', '#5b4b8a', '#0f766e', '#9d174d']
+  const W = 900, H = 520
+  const palette = ['#2d4a7c', '#7c2d3a', '#a15c2b', '#3f6f4f', '#5b4b8a', '#0f766e', '#9d174d', '#b45309']
   const maxF = Math.max(...words.map(w => freq[w]))
-  const nodes: any[] = []
+  const placed: any[] = []   // 已放置的包围盒，用于碰撞检测
+  const overlap = (a: any, b: any) =>
+    Math.abs(a.x - b.x) * 2 < (a.bw + b.bw) && Math.abs(a.y - b.y) * 2 < (a.bh + b.bh)
+  // 聚类内的词连续放置（同簇相邻），整体按频率从大到小；阿基米德螺旋 + 碰撞避让
+  const ordered: { w: string; color: string }[] = []
   groups.forEach((g, gi) => {
-    const cx = (gi % cols) * cw + cw / 2, cy = Math.floor(gi / cols) * ch + ch / 2
-    const color = palette[gi % palette.length]
     g.sort((a, b) => freq[b] - freq[a])
-    g.forEach((w, wi) => {
-      // 螺旋摆放
-      const ang = wi * 2.399, rad = 8 + wi * 9
-      const size = 12 + (freq[w] / maxF) * 30
-      nodes.push({ w, x: cx + Math.cos(ang) * rad, y: cy + Math.sin(ang) * rad, size, color, count: freq[w] })
-    })
+    g.forEach(w => ordered.push({ w, color: palette[gi % palette.length] }))
   })
+  ordered.sort((a, b) => freq[b.w] - freq[a.w])
+  const nodes: any[] = []
+  for (const { w, color } of ordered) {
+    const size = 13 + (freq[w] / maxF) * 34
+    const bw = w.length * size * 0.62 + 6, bh = size + 6   // 估算包围盒
+    let x = W / 2, y = H / 2, ok = false
+    for (let t = 0; t < 900; t++) {
+      const ang = 0.5 * t, rad = 4 * ang
+      x = W / 2 + rad * Math.cos(ang)
+      y = H / 2 + rad * Math.sin(ang)
+      const box = { x, y, bw, bh }
+      if (!placed.some(p => overlap(box, p))) { placed.push(box); ok = true; break }
+    }
+    if (ok) nodes.push({ w, x, y, size, color, count: freq[w] })
+  }
   return { nodes, w: W, h: H }
 })
 // 缩放/平移
@@ -555,7 +569,25 @@ function mapDown(e: MouseEvent) { dragging.value = true; dsx = e.clientX; dsy = 
 function mapMove(e: MouseEvent) { if (dragging.value) { mapX.value = dox + (e.clientX - dsx); mapY.value = doy + (e.clientY - dsy) } }
 function mapUp() { dragging.value = false }
 function mapReset() { mapZoom.value = 1; mapX.value = 0; mapY.value = 0 }
-async function draftFromFlag(id: number) { await api.post(`/verify-flags/${id}/draft-bug`); loadTab('verify') }
+// ---------- AI 勘误助手（悬浮宠物）----------
+const showHint = ref(false); const hintMode = ref<'check' | 'patterns'>('check')
+const hintPrompt = ref(''); const hintResult = ref(''); const hintLoading = ref(false)
+const hintDirections = ref<string[]>([])
+async function openHint() {
+  showHint.value = true
+  if (!hintDirections.value.length) {
+    try { hintDirections.value = (await api.get(`/datasets/${slug}/check-directions`)).data.directions } catch {}
+  }
+}
+async function runHint() {
+  hintLoading.value = true; hintResult.value = '运行中…'
+  try {
+    const r = (await api.post(`/datasets/${slug}/ai-hint`,
+      { mode: hintMode.value, prompt: hintPrompt.value })).data
+    hintResult.value = r.hint
+  } catch (e: any) { hintResult.value = e.response?.data?.detail || '运行失败' }
+  finally { hintLoading.value = false }
+}
 const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 </script>
 
@@ -605,7 +637,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     <div v-if="d.is_member" class="flex flex-wrap gap-2 mt-4">
       <button class="btn-ghost text-xs flex items-center gap-1.5" @click="loadTab('bugs')"><Icon name="edit" class="ico" style="width:15px;height:15px" /> {{ t('ds.submitBug') }}</button>
       <button class="btn-ghost text-xs flex items-center gap-1.5" @click="loadTab('code'); showCodeAdd=true"><Icon name="code" class="ico" style="width:15px;height:15px" /> {{ t('ds.code') }}</button>
-      <button class="btn-ghost text-xs flex items-center gap-1.5" @click="loadTab('verify')"><Icon name="verify" class="ico" style="width:15px;height:15px" /> {{ t('ds.verify') }}</button>
+      <button class="btn-ghost text-xs flex items-center gap-1.5" @click="openHint"><Icon name="verify" class="ico" style="width:15px;height:15px" /> AI 勘误助手</button>
       <button v-if="!d.is_admin && d.settings?.download_policy==='approval' && !canDownloadCurrent" class="btn-ghost text-xs flex items-center gap-1.5" @click="openDlReq"><Icon name="data" class="ico" style="width:15px;height:15px" /> 申请下载权限</button>
       <button v-if="canUploadCandidate" class="btn-ghost text-xs flex items-center gap-1.5" @click="showCand=true; loadCandidates()"><Icon name="publish" class="ico" style="width:15px;height:15px" /> 上传候选文件</button>
       <button v-if="d.is_admin" class="btn-ghost text-xs flex items-center gap-1.5" @click="loadTab('access')"><Icon name="users" class="ico" style="width:15px;height:15px" /> 成员与权限
@@ -798,61 +830,75 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 
       <!-- literature -->
       <div v-else-if="tab==='literature'">
-        <!-- 顶部操作条：上传收进一个按钮，导出显眼 -->
+        <!-- 顶部操作条 -->
         <div class="flex items-center gap-2 mb-3 flex-wrap">
           <h2 class="text-lg mr-auto">文献地图</h2>
-          <button v-if="d.is_member" class="btn-ghost text-sm" @click="aiSummarize">AI 总结话题</button>
           <button v-if="d.is_member" class="btn-primary text-sm" @click="exportLit">⭳ 一键导出全部文献</button>
           <button v-if="d.is_member" class="btn-primary text-sm" @click="showLitUpload=true">＋ 文献上传</button>
         </div>
-        <pre v-if="aiSummary" class="whitespace-pre-wrap bg-paper text-ink border border-line mb-3 text-sm p-2">{{ aiSummary }}</pre>
 
-        <!-- 主板块：按主题聚类的关键词地图（可缩放/平移）-->
-        <div class="card p-0 overflow-hidden">
-          <div class="flex items-center justify-between px-3 py-2 border-b border-line">
-            <span class="label-cap">主题聚类图 · 关键词越大表示相关文献越多</span>
-            <div class="flex items-center gap-1 text-xs">
-              <button class="btn-ghost px-2" @click="mapZoom=Math.min(5,mapZoom*1.2)">＋</button>
-              <button class="btn-ghost px-2" @click="mapZoom=Math.max(0.3,mapZoom*0.83)">－</button>
-              <button class="btn-ghost px-2" @click="mapReset">重置</button>
-            </div>
+        <!-- 主推：AI 文献综述（读取全部标题 + 自定义提示词）-->
+        <div class="card mb-3">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="label-cap mr-auto">AI 文献综述 · 基于已上传的 {{ lit.refs.length }} 篇标题</div>
+            <input v-if="d.is_member" v-model="summaryPrompt" class="input text-sm max-w-xs"
+              placeholder="可选：自定义方向，如按方法分类 / 找研究空白" @keyup.enter="aiSummarize" />
+            <button v-if="d.is_member" class="btn-primary text-sm" :disabled="summarizing" @click="aiSummarize">
+              {{ summarizing ? '生成中…' : '生成综述' }}</button>
           </div>
-          <div class="relative bg-paper" style="height:420px" @wheel.prevent="mapWheel"
-               @mousedown="mapDown" @mousemove="mapMove" @mouseup="mapUp" @mouseleave="mapUp">
-            <svg v-if="cloud.nodes.length" :viewBox="`0 0 ${cloud.w} ${cloud.h}`" class="w-full h-full select-none"
-                 :style="{ cursor: dragging ? 'grabbing' : 'grab' }">
-              <g :transform="`translate(${mapX},${mapY}) scale(${mapZoom})`">
-                <text v-for="(n,i) in cloud.nodes" :key="i" :x="n.x" :y="n.y"
-                      :font-size="n.size" :fill="n.color" text-anchor="middle"
-                      style="font-weight:600;cursor:default">
-                  {{ n.w }}<title>{{ n.w }}：{{ n.count }} 篇</title>
-                </text>
-              </g>
-            </svg>
-            <div v-else class="h-full flex items-center justify-center text-gray-400 text-sm">
-              暂无文献，添加后这里会自动生成主题聚类图。
-            </div>
-          </div>
+          <pre v-if="aiSummary" class="whitespace-pre-wrap bg-paper text-ink border border-line text-sm p-3 max-h-72 overflow-y-auto">{{ aiSummary }}</pre>
+          <p v-else class="text-gray-400 text-sm">点「生成综述」，AI 会读取全部文献标题输出结构化综述；也可在上方输入你的提示词做定制化总结。</p>
         </div>
 
-        <!-- 文献清单：滚动显示 + 就近的导出按钮 -->
-        <div class="card mt-3">
-          <div class="flex items-center justify-between mb-2">
-            <div class="label-cap">文献清单（{{ lit.refs.length }}）</div>
-            <button v-if="d.is_member && lit.refs.length" class="btn-ghost text-xs" @click="exportLit">⭳ 导出</button>
+        <!-- 地图 + 清单：左右分栏 -->
+        <div class="grid md:grid-cols-2 gap-3">
+          <!-- 左：主题聚类关键词图 -->
+          <div class="card p-0 overflow-hidden">
+            <div class="flex items-center justify-between px-3 py-2 border-b border-line">
+              <span class="label-cap">主题关键词图 · 越大表示相关文献越多</span>
+              <div class="flex items-center gap-1 text-xs">
+                <button class="btn-ghost px-2" @click="mapZoom=Math.min(5,mapZoom*1.2)">＋</button>
+                <button class="btn-ghost px-2" @click="mapZoom=Math.max(0.3,mapZoom*0.83)">－</button>
+                <button class="btn-ghost px-2" @click="mapReset">重置</button>
+              </div>
+            </div>
+            <div class="relative bg-paper" style="height:440px" @wheel.prevent="mapWheel"
+                 @mousedown="mapDown" @mousemove="mapMove" @mouseup="mapUp" @mouseleave="mapUp">
+              <svg v-if="cloud.nodes.length" :viewBox="`0 0 ${cloud.w} ${cloud.h}`" class="w-full h-full select-none"
+                   :style="{ cursor: dragging ? 'grabbing' : 'grab' }">
+                <g :transform="`translate(${mapX},${mapY}) scale(${mapZoom})`">
+                  <text v-for="(n,i) in cloud.nodes" :key="i" :x="n.x" :y="n.y"
+                        :font-size="n.size" :fill="n.color" text-anchor="middle"
+                        style="font-weight:600;cursor:default">
+                    {{ n.w }}<title>{{ n.w }}：{{ n.count }} 篇</title>
+                  </text>
+                </g>
+              </svg>
+              <div v-else class="h-full flex items-center justify-center text-gray-400 text-sm px-4 text-center">
+                文献较少时聚类图意义不大，建议以上方 AI 综述为主。上传更多文献后这里会自动成图。
+              </div>
+            </div>
           </div>
-          <div class="overflow-y-auto pr-1" style="max-height:320px">
-            <ul class="text-sm space-y-2">
-              <li v-for="r in lit.refs" :key="r.id" class="border-b border-line pb-2">
-                <div>
-                  <a v-if="r.url" :href="r.url" target="_blank" class="text-accent hover:underline">{{ r.title }} ↗</a>
-                  <span v-else>{{ r.title }}</span> · {{ r.authors }} · {{ r.venue }} ({{ r.year }})
-                  <span v-if="r.doi" class="text-gray-400"> · DOI {{ r.doi }}</span>
-                </div>
-                <div v-if="r.citation" class="text-xs text-gray-500 mt-0.5">引用格式：{{ r.citation }}</div>
-              </li>
-            </ul>
-            <p v-if="!lit.refs.length" class="text-gray-400 text-sm">暂无文献。</p>
+
+          <!-- 右：文献清单（滚动）-->
+          <div class="card p-0 overflow-hidden flex flex-col" style="height:490px">
+            <div class="flex items-center justify-between px-3 py-2 border-b border-line">
+              <span class="label-cap">文献清单（{{ lit.refs.length }}）</span>
+              <button v-if="d.is_member && lit.refs.length" class="btn-ghost text-xs" @click="exportLit">⭳ 导出</button>
+            </div>
+            <div class="overflow-y-auto px-3 py-2 flex-1">
+              <ul class="text-sm divide-y divide-line">
+                <li v-for="r in lit.refs" :key="r.id" class="py-2.5">
+                  <div class="font-medium">
+                    <a v-if="r.url" :href="r.url" target="_blank" class="text-accent hover:underline">{{ r.title }} ↗</a>
+                    <span v-else>{{ r.title }}</span>
+                  </div>
+                  <div class="text-xs text-gray-500 mt-0.5">{{ r.authors }} · {{ r.venue }} · {{ r.year }}<span v-if="r.doi"> · DOI {{ r.doi }}</span></div>
+                  <div v-if="r.citation" class="text-[11px] text-gray-400 mt-0.5">{{ r.citation }}</div>
+                </li>
+              </ul>
+              <p v-if="!lit.refs.length" class="text-gray-400 text-sm">暂无文献，点右上「文献上传」添加。</p>
+            </div>
           </div>
         </div>
 
@@ -1016,18 +1062,44 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
       </div>
 
-      <!-- verify -->
-      <div v-else-if="tab==='verify'">
-        <p class="text-xs text-gray-500 mb-3">规则/AI 只发现与起草，绝不静默改原始数据；一键生成勘误草稿走评分制审核。</p>
-        <div v-for="f in flags" :key="f.id" class="card mb-2 flex items-center justify-between">
-          <div class="text-sm">
-            <span class="tag">{{ f.source }}</span> {{ f.variable_name }} · {{ f.issue_desc }}
-            <span class="text-gray-400 text-xs">conf={{ f.confidence }}</span>
-          </div>
-          <button v-if="f.status==='open' && d.is_member" class="btn-ghost text-xs" @click="draftFromFlag(f.id)">一键生成勘误草稿</button>
-          <span v-else class="tag">{{ f.status }}</span>
+    </div>
+
+    <!-- ===== 悬浮勘误助手（宠物）：进入数据集即可见，点击打开 AI 勘误提示浮层 ===== -->
+    <button class="ds-pet" @click="openHint" title="AI 勘误助手：提示可能需要人工核查的方面">
+      <span class="ds-pet-emoji">🔍</span>
+      <span class="ds-pet-tip">勘误助手</span>
+    </button>
+
+    <div v-if="showHint" class="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-[70]" @click.self="showHint=false">
+      <div class="bg-white rounded-lg max-w-lg w-full p-5 m-4 max-h-[85vh] overflow-y-auto">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-lg flex items-center gap-2"><span>🔍</span> AI 勘误助手</h3>
+          <button class="text-gray-400" @click="showHint=false"><Icon name="close" class="ico" style="width:18px;height:18px" /></button>
         </div>
-        <p v-if="!flags.length" class="text-gray-400 text-sm">暂无核验标记。</p>
+        <p class="text-xs text-gray-500 mb-3">出于数据安全，助手<b>不读取原始数据、也不会自动改数</b>；它只基于变量清单与研究背景，<b>提示哪些方面可能存在问题、建议你去人工核查</b>。点一次运行一次。</p>
+
+        <!-- 预设方向 -->
+        <div class="mb-3">
+          <div class="label-cap mb-1">常见勘误方向（参考）</div>
+          <ul class="text-xs text-gray-600 space-y-0.5 max-h-28 overflow-y-auto pr-1">
+            <li v-for="(x,i) in hintDirections" :key="i">· {{ x }}</li>
+          </ul>
+        </div>
+
+        <div class="flex gap-1 border-b border-line mb-2 text-sm">
+          <button @click="hintMode='check'" :class="['px-3 py-1.5', hintMode==='check'?'border-b-2 border-accent text-accent':'text-gray-500']">按方向提示</button>
+          <button @click="hintMode='patterns'" :class="['px-3 py-1.5', hintMode==='patterns'?'border-b-2 border-accent text-accent':'text-gray-500']">从历史勘误总结规律</button>
+        </div>
+
+        <div v-if="hintMode==='check'" class="mb-2">
+          <input v-model="hintPrompt" class="input text-sm" placeholder="可选：限定方向，如「重点看官员任期与晋升字段」" @keyup.enter="runHint" />
+        </div>
+        <p v-else class="text-xs text-gray-500 mb-2">从本数据集（不足时并入全平台）已有勘误记录中，总结高频错误类型与注意事项。</p>
+
+        <button class="btn-primary text-sm" :disabled="hintLoading" @click="runHint">
+          {{ hintLoading ? '运行中…' : '运行一次' }}</button>
+
+        <pre v-if="hintResult" class="whitespace-pre-wrap bg-paper text-ink border border-line text-sm p-3 mt-3 max-h-72 overflow-y-auto">{{ hintResult }}</pre>
       </div>
     </div>
 
@@ -1432,4 +1504,19 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
   transition: transform .15s, box-shadow .15s;
 }
 .ds-download-fab:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(45, 74, 124, .45); }
+
+/* 悬浮勘误助手（宠物）：左下角，位于下载浮标上方 */
+.ds-pet {
+  position: fixed; left: 22px; bottom: 80px; z-index: 56;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  width: 58px; height: 58px; border-radius: 9999px;
+  background: radial-gradient(circle at 30% 30%, #6b8fd4, #2d4a7c);
+  color: #fff; box-shadow: 0 6px 20px rgba(45, 74, 124, .4);
+  transition: transform .15s, box-shadow .15s;
+  animation: petbob 2.4s ease-in-out infinite;
+}
+.ds-pet:hover { transform: translateY(-3px) scale(1.05); box-shadow: 0 10px 26px rgba(45,74,124,.5); }
+.ds-pet-emoji { font-size: 22px; line-height: 1; }
+.ds-pet-tip { font-size: 9px; margin-top: 1px; opacity: .9; }
+@keyframes petbob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-4px) } }
 </style>

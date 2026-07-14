@@ -169,6 +169,15 @@ class CitationTextIn(BaseModel):
     text: str
 
 
+class AiSummaryIn(BaseModel):
+    prompt: str = ""     # 用户自定义提示词，基于现有文献标题做定制化综述
+
+
+class AiHintIn(BaseModel):
+    prompt: str = ""     # 人工追加的方向提示词
+    mode: str = "check"  # check=提示可能有问题的方面 / patterns=从历史勘误总结规律
+
+
 class LitRefRow(BaseModel):
     title: str | None = None; authors: str | None = None; venue: str | None = None
     year: int | None = None; doi: str | None = None; url: str | None = None

@@ -100,34 +100,32 @@ def _delete_user(db, uid: int):
     db.execute(User.__table__.delete().where(User.__table__.c.id == uid))
 
 
-def _fix_luxinyi(db) -> bool:
-    """卢欣一 → 总管理员 + 密码 lxy.2001。返回是否成功（找到并更新）。
+def _fix_lixiaoyu_super_admin(db) -> bool:
+    """李小雨 → 平台总管理员。返回是否成功（找到并更新）。
 
     只有成功时 run() 才写 marker；账号还没注册时返回 False，下次部署再试。
     """
     super_role = db.query(Role).filter_by(code="super_admin").first()
-    lu = _find_user(db, LUXINYI_KEYS, LUXINYI_EMAILS)
-    if not (lu and super_role):
-        log.info("未找到「卢欣一」账号（用户名/显示名/邮箱均无匹配），本次跳过，下次部署重试")
+    lx = _find_user(db, ("李小雨", "lixiaoyu"))
+    if not (lx and super_role):
+        log.info("未找到「李小雨」账号，本次跳过，下次部署重试")
         return False
-    lu.role_id = super_role.id
-    lu.password_hash = hash_password("lxy.2001")
+    lx.role_id = super_role.id
     db.commit()
-    log.info("已将 %s(id=%s, 用户名=%s) 设为总管理员并把密码重置为 lxy.2001",
-             lu.display_name, lu.id, lu.username)
+    log.info("已将 %s(id=%s) 设为平台总管理员", lx.display_name, lx.id)
     return True
 
 
-def _fix_delete_chenmo(db) -> bool:
-    """删除陈默账号及其相关数据。返回 True 表示本次已处理完（含"本就不存在"）。"""
-    cm = _find_user(db, CHENMO_KEYS)
-    if cm:
-        cid = cm.id
-        _delete_user(db, cid)
+def _fix_delete_user_by_keys(db, name, keys, emails=()) -> bool:
+    """删除指定账号及其相关数据。返回 True 表示本次已处理完（含"本就不存在"）。"""
+    u = _find_user(db, keys, emails)
+    if u:
+        uid = u.id
+        _delete_user(db, uid)
         db.commit()
-        log.info("已删除「陈默」(id=%s) 及其相关数据", cid)
+        log.info("已删除「%s」(id=%s) 及其相关数据", name, uid)
     else:
-        log.info("未找到「陈默」账号，无需删除")
+        log.info("未找到「%s」账号，无需删除", name)
     return True
 
 
@@ -163,20 +161,27 @@ def run():
     Base.metadata.create_all(bind=SessionLocal().bind)
     db = SessionLocal()
     try:
-        # 卢欣一：设总管理员+重置密码。marker 只在成功后写 → 账号还没注册时下次部署重试
-        if not db.get(AppliedFix, "luxinyi_super_admin_v2"):
+        # 李小雨 → 平台总管理员。marker 只在成功后写 → 账号还没注册时下次部署重试
+        if not db.get(AppliedFix, "lixiaoyu_super_admin_v1"):
             try:
-                if _fix_luxinyi(db):
-                    _mark(db, "luxinyi_super_admin_v2", "卢欣一设总管理员+密码lxy.2001")
+                if _fix_lixiaoyu_super_admin(db):
+                    _mark(db, "lixiaoyu_super_admin_v1", "李小雨设平台总管理员")
             except Exception as e:
-                db.rollback(); log.warning("卢欣一账号修正失败（下次重试）: %s", e)
-        # 删除陈默：处理后写 marker（含"本就不存在"）
+                db.rollback(); log.warning("李小雨账号修正失败（下次重试）: %s", e)
+        # 删除陈默（历史需求，保留幂等）
         if not db.get(AppliedFix, "delete_chenmo_v1"):
             try:
-                if _fix_delete_chenmo(db):
+                if _fix_delete_user_by_keys(db, "陈默", CHENMO_KEYS):
                     _mark(db, "delete_chenmo_v1", "删除陈默及相关数据")
             except Exception as e:
                 db.rollback(); log.warning("删除陈默失败（下次重试）: %s", e)
+        # 删除卢欣一及相关数据
+        if not db.get(AppliedFix, "delete_luxinyi_v1"):
+            try:
+                if _fix_delete_user_by_keys(db, "卢欣一", LUXINYI_KEYS, LUXINYI_EMAILS):
+                    _mark(db, "delete_luxinyi_v1", "删除卢欣一及相关数据")
+            except Exception as e:
+                db.rollback(); log.warning("删除卢欣一失败（下次重试）: %s", e)
         # 课题组总管理员修正每次幂等执行
         try:
             _fix_group_owner(db)

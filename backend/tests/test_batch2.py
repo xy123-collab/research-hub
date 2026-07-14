@@ -85,6 +85,18 @@ def test_single_add_verify_and_required(client, founder):
     assert r.status_code == 200 and r.json().get("ok") is True
 
 
+def test_ai_hint_and_directions(client, founder):
+    d = client.get("/api/datasets/cod/check-directions", headers=founder)
+    assert d.status_code == 200 and len(d.json()["directions"]) > 3
+    assert client.post("/api/datasets/cod/ai-hint", json={"mode": "check", "prompt": "看任期"}, headers=founder).status_code == 200
+    assert client.post("/api/datasets/cod/ai-hint", json={"mode": "patterns"}, headers=founder).status_code == 200
+
+
+def test_ai_summary_custom_prompt(client, founder):
+    r = client.post("/api/datasets/cod/literature/ai-summarize", json={"prompt": "按方法分类"}, headers=founder)
+    assert r.status_code == 200 and "summary" in r.json()
+
+
 def test_parse_citation_and_export(client, founder):
     pc = client.post("/api/datasets/cod/literature/parse-citation",
                      json={"text": "Barro (1991). Growth. QJE. https://doi.org/10.2307/2937943"}, headers=founder)

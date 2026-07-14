@@ -26,7 +26,8 @@ from ..models.group import ResearchGroup, Charter
 from ..models.correction import Bug
 from ..models.code import CodeScript
 from ..models.governance import VerifyFlag
-from ..schemas.models import VersionIn, LitRefIn, DatasetIn, LitBatchIn, CitationTextIn
+from ..schemas.models import (VersionIn, LitRefIn, DatasetIn, LitBatchIn, CitationTextIn,
+                              AiSummaryIn, AiHintIn)
 
 router = APIRouter(tags=["datasets"])
 
@@ -1263,16 +1264,100 @@ def batch_commit_lit(slug: str, body: LitBatchIn, db: Session = Depends(get_db),
 
 # ================= AI 文献/用途总结（元数据-only，安全）=================
 @router.post("/datasets/{slug}/literature/ai-summarize")
-def ai_summarize_literature(slug: str, db: Session = Depends(get_db),
+def ai_summarize_literature(slug: str, body: AiSummaryIn | None = None,
+                            db: Session = Depends(get_db),
                             user: User = Depends(get_current_user)):
+    """基于「所有文献标题」做定制化综述。支持用户自定义提示词（如"按方法分类""指出研究空白"）。"""
     d = _get_ds(db, slug)
     if not is_dataset_member(db, d.id, user):
         raise HTTPException(403, "需为数据集成员")
     refs = db.query(LitRef).filter_by(dataset_id=d.id).all()
+    if not refs:
+        return {"summary": "该数据集暂无文献，添加文献后即可生成综述。", "ai_model": ai_client.provider}
+    titles = "\n".join(f"- {r.title}（{r.authors or ''}，{r.venue or ''}，{r.year or ''}）" for r in refs)
+    user_prompt = (body.prompt if body else "") or ""
+    ctx = (f"数据集：{d.name_zh}。共有 {len(refs)} 篇文献，标题清单如下：\n{titles}\n\n"
+           + (f"用户额外要求：{user_prompt}\n" if user_prompt.strip() else ""))
+    sys = ("你是文献综述助理。仅依据上面给出的文献标题信息，用中文写一段结构化的文献综述："
+           "先概述整体主题分布，再归纳 3-6 个研究方向/主题（每个方向列出相关文献），"
+           "最后指出可能的研究空白。若用户有额外要求，请优先满足。"
+           "不要编造标题里没有的文献。")
+    out = ai_client.complete(ctx, sys, strong=True)
+    return {"summary": out, "ai_model": ai_client.provider, "count": len(refs)}
+
+
+# ================= AI 勘误提示（悬浮助手；只提示不改数，保数据安全）=================
+# 预设勘误方向（会随平台勘误记录增长，由 patterns 模式从历史中总结补充）
+BASE_CHECK_DIRECTIONS = [
+    "缺失值：是否有关键变量存在异常比例的空缺或占位符（如 -99、NA、空字符串）。",
+    "取值范围：数值变量是否有超出合理范围的极端值/离群值（如年龄为负、比例>1）。",
+    "唯一性：唯一ID是否真的唯一，是否存在重复记录或同一主体多条冲突记录。",
+    "一致性：同一实体在不同年份/来源的属性是否前后矛盾（如性别、出生年变化）。",
+    "编码口径：分类变量的编码是否统一（同义不同码、口径中途变更）。",
+    "时间连续性：面板数据是否有断档、时间倒挂或重复年份。",
+    "单位与量纲：金额/比率是否存在单位不一致（万元 vs 元、百分比 vs 小数）。",
+    "文本规范：名称/机构等字符串是否有多余空格、全半角混用、别名未合并。",
+]
+
+
+@router.get("/datasets/{slug}/check-directions")
+def check_directions(slug: str, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    return {"directions": BASE_CHECK_DIRECTIONS,
+            "unique_id_var": _uid_var_name(db, d.id)}
+
+
+def _uid_var_name(db, ds_id):
+    cfg = db.get(DatasetDataConfig, ds_id)
+    return cfg.unique_id_var if cfg else None
+
+
+@router.post("/datasets/{slug}/ai-hint")
+def ai_hint(slug: str, body: AiHintIn, db: Session = Depends(get_db),
+            user: User = Depends(get_current_user)):
+    """AI 勘误提示：只用元数据（变量清单、已有勘误理由），提示「哪些方面可能有问题、
+    建议人工核查」，绝不读取原始数据、绝不自动改数。点击一次运行一次。
+
+    mode=check：结合预设方向 + 变量清单 + 人工提示词，给出需人工核查的维度清单。
+    mode=patterns：从本数据集/平台已有勘误记录中总结高频错误类型与注意事项。
+    """
+    from ..models.curation import BugItem
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
     vs = db.query(Variable).filter_by(dataset_id=d.id).all()
-    ctx = (f"数据集：{d.name_zh}。简介：{d.desc_zh}。变量："
-           + ", ".join(v.var_name for v in vs) + "。已有文献："
-           + "; ".join(f"{r.title}({r.year})" for r in refs))
-    sys = "你是研究助理。基于数据集元信息与文献，用中文总结该数据集的研究用途与3-5个研究话题，简洁分点。"
+    var_list = ", ".join(f"{v.var_name}({v.label_zh})" if v.label_zh else v.var_name for v in vs)
+    prompt = (body.prompt or "").strip()
+
+    if body.mode == "patterns":
+        # 汇总已有勘误理由（先本数据集，样本不足则并入全平台），只用文本、不含原始数据
+        reasons = [b.description_zh for b in db.query(Bug).filter_by(dataset_id=d.id).all()
+                   if b.description_zh]
+        reasons += [it.reason for it in db.query(BugItem).filter_by(dataset_id=d.id).all()
+                    if it.reason]
+        if len(reasons) < 5:
+            reasons += [b.description_zh for b in db.query(Bug).limit(200).all()
+                        if b.description_zh][:50]
+        corpus = "\n".join(f"- {r}" for r in reasons[:120]) or "（暂无历史勘误记录）"
+        sys = ("你是数据质量分析助手。下面是本平台已提交的勘误理由清单，"
+               "请归纳出现频率较高的错误类型，并按'高频→低频'给出注意事项清单，"
+               "帮助后续勘误者重点关注。只输出归纳，不要编造。")
+        out = ai_client.complete(corpus, sys)
+        return {"hint": out, "mode": "patterns", "ai_model": ai_client.provider,
+                "n_records": len(reasons)}
+
+    # check 模式
+    base = "\n".join(f"- {x}" for x in BASE_CHECK_DIRECTIONS)
+    ctx = (f"数据集：{d.name_zh}。简介：{d.desc_zh or ''}。\n"
+           f"变量清单：{var_list or '（未登记变量）'}。\n"
+           f"唯一ID变量：{_uid_var_name(db, d.id) or '未设置'}。\n"
+           f"通用检查方向：\n{base}\n"
+           + (f"\n本次人工限定的方向/提示：{prompt}\n" if prompt else ""))
+    sys = ("你是数据质量核查助手。重要原则：你看不到也不需要原始数据，"
+           "只能基于变量清单与研究背景，提示『哪些方面/哪些变量可能存在问题、建议人工去核查』，"
+           "绝不断言数据一定有错，绝不生成或修改数据。用中文输出分点清单，"
+           "每点指出：可能的问题、涉及哪个/哪类变量、建议如何人工核查。"
+           "若有人工限定方向，请围绕该方向展开。")
     out = ai_client.complete(ctx, sys)
-    return {"summary": out, "ai_model": ai_client.provider}
+    return {"hint": out, "mode": "check", "ai_model": ai_client.provider}
