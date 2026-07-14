@@ -421,6 +421,13 @@ async function doPublish() {
 function download(v: any, file: string) {
   downloadFile(`/datasets/${slug}/versions/${v.id}/download?file=${file}`)
 }
+async function deleteVersion(v: any) {
+  if (!confirm(`确认删除版本 ${v.version_id}？该版本的数据/codebook/对照表文件与发布记录将一并删除，不可恢复。`)) return
+  try {
+    await api.delete(`/datasets/${slug}/versions/${v.id}`)
+    loadTab('versions'); reloadDetail()
+  } catch (e: any) { alert(e.response?.data?.detail || '删除失败') }
+}
 
 // ---------- codebook / 对照表 勘误（简单流转）----------
 const showFileCorrect = ref(false)
@@ -940,6 +947,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <button v-else-if="d.is_member && v.is_current && d.settings?.download_policy==='approval'"
               class="btn-ghost text-xs text-accent" @click="openDlReq">申请下载</button>
             <span v-else class="text-xs text-gray-400">无下载权限</span>
+            <button v-if="d.is_admin" class="btn-ghost text-xs text-red-500" title="删除该版本及其发布记录" @click="deleteVersion(v)">删除</button>
           </div>
         </div>
         <p v-if="d.is_member && !d.is_admin" class="text-xs text-gray-400 mb-2">下载权限由数据集管理员单独授予；样例数据所有登录用户可下。</p>

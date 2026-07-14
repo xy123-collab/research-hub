@@ -105,6 +105,33 @@ def test_file_correction_flow(client, founder, member):
     assert d.status_code == 200 and d.json()["status"] == "accepted"
 
 
+def test_delete_version_and_reassign_current(client, founder):
+    """删除版本：连带清记录；删当前版后自动把最新原始/脱敏版设为当前。"""
+    # 发两版原始
+    _publish_raw(client, founder, version_id="vdel-1",
+                 df=pd.DataFrame({"id": [1], "a": [2]}))
+    r2 = _publish_raw(client, founder, version_id="vdel-2",
+                      df=pd.DataFrame({"id": [1], "a": [3]}))
+    vid2 = r2.json()["id"]
+    vers = client.get("/api/datasets/cod/versions", headers=founder).json()
+    cur = next(v for v in vers if v["is_current"])
+    assert cur["id"] == vid2  # 最新原始版是当前
+    # 删除当前版 vdel-2
+    d = client.request("DELETE", f"/api/datasets/cod/versions/{vid2}", headers=founder)
+    assert d.status_code == 200 and d.json()["ok"] is True
+    vers2 = client.get("/api/datasets/cod/versions", headers=founder).json()
+    ids = {v["version_id"] for v in vers2}
+    assert "vdel-2" not in ids
+    # 自动改选了一个当前版（不再是被删的那个）
+    new_cur = [v for v in vers2 if v["is_current"]]
+    assert new_cur and new_cur[0]["id"] != vid2
+
+
+def test_delete_version_admin_only(client, member):
+    r = client.request("DELETE", "/api/datasets/cod/versions/1", headers=member)
+    assert r.status_code == 403
+
+
 def test_file_correction_invalid_target(client, member):
     r = client.post("/api/datasets/cod/file-corrections",
                     data={"target": "bogus", "content": "x"}, headers=member)

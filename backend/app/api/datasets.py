@@ -401,6 +401,70 @@ def edit_version(slug: str, vid: int, body: dict, db: Session = Depends(get_db),
     return {"ok": True}
 
 
+@router.delete("/datasets/{slug}/versions/{vid}")
+def delete_version(slug: str, vid: int, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """删除一个版本及其发布记录（仅数据集管理员）。
+
+    用于清理无效/文件已丢失的旧版本。会一并删除该版本的：数据/codebook/对照表文件、
+    数据分类、看板汇总、下载记录、质检记录、核验标记；并把引用它的勘误的
+    版本外键置空。若删的是「当前推荐版」，自动把最新的原始/脱敏版设为当前。
+    """
+    from ..models.curation import BugItem
+    from ..models.governance import QualityRun
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅发起人/管理员可删除版本")
+    v = db.get(DataVersion, vid)
+    if not v or v.dataset_id != d.id:
+        raise HTTPException(404, "版本不存在")
+    was_current = v.is_current
+
+    # 1) 尽力删存储文件（丢失/本地已清的忽略报错）
+    aux_files = db.query(VersionAuxFile).filter_by(version_id=vid).all()
+    for key in [v.data_file_path, v.codebook_file_path, *[a.file_path for a in aux_files]]:
+        if key:
+            try:
+                storage.delete(key)
+            except Exception:
+                pass
+    # 2) 删除强关联记录
+    db.query(VersionExtra).filter_by(version_id=vid).delete(synchronize_session=False)
+    db.query(VersionAuxFile).filter_by(version_id=vid).delete(synchronize_session=False)
+    db.query(DownloadLog).filter_by(version_id=vid).delete(synchronize_session=False)
+    db.query(DatasetSummary).filter_by(version_id=vid).delete(synchronize_session=False)
+    db.query(QualityRun).filter_by(version_id=vid).delete(synchronize_session=False)
+    db.query(VerifyFlag).filter_by(version_id=vid).delete(synchronize_session=False)
+    # 3) 可空外键置空（保留勘误本体）
+    db.query(Bug).filter_by(related_version_id=vid).update(
+        {"related_version_id": None}, synchronize_session=False)
+    db.query(Bug).filter_by(fixed_in_version_id=vid).update(
+        {"fixed_in_version_id": None}, synchronize_session=False)
+    db.query(BugItem).filter_by(applied_in_version=vid).update(
+        {"applied_in_version": None}, synchronize_session=False)
+    db.query(FileCorrection).filter_by(version_id=vid).update(
+        {"version_id": None}, synchronize_session=False)
+    # 4) 删版本本体
+    db.delete(v)
+    db.flush()
+    # 5) 若删的是当前推荐版，另选最新的原始/脱敏版顶上
+    if was_current:
+        d.current_version_id = None
+        remaining = db.query(DataVersion).filter_by(dataset_id=d.id).order_by(
+            DataVersion.id.desc()).all()
+        for r in remaining:
+            ex = db.get(VersionExtra, r.id)
+            if (ex.data_kind if ex else "raw") in ("raw", "masked"):
+                r.is_current = True
+                r.valid_to = None
+                d.current_version_id = r.id
+                break
+    write_audit(db, user.id, "version.delete", "dataset", d.id,
+                {"version": v.version_id})
+    db.commit()
+    return {"ok": True, "deleted": v.version_id}
+
+
 @router.delete("/datasets/{slug}/members/{uid}")
 def remove_member(slug: str, uid: int, db: Session = Depends(get_db),
                   user: User = Depends(get_current_user)):
