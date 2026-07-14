@@ -192,25 +192,91 @@ def audit_log(limit: int = 200, db: Session = Depends(get_db),
              "created_at": str(l.created_at)} for l in logs]
 
 
+PRIMARY_KEY = "primary_super_admin_uid"
+
+
+def _primary_uid(db) -> int | None:
+    from ..models.extras import PlatformSetting
+    row = db.get(PlatformSetting, PRIMARY_KEY)
+    try:
+        return int(row.value) if row and row.value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _set_primary(db, uid: int):
+    from ..models.extras import PlatformSetting
+    row = db.get(PlatformSetting, PRIMARY_KEY)
+    if not row:
+        row = PlatformSetting(key=PRIMARY_KEY); db.add(row)
+    row.value = str(uid)
+
+
 @router.get("/admin/super-admins")
 def super_admins(db: Session = Depends(get_db), user: User = Depends(require_super_admin)):
     role = db.query(Role).filter_by(code="super_admin").first()
     if not role:
-        return []
+        return {"admins": [], "primary_uid": None, "i_am_primary": False}
     us = db.query(User).filter_by(role_id=role.id).all()
-    return [{"id": u.id, "username": u.username, "display_name": u.display_name} for u in us]
+    primary = _primary_uid(db)
+    # 若尚未指定总管理员，默认取最早的一位，避免无人可交接
+    if primary is None and us:
+        primary = min(u.id for u in us); _set_primary(db, primary); db.commit()
+    return {"admins": [{"id": u.id, "username": u.username, "display_name": u.display_name,
+                        "is_primary": u.id == primary} for u in us],
+            "primary_uid": primary, "i_am_primary": user.id == primary}
 
 
 @router.post("/admin/super-admins")
 def grant_super(uid: int, db: Session = Depends(get_db),
                 user: User = Depends(require_super_admin)):
-    """交接/新增总管理员。"""
+    """新增一名（其他）总管理员。任一总管理员可添加。"""
     role = db.query(Role).filter_by(code="super_admin").first()
     target = db.get(User, uid)
     if not target:
         raise HTTPException(404, "用户不存在")
     target.role_id = role.id
     db.add(AuditLog(user_id=user.id, action="super_admin.grant", object_type="user",
+                    object_id=str(uid), detail_json={}))
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/admin/super-admins/transfer")
+def transfer_primary(uid: int, db: Session = Depends(get_db),
+                     user: User = Depends(require_super_admin)):
+    """交接「平台总管理员」头衔给某用户（仅现任总管理员可操作）。
+
+    目标若还不是总管理员，会一并授予总管理员身份；原总管理员降为「其他管理员」。
+    """
+    if _primary_uid(db) != user.id:
+        raise HTTPException(403, "只有平台总管理员才能交接")
+    target = db.get(User, uid)
+    if not target:
+        raise HTTPException(404, "用户不存在")
+    role = db.query(Role).filter_by(code="super_admin").first()
+    target.role_id = role.id           # 确保是总管理员
+    _set_primary(db, uid)              # 头衔转给对方（原总管理员保留其他管理员身份）
+    db.add(AuditLog(user_id=user.id, action="super_admin.transfer_primary",
+                    object_type="user", object_id=str(uid), detail_json={}))
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/admin/super-admins/{uid}")
+def revoke_super(uid: int, db: Session = Depends(get_db),
+                 user: User = Depends(require_super_admin)):
+    """撤销某人的总管理员身份（仅总管理员可操作，且不能撤销现任总管理员本人）。"""
+    if _primary_uid(db) != user.id:
+        raise HTTPException(403, "只有平台总管理员才能移除其他管理员")
+    if uid == _primary_uid(db):
+        raise HTTPException(400, "不能移除现任总管理员，请先交接")
+    target = db.get(User, uid)
+    if not target:
+        raise HTTPException(404, "用户不存在")
+    member = db.query(Role).filter_by(code="member").first()
+    target.role_id = member.id if member else None
+    db.add(AuditLog(user_id=user.id, action="super_admin.revoke", object_type="user",
                     object_id=str(uid), detail_json={}))
     db.commit()
     return {"ok": True}

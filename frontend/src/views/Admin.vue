@@ -11,7 +11,10 @@ const console_ = ref<any>(null)       // 当前所选对象的控制台数据
 const mem = ref<any>(null)            // 数据集成员与权限（用于内联操作）
 const err = ref('')
 // 平台级
-const audit = ref<any[]>([]); const supers = ref<any[]>([]); const newSuper = ref<number | null>(null)
+const audit = ref<any[]>([])
+const superInfo = ref<any>({ admins: [], primary_uid: null, i_am_primary: false })
+// 管理员检索（按名称或 ID，检索出的结果显示名称供确认）
+const adminQ = ref(''); const adminResults = ref<any[]>([]); const adminPick = ref<any>(null)
 
 onMounted(async () => {
   try { scopes.value = (await api.get('/admin/my-scopes')).data } catch (e: any) { err.value = e.response?.data?.detail }
@@ -31,7 +34,7 @@ async function selectScope(kind: string, slug: string) {
       console_.value = (await api.get(`/admin/groups/${slug}/console`)).data
     } else if (kind === 'platform') {
       audit.value = (await api.get('/admin/audit-log', { params: { limit: 40 } })).data
-      supers.value = (await api.get('/admin/super-admins')).data
+      superInfo.value = (await api.get('/admin/super-admins')).data
     }
   } catch (e: any) { err.value = e.response?.data?.detail || '加载失败' }
 }
@@ -51,9 +54,32 @@ async function decideDownload(id: number, approve: boolean) {
   await api.post(`/download-requests/${id}/decide`, null, { params: { approve, valid_to } }); reloadDsMem()
 }
 
+// 按名称或 ID 检索用户（结果显示名称供确认）
+async function searchAdmin() {
+  const q = adminQ.value.trim()
+  adminResults.value = (await api.get('/users/search', { params: { q } })).data
+  adminPick.value = null
+}
+function pickAdmin(u: any) { adminPick.value = u }
 async function addSuper() {
-  if (!newSuper.value) return
-  try { await api.post('/admin/super-admins', null, { params: { uid: newSuper.value } }); newSuper.value = null; selectScope('platform', '') }
+  if (!adminPick.value) { alert('请先检索并选择一个用户'); return }
+  if (!confirm(`确认添加「${adminPick.value.display_name}」（ID ${adminPick.value.id}）为总管理员？`)) return
+  try {
+    await api.post('/admin/super-admins', null, { params: { uid: adminPick.value.id } })
+    adminQ.value = ''; adminResults.value = []; adminPick.value = null; selectScope('platform', '')
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+async function transferPrimary() {
+  if (!adminPick.value) { alert('请先检索并选择一个用户'); return }
+  if (!confirm(`确认把「平台总管理员」头衔交接给「${adminPick.value.display_name}」（ID ${adminPick.value.id}）？你将降为其他管理员。`)) return
+  try {
+    await api.post('/admin/super-admins/transfer', null, { params: { uid: adminPick.value.id } })
+    adminQ.value = ''; adminResults.value = []; adminPick.value = null; selectScope('platform', '')
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+async function revokeSuper(s: any) {
+  if (!confirm(`确认移除「${s.display_name}」的总管理员身份？`)) return
+  try { await api.delete(`/admin/super-admins/${s.id}`); selectScope('platform', '') }
   catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 const roleTag = (r: string) => r === 'lead' ? '总管理员' : '管理员'
@@ -182,14 +208,47 @@ const roleTag = (r: string) => r === 'lead' ? '总管理员' : '管理员'
   <!-- ========== 平台系统（总管理员）========== -->
   <div v-if="sel?.kind==='platform'">
     <section class="mb-6">
-      <h2 class="text-lg mb-2">总管理员（可多个 · 可交接）</h2>
+      <h2 class="text-lg mb-2">平台管理员</h2>
       <div class="card text-sm">
-        <div class="mb-3"><span v-for="s in supers" :key="s.id" class="tag mr-2">{{ s.display_name }}（#{{ s.id }}）</span></div>
-        <div class="flex items-center gap-2">
-          <input v-model.number="newSuper" type="number" class="input w-40" placeholder="用户 ID" />
-          <button class="btn-primary text-sm" @click="addSuper">添加/交接总管理员</button>
+        <!-- 现有管理员：区分总管理员 / 其他 -->
+        <div class="space-y-1.5 mb-4">
+          <div v-for="s in superInfo.admins" :key="s.id" class="flex items-center gap-2">
+            <span class="tag" :class="s.is_primary ? 'border-accent text-accent' : ''">
+              {{ s.is_primary ? '平台总管理员' : '其他管理员' }}
+            </span>
+            <span>{{ s.display_name }} <span class="text-gray-400 text-xs">ID {{ s.id }} · {{ s.username }}</span></span>
+            <button v-if="superInfo.i_am_primary && !s.is_primary" class="text-xs text-accent2 ml-auto"
+              @click="revokeSuper(s)">移除</button>
+          </div>
+          <p v-if="!superInfo.admins.length" class="text-gray-400">暂无管理员。</p>
         </div>
-        <p class="text-xs text-gray-400 mt-2">总管理员只负责平台运行，不接触课题组/数据集内容。</p>
+
+        <!-- 检索用户（按名称或 ID）-->
+        <div class="label-cap mb-1">添加 / 交接（按名称或 ID 检索）</div>
+        <div class="flex items-center gap-2">
+          <input v-model="adminQ" class="input w-56" placeholder="输入姓名或用户 ID" @keyup.enter="searchAdmin" />
+          <button class="btn-ghost text-sm" @click="searchAdmin">检索</button>
+        </div>
+        <div v-if="adminResults.length" class="border border-line rounded mt-2 max-h-40 overflow-y-auto">
+          <button v-for="u in adminResults" :key="u.id"
+            class="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-paper"
+            :class="adminPick && adminPick.id===u.id ? 'bg-paper' : ''" @click="pickAdmin(u)">
+            <span>{{ u.display_name }} <span class="text-gray-400 text-xs">ID {{ u.id }} · {{ u.username }}</span></span>
+            <span v-if="adminPick && adminPick.id===u.id" class="text-accent text-xs">已选 ✓</span>
+          </button>
+        </div>
+        <div v-if="adminPick" class="mt-2 text-sm">
+          已选择：<b>{{ adminPick.display_name }}</b>（ID {{ adminPick.id }}）
+        </div>
+        <div class="flex items-center gap-2 mt-2">
+          <button class="btn-primary text-sm" :disabled="!adminPick" @click="addSuper">添加为管理员</button>
+          <button v-if="superInfo.i_am_primary" class="btn-ghost text-sm" :disabled="!adminPick" @click="transferPrimary">
+            交接平台总管理员
+          </button>
+        </div>
+        <p class="text-xs text-gray-400 mt-2">
+          只有「平台总管理员」可以交接头衔或移除其他管理员；管理员只负责平台运行，不接触课题组/数据集内容。
+        </p>
       </div>
     </section>
     <section v-if="audit.length">

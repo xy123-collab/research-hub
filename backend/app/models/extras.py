@@ -127,6 +127,13 @@ class ContentScope(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+# ---------- 平台级设置（键值对，如平台总管理员 uid）----------
+class PlatformSetting(Base):
+    __tablename__ = "platform_settings"
+    key = Column(String(60), primary_key=True)
+    value = Column(String(200))
+
+
 # ---------- 一次性数据修正标记（保证某些数据修正只执行一次）----------
 class AppliedFix(Base):
     __tablename__ = "applied_fixes"

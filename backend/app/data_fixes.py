@@ -101,18 +101,23 @@ def _delete_user(db, uid: int):
 
 
 def _fix_lixiaoyu_super_admin(db) -> bool:
-    """李小雨 → 平台总管理员。返回是否成功（找到并更新）。
+    """李小雨 → 平台总管理员（super_admin 角色 + 平台总管理员头衔 primary）。
 
     只有成功时 run() 才写 marker；账号还没注册时返回 False，下次部署再试。
     """
+    from .models.extras import PlatformSetting
     super_role = db.query(Role).filter_by(code="super_admin").first()
     lx = _find_user(db, ("李小雨", "lixiaoyu"))
     if not (lx and super_role):
         log.info("未找到「李小雨」账号，本次跳过，下次部署重试")
         return False
     lx.role_id = super_role.id
+    row = db.get(PlatformSetting, "primary_super_admin_uid")
+    if not row:
+        row = PlatformSetting(key="primary_super_admin_uid"); db.add(row)
+    row.value = str(lx.id)
     db.commit()
-    log.info("已将 %s(id=%s) 设为平台总管理员", lx.display_name, lx.id)
+    log.info("已将 %s(id=%s) 设为平台总管理员（含 primary 头衔）", lx.display_name, lx.id)
     return True
 
 
@@ -161,11 +166,11 @@ def run():
     Base.metadata.create_all(bind=SessionLocal().bind)
     db = SessionLocal()
     try:
-        # 李小雨 → 平台总管理员。marker 只在成功后写 → 账号还没注册时下次部署重试
-        if not db.get(AppliedFix, "lixiaoyu_super_admin_v1"):
+        # 李小雨 → 平台总管理员（含 primary 头衔）。marker 只在成功后写
+        if not db.get(AppliedFix, "lixiaoyu_super_admin_v2"):
             try:
                 if _fix_lixiaoyu_super_admin(db):
-                    _mark(db, "lixiaoyu_super_admin_v1", "李小雨设平台总管理员")
+                    _mark(db, "lixiaoyu_super_admin_v2", "李小雨设平台总管理员+primary头衔")
             except Exception as e:
                 db.rollback(); log.warning("李小雨账号修正失败（下次重试）: %s", e)
         # 删除陈默（历史需求，保留幂等）

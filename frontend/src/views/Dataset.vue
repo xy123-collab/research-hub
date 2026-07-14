@@ -1064,10 +1064,38 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 
     </div>
 
-    <!-- ===== 悬浮勘误助手（宠物）：进入数据集即可见，点击打开 AI 勘误提示浮层 ===== -->
+    <!-- ===== 悬浮勘误助手（立体宠物）：进入数据集即可见，点击打开 AI 勘误提示浮层 ===== -->
     <button class="ds-pet" @click="openHint" title="AI 勘误助手：提示可能需要人工核查的方面">
-      <span class="ds-pet-emoji">🔍</span>
-      <span class="ds-pet-tip">勘误助手</span>
+      <svg viewBox="0 0 100 116" xmlns="http://www.w3.org/2000/svg" width="100%" height="100%">
+        <defs>
+          <radialGradient id="petBody" cx="38%" cy="30%" r="75%">
+            <stop offset="0%" stop-color="#bfe3ff" />
+            <stop offset="45%" stop-color="#5aa6f0" />
+            <stop offset="100%" stop-color="#2f6fd0" />
+          </radialGradient>
+          <radialGradient id="petFace" cx="50%" cy="42%" r="60%">
+            <stop offset="0%" stop-color="#ffffff" />
+            <stop offset="100%" stop-color="#dcefff" />
+          </radialGradient>
+          <filter id="petGlow" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur stdDeviation="2.4" result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+        <!-- 身体：水滴/精灵形 -->
+        <path filter="url(#petGlow)" fill="url(#petBody)" d="M50 6
+          C64 6 60 20 68 26 C82 36 88 52 86 68 C84 90 68 108 50 108
+          C32 108 16 90 14 68 C12 52 18 36 32 26 C40 20 36 6 50 6 Z" />
+        <!-- 高光 -->
+        <ellipse cx="38" cy="30" rx="12" ry="8" fill="#ffffff" opacity="0.5" />
+        <!-- 脸 -->
+        <ellipse cx="50" cy="54" rx="27" ry="24" fill="url(#petFace)" />
+        <!-- 眼睛 -->
+        <ellipse cx="40" cy="54" rx="4.4" ry="6.2" fill="#12203a" />
+        <ellipse cx="60" cy="54" rx="4.4" ry="6.2" fill="#12203a" />
+        <circle cx="41.6" cy="51.4" r="1.5" fill="#fff" />
+        <circle cx="61.6" cy="51.4" r="1.5" fill="#fff" />
+      </svg>
     </button>
 
     <div v-if="showHint" class="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-[70]" @click.self="showHint=false">
@@ -1505,18 +1533,14 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 }
 .ds-download-fab:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(45, 74, 124, .45); }
 
-/* 悬浮勘误助手（宠物）：左下角，位于下载浮标上方 */
+/* 悬浮勘误助手（立体精灵）：左下角，位于下载浮标上方 */
 .ds-pet {
-  position: fixed; left: 22px; bottom: 80px; z-index: 56;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  width: 58px; height: 58px; border-radius: 9999px;
-  background: radial-gradient(circle at 30% 30%, #6b8fd4, #2d4a7c);
-  color: #fff; box-shadow: 0 6px 20px rgba(45, 74, 124, .4);
-  transition: transform .15s, box-shadow .15s;
-  animation: petbob 2.4s ease-in-out infinite;
+  position: fixed; left: 20px; bottom: 78px; z-index: 56;
+  width: 66px; height: 76px; padding: 0; border: none; background: transparent;
+  cursor: pointer; filter: drop-shadow(0 8px 14px rgba(45, 74, 124, .35));
+  transition: transform .18s ease;
+  animation: petbob 2.6s ease-in-out infinite;
 }
-.ds-pet:hover { transform: translateY(-3px) scale(1.05); box-shadow: 0 10px 26px rgba(45,74,124,.5); }
-.ds-pet-emoji { font-size: 22px; line-height: 1; }
-.ds-pet-tip { font-size: 9px; margin-top: 1px; opacity: .9; }
-@keyframes petbob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-4px) } }
+.ds-pet:hover { transform: translateY(-4px) scale(1.06); }
+@keyframes petbob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-5px) } }
 </style>

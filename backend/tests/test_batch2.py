@@ -85,6 +85,30 @@ def test_single_add_verify_and_required(client, founder):
     assert r.status_code == 200 and r.json().get("ok") is True
 
 
+def test_super_admin_primary_and_roles(client, founder):
+    admin = _h(client, "admin", "admin123")          # seed 里 admin 是总管理员
+    # 非总管理员看不到
+    assert client.get("/api/admin/super-admins", headers=founder).status_code == 403
+    info = client.get("/api/admin/super-admins", headers=admin).json()
+    assert "primary_uid" in info and info["i_am_primary"] is True
+    # 注册一个临时用户，按名称检索能返回名称
+    client.post("/api/auth/register", json={"username": "tmpadm", "password": "pass123",
+                                            "display_name": "临时管理员", "email": "t@a.com"})
+    res = client.get("/api/users/search", params={"q": "临时管理员"}, headers=admin).json()
+    assert res and res[0]["display_name"] == "临时管理员"
+    uid = res[0]["id"]
+    # 按 ID 检索也返回名称
+    byid = client.get("/api/users/search", params={"q": str(uid)}, headers=admin).json()
+    assert any(u["id"] == uid and u["display_name"] == "临时管理员" for u in byid)
+    # 添加为管理员
+    assert client.post("/api/admin/super-admins", params={"uid": uid}, headers=admin).status_code == 200
+    # 该用户是「其他管理员」，非 primary → 不能交接
+    tok = _h(client, "tmpadm", "pass123")
+    assert client.post("/api/admin/super-admins/transfer", params={"uid": uid}, headers=tok).status_code == 403
+    # 总管理员可移除他
+    assert client.delete(f"/api/admin/super-admins/{uid}", headers=admin).status_code == 200
+
+
 def test_ai_hint_and_directions(client, founder):
     d = client.get("/api/datasets/cod/check-directions", headers=founder)
     assert d.status_code == 200 and len(d.json()["directions"]) > 3
