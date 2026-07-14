@@ -37,5 +37,6 @@ def member(client):
 @pytest.fixture
 def outsider(client):
     # 新注册用户：不是任何数据集成员
-    client.post("/api/auth/register", json={"username": "outsider1", "password": "pass123"})
+    client.post("/api/auth/register", json={"username": "outsider1", "password": "pass123",
+                                             "email": "outsider1@example.com"})
     return {"Authorization": f"Bearer {_token(client, 'outsider1', 'pass123')}"}

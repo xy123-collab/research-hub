@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..core.permissions import get_current_user
 from ..models.user import User
 from ..models.workspace import (Workspace, WorkspaceMember, WorkspaceUpdate,
                                 WorkspaceTodo, WorkspaceNote, WorkspaceFile)
+from ..models.extras import WorkspaceEntry, WORKSPACE_CATEGORIES
 from ..schemas.models import WorkspaceIn, WsUpdateIn, WsTodoIn, WsTodoPatch, WsNoteIn
 
 router = APIRouter(tags=["workspaces"])
@@ -65,14 +67,87 @@ def get_ws(wid: int, db: Session = Depends(get_db), user: User = Depends(get_cur
     notes = db.query(WorkspaceNote).filter_by(workspace_id=wid).all()
     files = db.query(WorkspaceFile).filter_by(workspace_id=wid).all()
     members = db.query(WorkspaceMember).filter_by(workspace_id=wid).all()
+
+    def uinfo(uid):
+        u = db.get(User, uid)
+        return {"id": uid, "name": u.display_name if u else f"用户#{uid}"}
+
+    # 时间轴条目（相册式 + 分类）
+    entries = db.query(WorkspaceEntry).filter_by(workspace_id=wid).order_by(
+        WorkspaceEntry.created_at.desc(), WorkspaceEntry.id.desc()).all()
+    entry_out = []
+    for e in entries:
+        au = db.get(User, e.author_id)
+        entry_out.append({
+            "id": e.id, "category": e.category, "title": e.title, "body": e.body,
+            "author_id": e.author_id, "author_name": au.display_name if au else "",
+            "file_name": e.file_name, "mime": e.mime,
+            "has_file": bool(e.file_path),
+            "is_image": bool(e.mime and e.mime.startswith("image/")),
+            "file_url": f"/api/workspaces/{wid}/entries/{e.id}/file" if e.file_path else None,
+            "created_at": str(e.created_at) if e.created_at else None})
+
     return {"id": w.id, "title": w.title, "overleaf_url": w.overleaf_url,
             "is_owner": w.owner_id == user.id,
             "members": [m.user_id for m in members],
+            "member_list": [uinfo(m.user_id) for m in members],
+            "entries": entry_out,
             "updates": [{"id": u.id, "author_id": u.author_id, "body": u.body} for u in ups],
             "todos": [{"id": t.id, "text": t.text, "done": t.done,
                        "assignee_id": t.assignee_id} for t in todos],
             "notes": [{"id": n.id, "author_id": n.author_id, "body": n.body} for n in notes],
             "files": [{"id": f.id, "file_name": f.file_name} for f in files]}
+
+
+# ---- timeline entries（分类 + 文字 + 可选文件，相册式）----
+@router.post("/workspaces/{wid}/entries")
+def add_entry(wid: int, category: str = Form("progress"), title: str = Form(""),
+              body: str = Form(""), file: UploadFile | None = File(None),
+              db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    _guard(db, wid, user)
+    if category not in WORKSPACE_CATEGORIES:
+        category = "other"
+    if not (body or "").strip() and not (title or "").strip() and file is None:
+        raise HTTPException(400, "请至少填写文字或上传文件")
+    meta = {}
+    if file is not None and getattr(file, "filename", ""):
+        from ..services.uploads import save_upload
+        meta = save_upload(file, f"workspace/{wid}/entry")
+    e = WorkspaceEntry(workspace_id=wid, author_id=user.id, category=category,
+                       title=(title or "").strip() or None, body=(body or "").strip() or None,
+                       file_path=meta.get("file_path"), file_name=meta.get("file_name"),
+                       mime=meta.get("mime"))
+    db.add(e); db.commit(); db.refresh(e)
+    return {"id": e.id}
+
+
+@router.delete("/workspaces/{wid}/entries/{eid}")
+def del_entry(wid: int, eid: int, db: Session = Depends(get_db),
+              user: User = Depends(get_current_user)):
+    _guard(db, wid, user)
+    e = db.get(WorkspaceEntry, eid)
+    if e and e.workspace_id == wid:
+        if e.file_path:
+            from ..core.storage import storage
+            try: storage.delete(e.file_path)
+            except Exception: pass
+        db.delete(e); db.commit()
+    return {"ok": True}
+
+
+@router.get("/workspaces/{wid}/entries/{eid}/file")
+def get_entry_file(wid: int, eid: int, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    from ..core.storage import storage
+    _guard(db, wid, user)
+    e = db.get(WorkspaceEntry, eid)
+    if not e or e.workspace_id != wid or not e.file_path:
+        raise HTTPException(404, "文件不存在")
+    inline = bool(e.mime and e.mime.startswith("image/"))
+    disp = "inline" if inline else "attachment"
+    return StreamingResponse(storage.open(e.file_path),
+                             media_type=e.mime or "application/octet-stream",
+                             headers={"Content-Disposition": f'{disp}; filename="{e.file_name}"'})
 
 
 @router.patch("/workspaces/{wid}")

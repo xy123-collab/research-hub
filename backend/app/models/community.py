@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Text, Boolean
+from datetime import datetime
+from sqlalchemy import Column, Integer, String, ForeignKey, Text, Boolean, DateTime
 from ..core.db import Base
 
 
@@ -48,6 +49,8 @@ class PostComment(Base):
     post_id = Column(Integer, ForeignKey("posts.id"))
     user_id = Column(Integer, ForeignKey("users.id"))
     content = Column(Text)
+    parent_id = Column(Integer, ForeignKey("post_comments.id"))   # 评论的评论
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class PostAdminFlag(Base):

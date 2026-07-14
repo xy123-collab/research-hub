@@ -39,17 +39,38 @@ async def value_error_handler(request: Request, exc: ValueError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
-# 定时质量巡检（APScheduler；一期示意）
+# 定时任务（APScheduler）：每日消息摘要邮件（默认 8:00 / 18:00，本地时区可配）
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.triggers.cron import CronTrigger
     _sched = BackgroundScheduler()
 
     @app.on_event("startup")
     def _start_scheduler():
-        if not _sched.running:
-            _sched.start()
+        if _sched.running:
+            return
+        if settings.DIGEST_ENABLED:
+            try:
+                from .services.digest import run_digest_once
+                hours = [h.strip() for h in str(settings.DIGEST_HOURS).split(",") if h.strip()]
+                for h in hours:
+                    _sched.add_job(
+                        run_digest_once, CronTrigger(hour=int(h), minute=0,
+                                                     timezone=settings.DIGEST_TZ),
+                        id=f"digest_{h}", replace_existing=True)
+            except Exception as e:  # 调度失败不影响主服务
+                import logging
+                logging.getLogger("scheduler").warning("注册摘要任务失败: %s", e)
+        _sched.start()
 except Exception:
     pass
+
+
+@app.post("/api/admin/run-digest")
+def _run_digest_now():
+    """手动触发一次消息摘要巡检（便于测试/运维）。"""
+    from .services.digest import run_digest_once
+    return run_digest_once()
 
 
 # 单服务模式（如 Render）：若存在前端构建产物 static/，由后端一并托管，

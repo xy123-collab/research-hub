@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..core.permissions import get_current_user, is_super_admin
@@ -90,13 +91,26 @@ def react(pid: int, type: str = "like", db: Session = Depends(get_db),
 @router.get("/posts/{pid}/comments")
 def get_comments(pid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     cs = db.query(PostComment).filter_by(post_id=pid).order_by(PostComment.id).all()
-    return [{"id": c.id, "user_id": c.user_id, "content": c.content} for c in cs]
+    out = []
+    for c in cs:
+        u = db.get(User, c.user_id)
+        out.append({"id": c.id, "user_id": c.user_id,
+                    "user_name": u.display_name if u else f"用户#{c.user_id}",
+                    "content": c.content, "parent_id": c.parent_id,
+                    "created_at": str(c.created_at) if c.created_at else None})
+    return out
 
 
 @router.post("/posts/{pid}/comments")
 def add_comment(pid: int, body: CommentIn, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
-    c = PostComment(post_id=pid, user_id=user.id, content=body.content)
+    # 支持「评论的评论」：body.parent_id 指向同帖的某条评论
+    parent_id = getattr(body, "parent_id", None)
+    if parent_id:
+        parent = db.get(PostComment, parent_id)
+        if not parent or parent.post_id != pid:
+            raise HTTPException(400, "父评论不存在")
+    c = PostComment(post_id=pid, user_id=user.id, content=body.content, parent_id=parent_id)
     db.add(c); db.commit()
     return {"id": c.id}
 
@@ -127,23 +141,74 @@ def flag_post(pid: int, recommended: bool = True, db: Session = Depends(get_db),
 
 
 # -------- projects --------
+from ..models.extras import ProjectMeta
+from fastapi import Form
+
+
 @router.get("/projects")
 def list_projects(author_id: int | None = None, db: Session = Depends(get_db),
                   user: User = Depends(get_current_user)):
     q = db.query(Project)
     if author_id:
         q = q.filter_by(author_id=author_id)
-    return [{"id": p.id, "title": p.title, "status": p.status, "author_id": p.author_id,
-             "open_for_discussion": p.open_for_discussion, "body_zh": p.body_zh}
-            for p in q.order_by(Project.id.desc()).all()]
+    rows = q.order_by(Project.id.desc()).all()
+    out = []
+    for p in rows:
+        m = db.get(ProjectMeta, p.id)
+        out.append({"id": p.id, "title": p.title, "status": p.status,
+                    "author_id": p.author_id, "open_for_discussion": p.open_for_discussion,
+                    "body_zh": p.body_zh, "pinned": bool(m and m.pinned),
+                    "has_image": bool(m and m.image_path),
+                    "image_url": f"/api/projects/{p.id}/image" if (m and m.image_path) else None})
+    # 置顶优先，其余按新→旧
+    out.sort(key=lambda x: (not x["pinned"], -x["id"]))
+    return out
 
 
 @router.post("/projects")
-def create_project(body: ProjectIn, db: Session = Depends(get_db),
+def create_project(title: str = Form(...), body_zh: str = Form(...),
+                   pinned: bool = Form(False), status: str | None = Form(None),
+                   image: UploadFile = File(...), db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
-    p = Project(author_id=user.id, **body.model_dump())
-    db.add(p); db.commit()
+    """创建在做项目：标题、图片、文字均必填（图片作为封面）。可选择是否置顶。"""
+    from ..services.uploads import save_upload, IMG_EXT
+    if not (title or "").strip() or not (body_zh or "").strip():
+        raise HTTPException(400, "标题与文字均必填")
+    meta = save_upload(image, f"project/cover", whitelist=IMG_EXT)
+    p = Project(author_id=user.id, title=title.strip(), body_zh=body_zh.strip(),
+                status=status or "进行中", open_for_discussion=True, visibility="platform")
+    db.add(p); db.flush()
+    db.add(ProjectMeta(project_id=p.id, pinned=bool(pinned), image_path=meta["file_path"],
+                       image_name=meta["file_name"], image_mime=meta["mime"]))
+    db.commit()
     return {"id": p.id}
+
+
+@router.post("/projects/{pid}/pin")
+def toggle_pin(pid: int, pinned: bool = True, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    """对已发布项目设置/取消置顶（仅作者本人）。"""
+    p = db.get(Project, pid)
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if p.author_id != user.id and not is_super_admin(user):
+        raise HTTPException(403, "仅作者可置顶")
+    m = db.get(ProjectMeta, pid)
+    if not m:
+        m = ProjectMeta(project_id=pid); db.add(m)
+    m.pinned = bool(pinned)
+    db.commit()
+    return {"ok": True, "pinned": m.pinned}
+
+
+@router.get("/projects/{pid}/image")
+def project_image(pid: int, db: Session = Depends(get_db)):
+    from ..core.storage import storage
+    m = db.get(ProjectMeta, pid)
+    if not m or not m.image_path:
+        raise HTTPException(404, "无封面图")
+    return StreamingResponse(storage.open(m.image_path),
+                             media_type=m.image_mime or "image/*")
 
 
 @router.patch("/projects/{pid}")

@@ -7,7 +7,13 @@ node_modules/
 frontend/dist/
 data/versions/*
 data/uploads/*
+backend/data/
 deploy/certs/*
 .DS_Store
 
 backend/app/static/
+
+# 构建/运行时产物与临时文件（勿提交）
+frontend/vite.config.ts.timestamp-*.mjs
+~$*.docx
+*.fuse_hidden*

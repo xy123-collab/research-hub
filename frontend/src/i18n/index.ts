@@ -3,7 +3,7 @@ import { createI18n } from 'vue-i18n'
 const messages = {
   zh: {
     nav: { home: '数据集', groups: '课题组', feed: '研究广场', profile: '我的主页',
-           admin: '管理后台', skills: 'Skill 共享', logout: '退出' },
+           admin: '管理后台', skills: 'Skill 共享', collab: '其他协作', logout: '退出' },
     home: { myGroups: '我的课题组', discover: '发现课题组', createGroup: '＋创建课题组',
             createGroup2: '创建课题组', createDataset: '创建数据集',
             createDsHint: '可归属到你已加入的课题组，也可留空创建为独立数据集（创建后归属不再变更）。',
@@ -47,7 +47,7 @@ const messages = {
   },
   en: {
     nav: { home: 'Datasets', groups: 'Groups', feed: 'Feed', profile: 'Profile',
-           admin: 'Admin', skills: 'Skills', logout: 'Logout' },
+           admin: 'Admin', skills: 'Skills', collab: 'Collaboration', logout: 'Logout' },
     home: { myGroups: 'My Groups', discover: 'Discover Groups', createGroup: '＋Create Group',
             createGroup2: 'Create Group', createDataset: 'Create Dataset',
             createDsHint: 'Attach it to one of your groups, or leave blank to create a standalone dataset (attachment is fixed after creation).',

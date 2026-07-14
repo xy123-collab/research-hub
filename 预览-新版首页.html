@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>新版预览 · 科研数据协作平台</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = { theme: { extend: {
+  colors: { ink:'#1a1a1a', paper:'#faf9f6', card:'#ffffff', line:'#e6e3dc', accent:'#2d4a7c', accent2:'#7c2d3a' },
+  fontFamily: { serif:['Source Serif Pro','Georgia','serif'] }
+}}}
+</script>
+<style>
+  body{background:#faf9f6;color:#1a1a1a;-webkit-font-smoothing:antialiased}
+  h1,h2,h3{font-family:'Source Serif Pro',Georgia,serif}
+  h1{letter-spacing:-.01em}
+  .card{background:#fff;border:1px solid #e6e3dc;border-radius:.5rem;padding:1.25rem;transition:.15s}
+  .card:hover{border-color:#d3cfc4;box-shadow:0 1px 3px rgba(26,26,26,.05)}
+  .btn{padding:.5rem 1rem;border-radius:.375rem;font-size:.875rem;font-weight:500;transition:.15s;cursor:pointer}
+  .btn-primary{background:#2d4a7c;color:#fff}.btn-primary:hover{opacity:.9}
+  .btn-ghost{border:1px solid #e6e3dc;background:#fff}.btn-ghost:hover{background:#faf9f6}
+  .tag{display:inline-block;font-size:11px;letter-spacing:.03em;padding:.05rem .5rem;border-radius:.25rem;background:#faf9f6;border:1px solid #e6e3dc;color:#4b5563}
+  .chip-ver{display:inline-block;font-family:ui-monospace,Menlo,monospace;font-size:11px;padding:.1rem .4rem;border-radius:.25rem;border:1px solid #e6e3dc;color:#2d4a7c;background:#fff}
+  .input{width:100%;border:1px solid #e6e3dc;border-radius:.375rem;padding:.5rem .75rem;font-size:.875rem;background:#fff;outline:none}
+  .input:focus{border-color:#2d4a7c}
+  .eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.18em;color:#9ca3af}
+  .ico{width:18px;height:18px;stroke:currentColor;stroke-width:1.5;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .dot{width:7px;height:7px;border-radius:9999px;display:inline-block}
+  .sec-h{font-size:1rem;color:#6b7280;font-weight:400;margin-bottom:.75rem;padding-bottom:.5rem;border-bottom:1px solid #e6e3dc}
+</style>
+</head>
+<body class="min-h-screen flex flex-col">
+<div class="bg-accent text-white text-xs text-center py-1.5">静态预览 · 与将上线的新版视觉一致（数据为示例）— 上线前用它看效果</div>
+
+<!-- 顶部导航 -->
+<header class="border-b border-line bg-white/80 backdrop-blur sticky top-0 z-20">
+  <div class="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
+    <div class="flex items-center gap-6">
+      <span class="font-serif text-lg font-semibold text-accent">科研数据协作平台</span>
+      <nav class="hidden md:flex gap-4 text-sm text-gray-600">
+        <span class="text-accent font-medium">数据集</span>
+        <span class="hover:text-accent cursor-pointer">课题组</span>
+        <span class="hover:text-accent cursor-pointer">研究广场</span>
+        <span class="hover:text-accent cursor-pointer">我的主页</span>
+        <span class="hover:text-accent cursor-pointer">Skill 共享</span>
+        <span class="hover:text-accent cursor-pointer">管理后台</span>
+      </nav>
+    </div>
+    <div class="flex items-center gap-3 text-sm text-gray-500"><span class="btn btn-ghost">EN</span><span>李小雨</span></div>
+  </div>
+</header>
+
+<main class="flex-1 max-w-6xl mx-auto w-full px-6 py-8">
+  <!-- 价值 hero + 协作能力（线性图标） -->
+  <section class="rounded-xl border border-line bg-white px-7 py-7 mb-6">
+    <p class="eyebrow">科研数据协作平台</p>
+    <h1 class="text-[26px] leading-tight mt-2">让自建数据可信、可迭代、可复用</h1>
+    <p class="text-sm text-gray-500 mt-2 max-w-2xl leading-relaxed">在数据集内完成勘误、发版、数据看板与可复用代码库协作；非成员亦可查阅 codebook 与只读看板。</p>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-x-8 gap-y-4 mt-6 pt-5 border-t border-line">
+      <div class="flex items-start gap-3">
+        <svg class="ico text-accent mt-0.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 12l3 3 5-6"/></svg>
+        <div><div class="text-sm font-medium">原始数据勘误</div><div class="text-xs text-gray-400 mt-0.5">评分制审核，绝不静默改数据</div></div>
+      </div>
+      <div class="flex items-start gap-3">
+        <svg class="ico text-accent mt-0.5" viewBox="0 0 24 24"><line x1="3" y1="20" x2="21" y2="20"/><rect x="5" y="11" width="3" height="7"/><rect x="10.5" y="6" width="3" height="12"/><rect x="16" y="13" width="3" height="5"/></svg>
+        <div><div class="text-sm font-medium">只读数据看板</div><div class="text-xs text-gray-400 mt-0.5">描述统计与只读沙箱，非成员可看</div></div>
+      </div>
+      <div class="flex items-start gap-3">
+        <svg class="ico text-accent mt-0.5" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+        <div><div class="text-sm font-medium">规则 + AI 核验</div><div class="text-xs text-gray-400 mt-0.5">发现疑似问题，生成勘误草稿</div></div>
+      </div>
+      <div class="flex items-start gap-3">
+        <svg class="ico text-accent mt-0.5" viewBox="0 0 24 24"><path d="M8 8l-4 4 4 4"/><path d="M16 8l4 4-4 4"/></svg>
+        <div><div class="text-sm font-medium">处理代码库</div><div class="text-xs text-gray-400 mt-0.5">清洗代码可复用、可生成说明</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 工具条 -->
+  <div class="flex flex-wrap items-center gap-2 mb-6">
+    <input id="q" class="input flex-1 min-w-[200px]" placeholder="搜索数据集（名称或 ID）…" oninput="render()" />
+    <span class="btn btn-primary">＋ 创建数据集</span>
+    <span class="btn btn-ghost">＋ 创建课题组</span>
+  </div>
+
+  <!-- 近期更新 -->
+  <section class="mb-8">
+    <h2 class="sec-h">近期更新</h2>
+    <div class="rounded-lg border border-line bg-white divide-y divide-line" id="recent"></div>
+  </section>
+
+  <!-- 我参与的数据集 -->
+  <section class="mb-8">
+    <h2 class="sec-h">我参与的数据集</h2>
+    <div id="mineGrid" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
+  </section>
+
+  <!-- 发现数据集 -->
+  <section class="mb-8">
+    <div class="sec-h flex items-center justify-between"><span>发现数据集</span><span id="discCount" class="text-xs text-gray-400"></span></div>
+    <div id="discGrid" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
+  </section>
+</main>
+
+<footer class="border-t border-line py-6 text-center text-xs text-gray-400">
+  科研数据协作平台 · 让每一份自建数据都可信、可复用、可归属 · 北京大学国家发展研究院 · 智慧科研团队
+</footer>
+
+<script>
+const MINE = [
+  { id:12, name:'COD 地方官员数据库', group:'NSD 发展政经课题组', role:'maintainer', ver:'v2.1.0', members:9, pending:3, flags:2, sensitive:true, desc:'核心识别变量 officerID、termID，逐年扩展与持续勘误。',
+    recent:[{type:'version',text:'发布 v2.1.0',at:'2026-07-09'},{type:'bug',text:'勘误 #142（accepted）',at:'2026-07-06'}] },
+  { id:15, name:'县域财政面板', group:'NSD 发展政经课题组', role:'member', ver:'v1.3.0', members:5, pending:1, flags:0, sensitive:false, desc:'1998– 县级一般公共预算收支面板。',
+    recent:[{type:'version',text:'发布 v1.3.0',at:'2026-06-28'}] },
+  { id:23, name:'访谈文本语料（独立）', group:'', role:'founder', ver:null, members:1, pending:0, flags:0, sensitive:true, desc:'个人独立创建，未归属课题组。',
+    recent:[] },
+];
+const DISCOVER = [
+  { id:8, name:'城市土地出让明细', group:'城市经济与政策实验室', ver:'v1.0.0', members:6, sensitive:false, desc:'招拍挂地块级别成交记录。' },
+  { id:31, name:'高管履历数据库', group:'公司金融课题组', ver:'v3.0.1', members:11, sensitive:true, desc:'上市公司高管教育/任职履历。' },
+  { id:34, name:'政策文本语料', group:'城市经济与政策实验室', ver:null, members:4, sensitive:false, desc:'地方政府工作报告分词语料。' },
+];
+const evColor=t=>t==='version'?'#2d4a7c':'#7c2d3a';
+
+function signals(d,mine){
+  let s='<div class="mt-3 pt-3 border-t border-line flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">';
+  if(d.ver)s+=`<span class="chip-ver">${d.ver}</span>`;
+  s+=`<span>${d.members} 成员</span>`;
+  if(mine&&d.pending)s+=`<span style="color:#7c2d3a">${d.pending} 勘误待审</span>`;
+  if(mine&&d.flags)s+=`<span style="color:#7c2d3a">${d.flags} 待核验</span>`;
+  return s+'</div>';
+}
+function recentBlock(d){
+  if(!d.recent||!d.recent.length)return'';
+  return '<div class="mt-3 space-y-1">'+d.recent.map(e=>
+    `<div class="flex items-center gap-2 text-xs text-gray-500"><span class="dot" style="background:${evColor(e.type)}"></span><span>${e.text}</span><span class="text-gray-400">· ${e.at}</span></div>`).join('')+'</div>';
+}
+function grpLine(d){const g=d.group?d.group:'<span class="italic">独立数据集</span>';
+  return `<p class="text-xs text-gray-400 mt-1"><span style="color:#d1d5db">ID ${d.id}</span> · ${g}${d.sensitive?' · <span style="color:#7c2d3a">敏感</span>':''}</p>`}
+function cardMine(d){
+  return `<div class="card cursor-pointer flex flex-col">
+    <div class="flex items-start justify-between"><h3 class="text-base">${d.name}</h3><span class="tag">${d.role}</span></div>
+    ${grpLine(d)}<p class="text-sm text-gray-500 mt-1.5 flex-1">${d.desc}</p>${recentBlock(d)}${signals(d,true)}</div>`;
+}
+function cardDisc(d){
+  return `<div class="card cursor-pointer flex flex-col">
+    <div class="flex items-start justify-between"><h3 class="text-base">${d.name}</h3>${d.sensitive?'<span class="tag" style="color:#7c2d3a">敏感</span>':''}</div>
+    ${grpLine(d)}<p class="text-sm text-gray-500 mt-1.5 flex-1">${d.desc}</p>${signals(d,false)}</div>`;
+}
+function match(d){const kw=document.getElementById('q').value.trim().toLowerCase();
+  return !kw||(String(d.id)+d.name+d.desc+d.group).toLowerCase().includes(kw);}
+function render(){
+  const mine=MINE.filter(match),disc=DISCOVER.filter(match);
+  document.getElementById('mineGrid').innerHTML=mine.map(cardMine).join('')||'<p class="text-gray-400 text-sm">无</p>';
+  document.getElementById('discGrid').innerHTML=disc.map(cardDisc).join('')||'<p class="text-gray-400 text-sm">暂无匹配的数据集</p>';
+  document.getElementById('discCount').textContent=disc.length+' 数据集';
+  const feed=[]; MINE.forEach(d=>(d.recent||[]).forEach(e=>feed.push({...e,ds:d.name})));
+  feed.sort((a,b)=>(b.at||'').localeCompare(a.at||''));
+  document.getElementById('recent').innerHTML=feed.slice(0,6).map(e=>
+    `<div class="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-paper cursor-pointer"><span class="dot" style="background:${evColor(e.type)}"></span><span class="text-gray-800">${e.text}</span><span class="text-gray-400">· ${e.ds}</span><span class="ml-auto text-xs text-gray-400">${e.at}</span></div>`).join('');
+}
+render();
+</script>
+</body>
+</html>

@@ -9,14 +9,14 @@ import Icon from './Icon.vue'
 
 const router = useRouter()
 const open = ref(false)
-const items = ref<any[]>([])
+const groups = ref<any[]>([])
 const actionCount = ref(0)
 let timer: any = null
 
 async function load() {
   try {
     const r = (await api.get('/notifications')).data
-    items.value = r.items || []
+    groups.value = r.groups || []
     actionCount.value = r.action_count || 0
   } catch { /* 未登录时静默 */ }
 }
@@ -27,14 +27,7 @@ function go(it: any) {
 }
 
 const badge = computed(() => actionCount.value > 99 ? '99+' : String(actionCount.value))
-const actions = computed(() => items.value.filter(i => i.level === 'action'))
-const infos = computed(() => items.value.filter(i => i.level === 'info'))
-
-const typeColor: Record<string, string> = {
-  dataset_join: '#2d4a7c', group_join: '#2d4a7c', download_request: '#7c2d3a',
-  correction_review: '#a15c2b', dataset_group_request: '#3f6f4f',
-}
-const dotColor = (t: string) => typeColor[t] || '#9aa0a6'
+const hasAny = computed(() => groups.value.some(g => g.items?.length))
 
 onMounted(() => {
   load()
@@ -66,30 +59,21 @@ defineExpose({ load })
         </div>
 
         <div class="notif-body">
-          <p v-if="!items.length" class="p-6 text-center text-sm text-gray-400">
-            暂无消息。有成员申请、下载申请、勘误待审核时会在这里提醒你。
+          <p v-if="!hasAny" class="p-6 text-center text-sm text-gray-400">
+            暂无消息。申请审批、被评论、被设为管理员、被拉入工作台、新数据/代码发布等都会在这里分类提醒你。
           </p>
 
-          <template v-if="actions.length">
-            <div class="notif-section">待我处理（{{ actionCount }}）</div>
-            <button v-for="(it, i) in actions" :key="'a' + i" class="notif-item" @click="go(it)">
-              <span class="dot mt-1.5" :style="{ background: dotColor(it.type) }"></span>
+          <template v-for="g in groups" :key="g.key">
+            <div class="notif-section" :style="{ color: g.color }">
+              {{ g.name }}（{{ g.count }}）
+            </div>
+            <button v-for="(it, i) in g.items" :key="g.key + i" class="notif-item" @click="go(it)">
+              <span class="dot mt-1.5" :style="{ background: g.color }"></span>
               <span class="min-w-0 flex-1 text-left">
                 <span class="block text-sm text-gray-800">{{ it.title }}</span>
                 <span class="block text-xs text-gray-500 truncate">{{ it.subtitle }}</span>
               </span>
-              <span class="notif-cta">去处理</span>
-            </button>
-          </template>
-
-          <template v-if="infos.length">
-            <div class="notif-section">与我相关</div>
-            <button v-for="(it, i) in infos" :key="'i' + i" class="notif-item" @click="go(it)">
-              <span class="dot mt-1.5" style="background:#c9ccd1"></span>
-              <span class="min-w-0 flex-1 text-left">
-                <span class="block text-sm text-gray-700">{{ it.title }}</span>
-                <span class="block text-xs text-gray-400 truncate">{{ it.subtitle }}</span>
-              </span>
+              <span v-if="it.level === 'action'" class="notif-cta">去处理</span>
             </button>
           </template>
         </div>

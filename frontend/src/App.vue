@@ -37,14 +37,22 @@ function toggleLang() {
             <router-link to="/" class="hover:text-accent">{{ t('nav.home') }}</router-link>
             <router-link to="/groups" class="hover:text-accent">{{ t('nav.groups') }}</router-link>
             <router-link to="/feed" class="hover:text-accent">{{ t('nav.feed') }}</router-link>
-            <router-link to="/me" class="hover:text-accent">{{ t('nav.profile') }}</router-link>
-            <router-link to="/skills" class="hover:text-accent">{{ t('nav.skills') }}</router-link>
+            <router-link to="/collab" class="hover:text-accent">{{ t('nav.collab') }}</router-link>
             <router-link to="/admin" class="hover:text-accent">{{ t('nav.admin') }}</router-link>
           </nav>
         </div>
         <div class="flex items-center gap-3 text-sm">
           <button @click="toggleLang" class="btn-ghost">{{ locale === 'zh' ? 'EN' : '中文' }}</button>
-          <span v-if="auth.user" class="text-gray-500">{{ auth.user.display_name }}</span>
+          <!-- 个人主页：放在右侧，紧挨用户名/ID -->
+          <router-link v-if="auth.user" to="/me"
+            class="flex items-center gap-1.5 hover:text-accent" :title="t('nav.profile')">
+            <span class="w-6 h-6 rounded-full bg-accent/10 text-accent flex items-center justify-center overflow-hidden">
+              <img v-if="auth.user.avatar" :src="auth.user.avatar" class="w-full h-full object-cover" />
+              <span v-else class="text-[11px]">{{ (auth.user.display_name || 'U').slice(0,1) }}</span>
+            </span>
+            <span class="text-gray-600">{{ auth.user.display_name }}</span>
+            <span class="text-gray-400 text-xs">ID {{ auth.user.id }}</span>
+          </router-link>
           <button v-if="auth.user" @click="auth.logout()" class="hover:text-accent2">{{ t('nav.logout') }}</button>
         </div>
       </div>

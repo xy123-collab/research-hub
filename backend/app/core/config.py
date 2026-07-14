@@ -41,6 +41,22 @@ class Settings(BaseSettings):
     AI_API_KEY: str = ""                          # ★ 只在环境变量里配，切勿写进代码/提交
     AI_GATEWAY_URL: str = ""                       # 兼容旧字段（留空即用 AI_BASE_URL）
 
+    # ---- 邮件（抽象层；默认 mock，不强绑第三方；未来接 SMTP / 邮件 API）----
+    EMAIL_BACKEND: str = "mock"          # mock | smtp | none
+    EMAIL_FROM: str = "no-reply@research-hub.local"
+    EMAIL_FROM_NAME: str = "科研数据共享平台"
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_TLS: bool = True
+    # 站点地址，用于邮件里的找回密码/跳转链接（部署后按实际域名/校内地址改）
+    SITE_URL: str = "https://research-hub-pmow.onrender.com"
+    # 每日消息摘要
+    DIGEST_ENABLED: bool = True
+    DIGEST_TZ: str = "Asia/Shanghai"
+    DIGEST_HOURS: str = "8,18"           # 逗号分隔的小时（本地时区）
+
     # ---- 其它 ----
     ALLOWED_ORIGINS: str = "*"
     MAX_UPLOAD_MB: int = 50

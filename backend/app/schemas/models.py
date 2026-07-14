@@ -102,6 +102,7 @@ class PostIn(BaseModel):
 
 class CommentIn(BaseModel):
     content: str
+    parent_id: int | None = None   # 评论的评论
 
 
 class ProjectIn(BaseModel):
