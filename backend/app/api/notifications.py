@@ -86,6 +86,17 @@ def build_notifications(db: Session, user: User) -> dict:
                 title="勘误待终审",
                 subtitle=f"「{d.name_zh if d else ''}」勘误 #{b.id} 等待审核",
                 link=f"/datasets/{d.slug}?tab=bugs&bug={b.id}" if d else "/", sort=b.id)
+        from ..models.mapping import FileCorrection
+        _fc_label = {"codebook": "codebook", "mapping": "对照表"}
+        for r in db.query(FileCorrection).filter(
+                FileCorrection.dataset_id.in_(ds_admin_ids),
+                FileCorrection.status == "pending").all():
+            d = ds_map.get(r.dataset_id)
+            add(type="file_correction", level="action", category="todo",
+                title=f"{_fc_label.get(r.target, r.target)}勘误待确认",
+                subtitle=f"「{d.name_zh if d else ''}」有一条{_fc_label.get(r.target, r.target)}勘误待采纳",
+                link=f"/datasets/{d.slug}?tab=versions" if d else "/",
+                at=str(r.created_at) if r.created_at else None, sort=r.id)
         from ..models.extras import PermRequest
         from ..models.access import PERM_LABELS_ZH
         for r in db.query(PermRequest).filter(

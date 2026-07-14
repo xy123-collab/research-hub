@@ -22,8 +22,10 @@ const mineShown = computed(() => mine.value.filter(matchG))
 const discoverShown = computed(() => discover.value.filter(matchG))
 async function createGroup() {
   if (!form.value.slug || !form.value.name_zh) { alert('请填写标识与名称'); return }
-  await api.post('/groups', form.value); showCreate.value = false
-  form.value = { slug: '', name_zh: '', desc_zh: '' }; load()
+  try {
+    await api.post('/groups', form.value); showCreate.value = false
+    form.value = { slug: '', name_zh: '', desc_zh: '' }; load()
+  } catch (e: any) { alert(e.response?.data?.detail || '创建失败') }
 }
 async function joinGroup(slug: string) {
   await api.post(`/groups/${slug}/join-requests`); alert('已提交申请，等待课题组管理员审批')

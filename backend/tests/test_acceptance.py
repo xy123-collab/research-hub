@@ -32,17 +32,38 @@ def test_version_not_overwritable(client, founder):
     assert r2.status_code == 400 and "不可覆盖" in r2.json()["detail"]
 
 
+def _publish_raw_dta(client, headers, slug="cod", version_id="vtest-raw"):
+    """发布一版带真实 .dta 的原始数据（供沙箱加载真实变量）。"""
+    import io, pandas as pd
+    df = pd.DataFrame({"officerID": ["O1", "O2", "O3"], "gender": [1, 2, 1],
+                       "begin_yr": [2001, 2005, 2010]})
+    buf = io.BytesIO(); df.to_stata(buf, write_index=False, version=118); buf.seek(0)
+    files = {"data_file": (f"{version_id}.dta", buf, "application/octet-stream")}
+    return client.post(f"/api/datasets/{slug}/versions",
+                       data={"version_id": version_id, "data_kind": "raw"},
+                       files=files, headers=headers)
+
+
 def test_sandbox_readonly_blocks_write(client, founder):
-    # 只读沙箱：禁写回/禁网络
+    # 只读沙箱：禁写回/禁网络（需先连上真实数据，才轮到静态过滤拦截）
+    _publish_raw_dta(client, founder, version_id="vwrite-guard")
     bad = "import os\nresult = os.system('echo hi')"
     r = client.post("/api/datasets/cod/analysis/run", params={"code": bad}, headers=founder)
     assert r.status_code == 400
 
 
 def test_sandbox_readonly_allows_aggregation(client, founder):
-    good = "result = len(df)"
-    r = client.post("/api/datasets/cod/analysis/run", params={"code": good}, headers=founder)
-    assert r.status_code == 200 and r.json()["ok"] is True
+    # 现在沙箱 df 就是真实原始数据：len(df)=真实行数，真实变量名可直接用
+    _publish_raw_dta(client, founder, version_id="vagg-raw")
+    r = client.post("/api/datasets/cod/analysis/run",
+                    params={"code": "result = len(df)"}, headers=founder)
+    assert r.status_code == 200 and r.json()["ok"] is True and r.json()["result"] == 3
+    # 真实变量：markdown 围栏也应被剥离，返回真实列
+    r2 = client.post("/api/datasets/cod/analysis/run",
+                     params={"code": "```python\nresult = df['gender'].tolist()\n```"},
+                     headers=founder)
+    assert r2.status_code == 200 and r2.json()["ok"] is True
+    assert r2.json()["result"] == [1, 2, 1]
 
 
 def test_verify_flag_draft_does_not_modify_data(client, founder, member):

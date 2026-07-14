@@ -12,6 +12,7 @@ from ..core.permissions import (get_current_user, is_super_admin, is_dataset_mem
                                 DS_ADMIN_ROLES, DS_LEAD_ROLES, dataset_lead_id,
                                 is_dataset_lead)
 from ..core.audit import write_audit, record_contribution
+from ..core.naming import ensure_unique, normalize_name
 from ..models.user import User
 from ..models.dataset import (Dataset, DatasetMember, JoinRequest, Variable,
                               DatasetGroupRequest)
@@ -20,6 +21,8 @@ from ..models.access import (DatasetGrant, DatasetSettings, DownloadRequest,
                              PERM_LABELS_ZH, DOWNLOAD_POLICIES)
 from ..models.curation import (VersionExtra, DatasetDataConfig, VariableMaskRule,
                                DATA_KINDS, MASK_ACTIONS)
+from ..models.mapping import (VersionAuxFile, FileCorrection, AUX_KINDS,
+                              CORRECTION_TARGETS)
 from ..models.version import DataVersion, DownloadLog
 from ..models.literature import (LitTopic, LitRef, Publication, DatasetSummary)
 from ..models.group import ResearchGroup, Charter
@@ -114,6 +117,8 @@ def create_standalone_dataset(body: DatasetIn, db: Session = Depends(get_db),
     """独立创建数据集（不归属任何课题组）。创建者即发起人/数据集管理员。"""
     if db.query(Dataset).filter_by(slug=body.slug).first():
         raise HTTPException(400, "数据集 slug 已存在")
+    ensure_unique(db, Dataset, "name_zh", body.name_zh, "数据集名称",
+                  extra_filter={"is_deleted": False})
     d = Dataset(group_id=None, founder_id=user.id, **body.model_dump())
     db.add(d); db.flush()
     db.add(DatasetMember(dataset_id=d.id, user_id=user.id, ds_role="founder",
@@ -266,14 +271,20 @@ def list_versions(slug: str, db: Session = Depends(get_db),
     d = _get_ds(db, slug)
     vs = db.query(DataVersion).filter_by(dataset_id=d.id).order_by(
         DataVersion.id.desc()).all()
+    aux_by_ver = {}
+    for a in db.query(VersionAuxFile).filter_by(dataset_id=d.id).all():
+        aux_by_ver.setdefault(a.version_id, []).append(
+            {"id": a.id, "kind": a.kind, "filename": a.filename, "note_zh": a.note_zh})
     out = []
     for v in vs:
         ex = db.get(VersionExtra, v.id)
         out.append({"id": v.id, "version_id": v.version_id, "based_on": v.based_on_version,
                     "release_date": str(v.release_date), "changelog_zh": v.changelog_zh,
                     "is_current": v.is_current, "has_data": bool(v.data_file_path),
+                    "has_codebook": bool(v.codebook_file_path),
                     "data_kind": ex.data_kind if ex else "raw",
-                    "masked_source": ex.masked_source_version if ex else None})
+                    "masked_source": ex.masked_source_version if ex else None,
+                    "mappings": aux_by_ver.get(v.id, [])})
     return out
 
 
@@ -285,6 +296,8 @@ async def publish_version(slug: str, version_id: str = Form(...),
                           data_kind: str = Form("raw"),    # raw|masked|sample
                           data_file: UploadFile | None = File(None),
                           codebook_file: UploadFile | None = File(None),
+                          mapping_file: UploadFile | None = File(None),  # 对照表(取值字典)
+                          mapping_note: str = Form(""),
                           db: Session = Depends(get_db),
                           user: User = Depends(get_current_user)):
     d = _get_ds(db, slug)
@@ -306,6 +319,10 @@ async def publish_version(slug: str, version_id: str = Form(...),
     if codebook_file:
         codebook_key = f"versions/{d.slug}/{version_id}/{codebook_file.filename}"
         storage.save(codebook_key, codebook_file.file)
+    mapping_key = None
+    if mapping_file:
+        mapping_key = f"versions/{d.slug}/{version_id}/mapping_{mapping_file.filename}"
+        storage.save(mapping_key, mapping_file.file)
     # 样例数据不参与"当前推荐版"迭代（公开、独立、不迭代）；原始/脱敏才竞争 current
     is_iterating = data_kind in ("raw", "masked")
     if is_iterating:
@@ -320,6 +337,15 @@ async def publish_version(slug: str, version_id: str = Form(...),
     db.add(VersionExtra(version_id=v.id, data_kind=data_kind))
     if is_iterating:
         d.current_version_id = v.id
+    # #3 上传原始数据后，自动抽取该版本变量并同步到「数据处理设置」的变量清单
+    if mapping_key:
+        db.add(VersionAuxFile(version_id=v.id, dataset_id=d.id, kind="mapping",
+                              filename=mapping_file.filename, file_path=mapping_key,
+                              note_zh=(mapping_note or "").strip() or None,
+                              uploaded_by=user.id))
+    var_sync = None
+    if data_kind == "raw" and data_key:
+        var_sync = sync_variables_from_version(db, d, v)
     # 核心闭环最后一环：本次修复的已采纳勘误标 fixed + fixed_in_version_id
     from ..models.correction import Bug
     fixed = []
@@ -331,7 +357,8 @@ async def publish_version(slug: str, version_id: str = Form(...),
     write_audit(db, user.id, "version.publish", "dataset", d.id,
                 {"version": version_id, "fixed_bugs": fixed})
     db.commit()
-    return {"id": v.id, "version_id": version_id, "fixed_bugs": fixed}
+    return {"id": v.id, "version_id": version_id, "fixed_bugs": fixed,
+            "variables_synced": var_sync}
 
 
 @router.patch("/datasets/{slug}")
@@ -343,6 +370,9 @@ def edit_dataset(slug: str, body: dict, db: Session = Depends(get_db),
         raise HTTPException(403, "仅发起人/管理员可编辑")
     allowed = {"name_zh", "name_en", "desc_zh", "desc_en", "icon",
                "founder_contact", "is_sensitive"}
+    if "name_zh" in body and normalize_name(body["name_zh"]) != normalize_name(d.name_zh):
+        ensure_unique(db, Dataset, "name_zh", body["name_zh"], "数据集名称",
+                      exclude_id=d.id, extra_filter={"is_deleted": False})
     for k, val in body.items():
         if k in allowed:
             setattr(d, k, val)
@@ -453,6 +483,15 @@ def download(slug: str, vid: int, file: str = "data", db: Session = Depends(get_
             raise HTTPException(403, "该数据集 codebook 未公开，请先加入")
         source = "codebook"
         key = v.codebook_file_path
+    elif file == "mapping":
+        # 对照表(取值字典)：与 codebook 同等公开策略，跟着版本走
+        st = get_settings(db, d.id)
+        if not is_dataset_member(db, d.id, user) and not st.codebook_public:
+            raise HTTPException(403, "该数据集对照表未公开，请先加入")
+        aux = db.query(VersionAuxFile).filter_by(version_id=v.id, kind="mapping").order_by(
+            VersionAuxFile.id.desc()).first()
+        source = "mapping"
+        key = aux.file_path if aux else None
     else:
         ok, source = check_download(db, d, v, user)
         if not ok:
@@ -664,6 +703,56 @@ def _data_config(db, dataset_id) -> DatasetDataConfig:
     return c
 
 
+def _latest_raw_version(db, dataset_id):
+    """最新一版「原始」且带数据文件的版本（供抽取变量 / 沙箱加载真实数据）。"""
+    vs = db.query(DataVersion).filter_by(dataset_id=dataset_id).order_by(
+        DataVersion.id.desc()).all()
+    for v in vs:
+        if not v.data_file_path:
+            continue
+        ex = db.get(VersionExtra, v.id)
+        if (ex.data_kind if ex else "raw") == "raw":
+            return v
+    return None
+
+
+def sync_variables_from_version(db, dataset, version) -> dict:
+    """读取某版本 .dta 的列名（含 Stata 变量标签），同步进 Variable 表。
+    保留已有变量的中文标签（label_zh）与 enabled；新列新增；原库中已不存在
+    的变量置 enabled=False（不物理删除，保留脱敏规则等历史配置）。
+    返回 {added, kept, disabled, total, error?}。"""
+    from ..services.introspect import read_dta_schema
+    if not version or not version.data_file_path:
+        return {"error": "no_raw_version", "added": 0, "kept": 0, "disabled": 0, "total": 0}
+    schema = read_dta_schema(version.data_file_path)
+    if not schema:
+        return {"error": "read_failed", "added": 0, "kept": 0, "disabled": 0, "total": 0}
+    existing = {v.var_name: v for v in
+                db.query(Variable).filter_by(dataset_id=dataset.id).all()}
+    new_names = {s["var_name"] for s in schema}
+    added = kept = 0
+    for s in schema:
+        name = s["var_name"]
+        v = existing.get(name)
+        if v:
+            v.enabled = True
+            # 只在库里没填过中文标签、而 .dta 带了标签时回填
+            if not v.label_zh and s.get("label_zh"):
+                v.label_zh = s["label_zh"]
+            kept += 1
+        else:
+            db.add(Variable(dataset_id=dataset.id, var_name=name,
+                            label_zh=s.get("label_zh"), enabled=True))
+            added += 1
+    disabled = 0
+    for name, v in existing.items():
+        if name not in new_names and v.enabled:
+            v.enabled = False
+            disabled += 1
+    return {"added": added, "kept": kept, "disabled": disabled,
+            "total": len(new_names)}
+
+
 @router.get("/datasets/{slug}/data-config")
 def get_data_config(slug: str, db: Session = Depends(get_db),
                     user: User = Depends(get_current_user)):
@@ -704,6 +793,92 @@ def set_data_config(slug: str, body: dict, db: Session = Depends(get_db),
     write_audit(db, user.id, "dataset.data_config", "dataset", d.id)
     db.commit()
     return {"ok": True}
+
+
+@router.post("/datasets/{slug}/variables/refresh")
+def refresh_variables(slug: str, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """手动：从最新一版原始数据(.dta)重新抽取变量清单，同步进 Variable 表。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集管理员可刷新变量")
+    v = _latest_raw_version(db, d.id)
+    if not v:
+        raise HTTPException(400, "还没有带数据文件的原始版本，请先发布原始数据")
+    result = sync_variables_from_version(db, d, v)
+    if result.get("error") == "read_failed":
+        raise HTTPException(400, "读取 .dta 失败：文件可能已丢失（免费档重启会清空上传文件）或格式异常")
+    write_audit(db, user.id, "dataset.variables_refresh", "dataset", d.id, result)
+    db.commit()
+    return {"ok": True, "source_version": v.version_id, **result}
+
+
+# -------- codebook / 对照表 勘误（简单流转：提交→管理员采纳/驳回）--------
+@router.post("/datasets/{slug}/file-corrections")
+def submit_file_correction(slug: str, target: str = Form(...), content: str = Form(...),
+                           version_id: int | None = Form(None),
+                           db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    """对 codebook 或 对照表 提交勘误，发给数据集管理员确认。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
+    if target not in CORRECTION_TARGETS:
+        raise HTTPException(400, "勘误对象须为 codebook 或 对照表")
+    if not (content or "").strip():
+        raise HTTPException(400, "请填写勘误内容")
+    fc = FileCorrection(dataset_id=d.id, version_id=version_id, target=target,
+                        content=content.strip(), reporter_id=user.id, status="pending")
+    db.add(fc)
+    write_audit(db, user.id, "file_correction.submit", "dataset", d.id,
+                {"target": target})
+    db.commit()
+    return {"ok": True, "id": fc.id}
+
+
+@router.get("/datasets/{slug}/file-corrections")
+def list_file_corrections(slug: str, db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    """管理员看全部；普通成员只看自己提交的。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
+    admin = is_dataset_admin(db, d.id, user)
+    q = db.query(FileCorrection).filter_by(dataset_id=d.id)
+    if not admin:
+        q = q.filter_by(reporter_id=user.id)
+    rows = q.order_by(FileCorrection.id.desc()).all()
+
+    def uname(uid):
+        u = db.get(User, uid)
+        return u.display_name if u else ""
+    return {"is_admin": admin,
+            "items": [{"id": r.id, "target": r.target, "content": r.content,
+                       "status": r.status, "reporter": uname(r.reporter_id),
+                       "reporter_id": r.reporter_id,
+                       "created_at": str(r.created_at) if r.created_at else None,
+                       "version_id": r.version_id}
+                      for r in rows]}
+
+
+@router.post("/datasets/{slug}/file-corrections/{fid}/decide")
+def decide_file_correction(slug: str, fid: int, approve: bool,
+                           db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    """管理员采纳/驳回 codebook/对照表 勘误（与原始数据勘误一样的确认动作）。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集管理员可处理勘误")
+    fc = db.get(FileCorrection, fid)
+    if not fc or fc.dataset_id != d.id:
+        raise HTTPException(404, "勘误不存在")
+    fc.status = "accepted" if approve else "rejected"
+    fc.decided_by = user.id
+    fc.decided_at = datetime.utcnow()
+    write_audit(db, user.id, "file_correction.decide", "dataset", d.id,
+                {"id": fid, "approve": approve})
+    db.commit()
+    return {"ok": True, "status": fc.status}
 
 
 @router.post("/datasets/{slug}/versions/{vid}/desensitize")
@@ -995,47 +1170,90 @@ def _require_analysis(db, d, user):
         raise HTTPException(403, "在线分析需单独授权")
 
 
+def _sandbox_variables(db, d):
+    """沙箱里 df 的真实列 = 最新原始版的变量清单（优先 Variable 表，回退读 .dta）。"""
+    vs = db.query(Variable).filter_by(dataset_id=d.id, enabled=True).all()
+    if vs:
+        return [{"var_name": v.var_name, "label_zh": v.label_zh} for v in vs]
+    v = _latest_raw_version(db, d.id)
+    if v:
+        from ..services.introspect import read_dta_schema
+        return [{"var_name": s["var_name"], "label_zh": s.get("label_zh")}
+                for s in read_dta_schema(v.data_file_path)]
+    return []
+
+
+@router.get("/datasets/{slug}/analysis/context")
+def analysis_context(slug: str, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """告诉前端/用户：沙箱里 df 现在有哪些真实变量、连没连上数据。"""
+    d = _get_ds(db, slug)
+    _require_analysis(db, d, user)
+    v = _latest_raw_version(db, d.id)
+    vars_ = _sandbox_variables(db, d)
+    return {"connected": bool(v), "source_version": v.version_id if v else None,
+            "variables": vars_, "count": len(vars_),
+            "hint": ("df 就是最新原始数据（只读）。例：df.columns.tolist() 看全部变量；"
+                     "df['变量名'].describe() 看分布。") if v else
+                    "暂未连接到原始数据：请管理员先在版本库发布一版「原始」数据。"}
+
+
 @router.post("/datasets/{slug}/analysis/generate")
 def gen_analysis(slug: str, prompt: str, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
-    """AI 只接收变量名/codebook/需求，返回分析代码；不接收原始数据行。"""
+    """AI 只接收变量名/codebook/需求，返回在真实数据上运行的 pandas 代码；不接收原始数据行本身。"""
     d = _get_ds(db, slug)
     _require_analysis(db, d, user)
-    vs = db.query(Variable).filter_by(dataset_id=d.id, enabled=True).all()
-    var_list = ", ".join(f"{v.var_name}" + (f"（{v.label_zh}）" if v.label_zh else "") for v in vs)
-    groups = sorted({r.group_key for r in
-                     db.query(DatasetSummary).filter_by(dataset_id=d.id).all() if r.group_key})
-    vars_in_summary = sorted({r.var_name for r in
-                              db.query(DatasetSummary).filter_by(dataset_id=d.id).all()})
-    # 关键：明确告诉 AI 沙箱里 df 的真实结构（派生汇总长表），避免用不存在的原始列名
-    sys = (
+    vars_ = _sandbox_variables(db, d)
+    var_list = ", ".join(v["var_name"] + (f"（{v['label_zh']}）" if v["label_zh"] else "")
+                         for v in vars_)
+    v = _latest_raw_version(db, d.id)
+    if not v:
+        return {"code": "", "lang": "Python",
+                "note": "暂未连接到原始数据：请管理员先在版本库发布一版「原始」数据，再来分析。"}
+    if not ai_client.enabled():
+        return {"code": "", "lang": "Python",
+                "note": "AI 未启用（未配置 AI_API_KEY）。你可以在下方手写 pandas 代码，"
+                        "df 就是最新原始数据。"}
+    # 关键：df 现在是【真实原始数据】，列名就是真实变量名，直接用即可
+    sysmsg = (
         "你是数据分析助手，为一个只读沙箱写 pandas 代码。沙箱里已有一个名为 df 的 DataFrame，"
-        "它不是原始个体数据，而是【派生汇总长表】，恰好有四列：\n"
-        "  var_name(变量名) | group_key(分组，如性别/年份) | bucket(取值区间/类别) | value(该桶的计数或统计量)\n"
-        "因此要按某变量分析时，应先 df[df['var_name']=='变量名']，再对 bucket/value 聚合，"
-        "不要直接使用原始变量名作为列名。把最终结果赋值给变量 result。禁止文件/网络/写操作。")
-    ctx = (f"该数据集包含的变量：{var_list}\n"
-           f"汇总表里已有的 var_name：{', '.join(vars_in_summary) or '（暂无）'}\n"
-           f"汇总表里已有的 group_key：{', '.join(groups) or '（无分组）'}\n"
+        "它就是这份数据集最新原始版的【真实数据】，列名就是下面列出的真实变量名，可直接使用，"
+        "如 df['变量名']。沙箱另有变量 columns=df.columns 的列表。"
+        "把最终结果赋值给变量 result（可为数值、Series、DataFrame、dict）。"
+        "只做只读分析，禁止文件/网络/写操作。只输出纯 Python 代码，不要用 ``` 代码块包裹，不要解释。")
+    ctx = (f"该数据集的真实变量（df 的列）：{var_list or '（读取失败，请用 df.columns 自查）'}\n"
            f"分析需求：{prompt}\n请只输出 pandas 代码：")
-    code = ai_client.complete(ctx, sys)
-    return {"code": code, "lang": "Python"}
+    code = ai_client.complete(ctx, sysmsg)
+    from ..services.sandbox import strip_code_fences
+    return {"code": strip_code_fences(code), "lang": "Python"}
 
 
 @router.post("/datasets/{slug}/analysis/run")
 def run_analysis(slug: str, code: str, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
-    """只读沙箱执行；使用派生汇总，不加载敏感原始行。"""
+    """只读沙箱执行；加载最新原始版真实数据（行数上限防爆内存），绝不写回。"""
     from ..services.sandbox import run_readonly, SandboxViolation
+    from ..services.introspect import load_dta_records
     d = _get_ds(db, slug)
     _require_analysis(db, d, user)
-    rows = db.query(DatasetSummary).filter_by(dataset_id=d.id).all()
-    records = [{"var_name": r.var_name, "group_key": r.group_key,
-                "bucket": r.bucket, "value": r.value} for r in rows]
+    v = _latest_raw_version(db, d.id)
+    if not v:
+        raise HTTPException(400, "暂未连接到原始数据：请管理员先在版本库发布一版「原始」数据")
+    records, meta = load_dta_records(v.data_file_path)
+    if meta.get("error") or not records:
+        raise HTTPException(400,
+                            "读取原始数据失败：文件可能已丢失（免费档重启会清空上传文件，"
+                            "需配置持久存储 COS）或格式异常。")
     try:
-        return run_readonly(code, records)
+        res = run_readonly(code, records)
     except SandboxViolation as e:
         raise HTTPException(400, str(e))
+    res["data_meta"] = {"rows_loaded": meta.get("rows_loaded"),
+                        "total_rows": meta.get("total_rows"),
+                        "truncated": meta.get("truncated"),
+                        "source_version": v.version_id}
+    return res
 
 
 # -------- literature / publications --------

@@ -21,5 +21,6 @@ from .extras import (UserProfile, ProjectMeta, WorkspaceEntry, CollabSection,
 from .governance import (AuditLog, ContributionEvent, QualityRule, QualityRun, VerifyFlag)
 from .literature import (LitTopic, LitRef, DatasetSummaryAI, Publication,
                          DatasetSummary, AnalysisSnippet)
+from .mapping import VersionAuxFile, FileCorrection
 
 __all__ = ["User"]

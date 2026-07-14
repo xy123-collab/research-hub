@@ -7,6 +7,7 @@ from ..core.permissions import (get_current_user, is_super_admin, is_group_admin
                                 group_lead_id, is_group_lead, GROUP_ADMIN_ROLES,
                                 GROUP_LEAD_ROLES)
 from ..core.audit import write_audit
+from ..core.naming import ensure_unique, normalize_name
 from ..models.user import User
 from ..models.group import ResearchGroup, GroupMember, GroupJoinRequest, Charter
 from ..models.dataset import Dataset, DatasetMember, DatasetGroupRequest
@@ -40,6 +41,8 @@ def create_group(body: GroupIn, user: User = Depends(get_current_user),
                  db: Session = Depends(get_db)):
     if db.query(ResearchGroup).filter_by(slug=body.slug).first():
         raise HTTPException(400, "slug 已存在")
+    ensure_unique(db, ResearchGroup, "name_zh", body.name_zh, "课题组名称",
+                  extra_filter={"is_deleted": False})
     g = ResearchGroup(**body.model_dump(), created_by=user.id)
     db.add(g); db.flush()
     # 创建者成为课题组总管理员（group_owner）
@@ -139,6 +142,9 @@ def update_group(slug: str, body: GroupIn, user: User = Depends(get_current_user
         raise HTTPException(404, "课题组不存在")
     if not is_group_admin(db, g.id, user):
         raise HTTPException(403, "需要课题组管理员")
+    if body.name_zh and normalize_name(body.name_zh) != normalize_name(g.name_zh):
+        ensure_unique(db, ResearchGroup, "name_zh", body.name_zh, "课题组名称",
+                      exclude_id=g.id, extra_filter={"is_deleted": False})
     for k, v in body.model_dump(exclude={"slug"}).items():
         setattr(g, k, v)
     write_audit(db, user.id, "group.edit", "group", g.id)
@@ -252,6 +258,8 @@ def create_dataset(slug: str, body: DatasetIn, user: User = Depends(get_current_
         raise HTTPException(403, "需先加入课题组")
     if db.query(Dataset).filter_by(slug=body.slug).first():
         raise HTTPException(400, "数据集 slug 已存在")
+    ensure_unique(db, Dataset, "name_zh", body.name_zh, "数据集名称",
+                  extra_filter={"is_deleted": False})
     d = Dataset(group_id=g.id, founder_id=user.id, **body.model_dump())
     db.add(d); db.flush()
     # 发起人成为 founder

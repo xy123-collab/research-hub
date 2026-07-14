@@ -20,10 +20,12 @@ const codeModal = ref<any>(null)
 const showPublish = ref(false); const showEdit = ref(false); const showCodeAdd = ref(false)
 const pub = ref<any>({ version_id: '', changelog_zh: '', fixed: [] as number[] })
 const pubData = ref<File | null>(null); const pubCode = ref<File | null>(null)
+const pubMapping = ref<File | null>(null); const pubMappingNote = ref('')
 const edit = ref<any>({})
 const codeAdd = ref<any>({ title_zh: '', lang: 'Python', desc_zh: '', source_code: '' })
 const codeFile = ref<File | null>(null)
 const aiPrompt = ref(''); const aiCode = ref(''); const aiResult = ref<any>(null); const aiSummary = ref('')
+const analysisCtx = ref<any>(null); const aiNote = ref('')
 const litForm = ref<any>({ title: '', authors: '', venue: '', year: null, url: '', doi: '', note_zh: '' })
 const posts = ref<any[]>([]); const postForm = ref({ content_zh: '' })
 const acts = ref<any[]>([]); const actFilter = ref('all')
@@ -92,12 +94,15 @@ async function reloadDetail() { d.value = (await api.get(`/datasets/${slug}`)).d
 
 async function loadTab(x: string) {
   tab.value = x
-  if (x === 'versions') versions.value = (await api.get(`/datasets/${slug}/versions`)).data
+  if (x === 'versions') { versions.value = (await api.get(`/datasets/${slug}/versions`)).data; if (d.value.is_member) loadFileCorrections() }
   if (x === 'bugs') bugs.value = (await api.get(`/datasets/${slug}/bugs`)).data
   if (x === 'code') codes.value = (await api.get(`/datasets/${slug}/code`)).data
   if (x === 'verify') flags.value = (await api.get(`/datasets/${slug}/verify-flags`)).data
   if (x === 'literature') lit.value = (await api.get(`/datasets/${slug}/literature`)).data
-  if (x === 'dashboard') dash.value = (await api.get(`/datasets/${slug}/dashboard`, { params: { var: 'gender' } })).data
+  if (x === 'dashboard') {
+    try { dash.value = (await api.get(`/datasets/${slug}/dashboard`, { params: { var: 'gender' } })).data } catch { dash.value = [] }
+    if (canAnalyze.value) { try { analysisCtx.value = (await api.get(`/datasets/${slug}/analysis/context`)).data } catch { analysisCtx.value = null } }
+  }
   if (x === 'feed') posts.value = (await api.get('/posts', { params: { dataset_id: d.value.id } })).data
   if (x === 'activity') acts.value = (await api.get(`/datasets/${slug}/activity`, { params: { kind: actFilter.value } })).data
   if (x === 'access') await loadMembers()
@@ -392,6 +397,7 @@ async function finalizeBug(id: number, adopt: string, score: number) {
 async function openPublish() {
   acceptedBugs.value = (await api.get(`/datasets/${slug}/bugs`)).data.filter((b: any) => b.status === 'accepted')
   pub.value = { version_id: '', changelog_zh: '', fixed: [], data_kind: 'raw' }; pubData.value = pubCode.value = null
+  pubMapping.value = null; pubMappingNote.value = ''
   showPublish.value = true
 }
 async function doPublish() {
@@ -403,14 +409,51 @@ async function doPublish() {
     fd.append('fixed_bug_ids', pub.value.fixed.join(','))
     if (pubData.value) fd.append('data_file', pubData.value)
     if (pubCode.value) fd.append('codebook_file', pubCode.value)
-    await api.post(`/datasets/${slug}/versions`, fd)
+    if (pubMapping.value) fd.append('mapping_file', pubMapping.value)
+    if (pubMappingNote.value) fd.append('mapping_note', pubMappingNote.value)
+    const r = await api.post(`/datasets/${slug}/versions`, fd)
     showPublish.value = false; loadTab('versions')
     d.value = (await api.get(`/datasets/${slug}`)).data
+    const vs = r.data?.variables_synced
+    if (vs && !vs.error) alert(`已发布 ${r.data.version_id}。变量已自动抽取：新增 ${vs.added}，保留 ${vs.kept}，停用 ${vs.disabled}，共 ${vs.total} 个`)
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 function download(v: any, file: string) {
   downloadFile(`/datasets/${slug}/versions/${v.id}/download?file=${file}`)
 }
+
+// ---------- codebook / 对照表 勘误（简单流转）----------
+const showFileCorrect = ref(false)
+const fileCorrectForm = ref<any>({ target: 'codebook', version_id: null, content: '', targetLabel: '' })
+const fileCorrections = ref<any>({ is_admin: false, items: [] })
+function openFileCorrect(v: any, target: string) {
+  fileCorrectForm.value = { target, version_id: v.id, content: '',
+    targetLabel: target === 'codebook' ? 'Codebook' : '对照表', version_name: v.version_id }
+  showFileCorrect.value = true
+}
+async function submitFileCorrect() {
+  if (!fileCorrectForm.value.content.trim()) { alert('请填写勘误内容'); return }
+  try {
+    const fd = new FormData()
+    fd.append('target', fileCorrectForm.value.target)
+    fd.append('content', fileCorrectForm.value.content)
+    if (fileCorrectForm.value.version_id) fd.append('version_id', fileCorrectForm.value.version_id)
+    await api.post(`/datasets/${slug}/file-corrections`, fd)
+    showFileCorrect.value = false
+    alert('已提交，等待数据集管理员确认采纳')
+    if (tab.value === 'versions') loadFileCorrections()
+  } catch (e: any) { alert(e.response?.data?.detail || '提交失败') }
+}
+async function loadFileCorrections() {
+  try { fileCorrections.value = (await api.get(`/datasets/${slug}/file-corrections`)).data }
+  catch { fileCorrections.value = { is_admin: false, items: [] } }
+}
+async function decideFileCorrect(id: number, approve: boolean) {
+  await api.post(`/datasets/${slug}/file-corrections/${id}/decide`, null, { params: { approve } })
+  loadFileCorrections()
+}
+const fcLabel: Record<string, string> = { codebook: 'Codebook', mapping: '对照表' }
+const fcStatus: Record<string, string> = { pending: '待确认', accepted: '已采纳', rejected: '已驳回' }
 
 // ---------- dataset edit ----------
 function openEdit() {
@@ -449,12 +492,25 @@ async function genWriteup(id: number) {
 
 // ---------- AI dashboard ----------
 async function aiGen() {
-  const r = await api.post(`/datasets/${slug}/analysis/generate`, null, { params: { prompt: aiPrompt.value } })
-  aiCode.value = r.data.code
+  aiNote.value = ''
+  try {
+    const r = await api.post(`/datasets/${slug}/analysis/generate`, null, { params: { prompt: aiPrompt.value } })
+    aiCode.value = r.data.code || ''
+    aiNote.value = r.data.note || ''
+  } catch (e: any) { alert(e.response?.data?.detail || '生成失败') }
 }
 async function aiRun() {
+  aiResult.value = null
   try { aiResult.value = (await api.post(`/datasets/${slug}/analysis/run`, null, { params: { code: aiCode.value } })).data }
   catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+async function refreshVariables() {
+  try {
+    const r = await api.post(`/datasets/${slug}/variables/refresh`)
+    alert(`已从原始版本 ${r.data.source_version} 抽取变量：新增 ${r.data.added}，保留 ${r.data.kept}，停用 ${r.data.disabled}，共 ${r.data.total} 个`)
+    if (showDataCfg.value) dataCfg.value = (await api.get(`/datasets/${slug}/data-config`)).data
+    if (tab.value === 'dashboard' && canAnalyze.value) analysisCtx.value = (await api.get(`/datasets/${slug}/analysis/context`)).data
+  } catch (e: any) { alert(e.response?.data?.detail || '刷新失败') }
 }
 
 // ---------- literature ----------
@@ -775,9 +831,9 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 
       <!-- dashboard -->
       <div v-else-if="tab==='dashboard'">
-        <p class="text-xs text-gray-500 mb-3">看板与在线分析基于「派生汇总表」（不含原始个体数据）：df 有四列 var_name/group_key/bucket/value。分析代码在服务器的只读隔离子进程里运行，禁文件/网络/写操作，10 秒超时，绝不改原始数据。</p>
-        <div class="card">
-          <div class="label-cap">样本描述性统计 · gender（只读，从派生汇总出图）</div>
+        <p class="text-xs text-gray-500 mb-3">在线分析在服务器的只读隔离子进程里运行：<b>df 就是本数据集最新「原始」版的真实数据</b>（列名即真实变量），行数超上限时只读前 5 万行。禁文件/网络/写操作，10 秒超时，<b>绝不改原始数据</b>。</p>
+        <div v-if="dash && dash.length" class="card">
+          <div class="label-cap">样本描述性统计 · gender（派生汇总示例）</div>
           <div class="mt-3 space-y-2">
             <div v-for="b in dash" :key="b.bucket" class="flex items-center gap-2 text-sm">
               <span class="w-16">{{ b.bucket }}</span>
@@ -789,13 +845,33 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <div class="card mt-4">
           <div class="label-cap">AI / 手写描述分析（只读沙箱，绝不改原始值）</div>
           <template v-if="canAnalyze">
-            <input v-model="aiPrompt" class="input mt-2" placeholder="用自然语言描述分析需求，如：统计各变量分布" />
+            <!-- 本数据现有哪些变量：直接读最新原始数据 -->
+            <div class="mt-2 rounded-lg border border-line bg-paper p-3 text-xs">
+              <div v-if="analysisCtx && analysisCtx.connected">
+                <span class="text-emerald-700 font-medium">● 已连接原始数据</span>
+                （来源版本 <span class="font-mono">{{ analysisCtx.source_version }}</span>，共 {{ analysisCtx.count }} 个变量）
+                <span class="text-gray-400">df 就是这份真实数据，直接 df['变量名'] 即可。</span>
+                <div class="mt-1.5 flex flex-wrap gap-1">
+                  <span v-for="v in analysisCtx.variables" :key="v.var_name" class="tag border font-mono">{{ v.var_name }}<span v-if="v.label_zh" class="text-gray-400">·{{ v.label_zh }}</span></span>
+                </div>
+              </div>
+              <div v-else class="text-gray-500">
+                <span class="text-amber-600 font-medium">● 暂未连接原始数据</span>
+                ——请管理员先在「版本库」发布一版<b>原始</b>数据。
+                <button v-if="d.is_admin" class="btn-ghost text-xs text-accent ml-1" @click="refreshVariables">从最新原始数据刷新变量</button>
+              </div>
+            </div>
+            <input v-model="aiPrompt" class="input mt-2" placeholder="用自然语言描述分析需求，如：本数据有哪些变量？统计 age 的分布" />
             <div class="flex gap-2 mt-2">
               <button class="btn-ghost" @click="aiGen">AI 生成代码</button>
               <button class="btn-primary" @click="aiRun" :disabled="!aiCode">在沙箱运行</button>
             </div>
-            <textarea v-model="aiCode" class="input mt-2 font-mono text-xs" rows="4" placeholder="生成/手写的 pandas 代码（result=...）"></textarea>
-            <pre v-if="aiResult" class="mt-2">{{ JSON.stringify(aiResult, null, 2) }}</pre>
+            <p v-if="aiNote" class="text-xs text-amber-600 mt-2">{{ aiNote }}</p>
+            <textarea v-model="aiCode" class="input mt-2 font-mono text-xs" rows="4" placeholder="生成/手写的 pandas 代码，如 result = df.columns.tolist() 或 result = df['age'].describe()"></textarea>
+            <div v-if="aiResult" class="mt-2">
+              <p v-if="aiResult.data_meta" class="text-xs text-gray-400 mb-1">数据：{{ aiResult.data_meta.source_version }} 版，加载 {{ aiResult.data_meta.rows_loaded }} 行<span v-if="aiResult.data_meta.truncated">（共 {{ aiResult.data_meta.total_rows }} 行，已截断）</span></p>
+              <pre>{{ JSON.stringify(aiResult.result !== undefined ? aiResult.result : aiResult, null, 2) }}</pre>
+            </div>
           </template>
           <div v-else class="mt-2">
             <p class="text-sm text-gray-400">在线分析功能需数据集管理员单独授权后开放。</p>
@@ -820,6 +896,24 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             :class="['px-2.5 py-1 rounded-full', verKind===k ? 'bg-accent text-white':'bg-paper text-gray-600']"
             @click="verKind=k as any">{{ l }}</button>
         </div>
+        <!-- Codebook / 对照表 勘误：管理员看全部并采纳/驳回；成员看自己提交的 -->
+        <div v-if="fileCorrections.items && fileCorrections.items.length" class="card mb-3">
+          <div class="label-cap mb-2">Codebook / 对照表 勘误{{ fileCorrections.is_admin ? '（待你确认采纳）' : '（我提交的）' }}</div>
+          <div v-for="c in fileCorrections.items" :key="c.id" class="flex items-start gap-2 py-1.5 border-b border-line last:border-0 text-sm">
+            <span class="tag border shrink-0">{{ fcLabel[c.target]||c.target }}</span>
+            <div class="min-w-0 flex-1">
+              <p class="text-gray-800 break-words">{{ c.content }}</p>
+              <p class="text-xs text-gray-400">{{ c.reporter }} · {{ (c.created_at||'').slice(0,16) }}</p>
+            </div>
+            <div class="shrink-0 flex items-center gap-2">
+              <template v-if="fileCorrections.is_admin && c.status==='pending'">
+                <button class="btn-ghost text-xs text-emerald-700" @click="decideFileCorrect(c.id, true)">采纳</button>
+                <button class="btn-ghost text-xs text-gray-500" @click="decideFileCorrect(c.id, false)">驳回</button>
+              </template>
+              <span v-else class="text-xs" :class="c.status==='accepted'?'text-emerald-700':c.status==='rejected'?'text-gray-400':'text-amber-600'">{{ fcStatus[c.status]||c.status }}</span>
+            </div>
+          </div>
+        </div>
         <div v-for="v in sortedVersions" :key="v.id" class="card mb-3 flex items-center justify-between">
           <div>
             <span class="font-mono">{{ v.version_id }}</span>
@@ -831,7 +925,14 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           </div>
           <div class="flex gap-2 items-center flex-wrap justify-end">
             <button v-if="v.data_kind==='raw' && d.is_admin" class="btn-ghost text-xs" @click="openDesens(v)">生成脱敏版</button>
-            <button class="btn-ghost text-xs" @click="download(v,'codebook')">Codebook</button>
+            <template v-if="v.has_codebook">
+              <button class="btn-ghost text-xs" @click="download(v,'codebook')">Codebook</button>
+              <button v-if="d.is_member" class="text-xs text-gray-400 hover:text-accent" title="给该版本 Codebook 报错/勘误" @click="openFileCorrect(v,'codebook')">报错</button>
+            </template>
+            <template v-for="m in (v.mappings||[])" :key="m.id">
+              <button class="btn-ghost text-xs" :title="m.note_zh||'对照表/取值字典'" @click="download(v,'mapping')">对照表<span v-if="m.note_zh" class="text-gray-400">·{{ m.note_zh }}</span></button>
+              <button v-if="d.is_member" class="text-xs text-gray-400 hover:text-accent" title="给该版本对照表报错/勘误" @click="openFileCorrect(v,'mapping')">报错</button>
+            </template>
             <button v-if="!v.has_data" class="text-xs text-gray-400">无数据文件</button>
             <button v-else-if="v.data_kind==='sample' || d.is_admin || (v.is_current ? canDownloadCurrent : (d.settings?.history_downloadable || (d.my_perms||[]).includes('download.history')))"
               class="btn-ghost text-xs" @click="download(v,'data')">下载 .dta</button>
@@ -1371,8 +1472,13 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <textarea v-model="pub.changelog_zh" class="input mb-2" placeholder="更新说明 changelog"></textarea>
         <label class="label-cap">数据文件 (.dta)</label>
         <input type="file" accept=".dta" @change="(e:any)=>pubData=e.target.files[0]" class="text-xs mb-2 block" />
+        <p v-if="pub.data_kind==='raw'" class="text-xs text-gray-400 mb-2">上传原始 .dta 后，系统会自动抽取其变量清单，同步到「数据处理设置」，并作为在线分析 df 的真实变量。</p>
         <label class="label-cap">Codebook (PDF/DOCX)</label>
         <input type="file" @change="(e:any)=>pubCode=e.target.files[0]" class="text-xs mb-2 block" />
+        <label class="label-cap">对照表 / 取值字典（可选）</label>
+        <p class="text-xs text-gray-400 mb-1">存放数字编码与真实中文/文字的映射，如城市列表、职位列表（CSV/Excel/PDF 均可）。</p>
+        <input type="file" @change="(e:any)=>pubMapping=e.target.files[0]" class="text-xs mb-1 block" />
+        <input v-model="pubMappingNote" class="input mb-2 text-xs" placeholder="对照表简短说明，如「城市编码对照」" />
         <div v-if="acceptedBugs.length" class="mt-2">
           <div class="label-cap mb-1">本次修复的已采纳勘误（勾选→标 fixed）</div>
           <label v-for="b in acceptedBugs" :key="b.id" class="flex items-center gap-2 text-sm">
@@ -1574,7 +1680,12 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     <div v-if="showDataCfg" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showDataCfg=false">
       <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-1">数据处理设置</h3>
-        <p class="text-xs text-gray-500 mb-3">唯一ID用于批量勘误定位记录（其本身不可修改）；脱敏规则用于一键生成脱敏版。</p>
+        <p class="text-xs text-gray-500 mb-2">唯一ID用于批量勘误定位记录（其本身不可修改）；脱敏规则用于一键生成脱敏版。</p>
+        <div class="flex items-center justify-between rounded bg-paper border border-line px-3 py-2 mb-3">
+          <span class="text-xs text-gray-500">变量清单自动来自最新「原始」版数据（共 {{ dataCfg.variables?.length || 0 }} 个）。</span>
+          <button class="btn-ghost text-xs text-accent" @click="refreshVariables">从最新原始数据刷新变量</button>
+        </div>
+        <p v-if="!dataCfg.variables || !dataCfg.variables.length" class="text-xs text-amber-600 mb-3">尚未抽取到变量：请先在版本库发布一版原始数据，或点上方「刷新变量」。</p>
         <label class="label-cap">唯一ID变量</label>
         <select v-model="dataCfg.unique_id_var" class="input mb-2">
           <option value="">（未设置）</option>
@@ -1595,6 +1706,19 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <div class="flex justify-end gap-2 mt-3">
           <button class="btn-ghost" @click="showDataCfg=false">取消</button>
           <button class="btn-primary" @click="saveDataCfg">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Codebook / 对照表 勘误提交 -->
+    <div v-if="showFileCorrect" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showFileCorrect=false">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
+        <h3 class="text-lg mb-1">{{ fileCorrectForm.targetLabel }}勘误报错</h3>
+        <p class="text-xs text-gray-500 mb-3">针对版本 <span class="font-mono">{{ fileCorrectForm.version_name }}</span> 的{{ fileCorrectForm.targetLabel }}。提交后发给数据集管理员确认是否采纳（不记录历史版本迭代）。</p>
+        <textarea v-model="fileCorrectForm.content" class="input mb-3" rows="4" placeholder="请描述错误位置与建议的更正，如「城市编码 110000 对应应为『北京市』而非『北京』」"></textarea>
+        <div class="flex justify-end gap-2">
+          <button class="btn-ghost" @click="showFileCorrect=false">取消</button>
+          <button class="btn-primary" @click="submitFileCorrect">提交勘误</button>
         </div>
       </div>
     </div>
