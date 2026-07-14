@@ -526,6 +526,7 @@ async function addRef(force = false) {
   try {
     const r = (await api.post(`/datasets/${slug}/literature/refs`,
       { ...litForm.value, confirm_real: force })).data
+    if (r.duplicate) { alert(r.detail || '本数据集内已存在完全一致的文献'); return }
     if (r.ok === false) { litVerdict.value = r.verdict; return }   // 可疑，等用户确认
     litForm.value = { title: '', authors: '', venue: '', year: null, url: '', doi: '', note_zh: '' }
     litVerdict.value = null; showLitUpload.value = false; loadTab('literature')

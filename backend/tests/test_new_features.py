@@ -109,3 +109,18 @@ def test_file_correction_invalid_target(client, member):
     r = client.post("/api/datasets/cod/file-corrections",
                     data={"target": "bogus", "content": "x"}, headers=member)
     assert r.status_code == 400
+
+
+# ---------------- 文献同集查重（标题+作者+年份+刊物 四项全一致才算重复）----------------
+def test_literature_duplicate_only_when_all_four_match(client, founder):
+    ref = {"title": "Officials and Growth ZZ", "authors": "张三", "year": 2020, "venue": "经济研究"}
+    r1 = client.post("/api/datasets/cod/literature/refs", json={**ref, "confirm_real": True}, headers=founder)
+    assert r1.json().get("ok") is True
+    # 四项全一致（大小写/空格不敏感）→ 判重
+    r2 = client.post("/api/datasets/cod/literature/refs",
+                     json={**ref, "title": "  officials and growth zz ", "confirm_real": True}, headers=founder)
+    assert r2.json().get("duplicate") is True
+    # 仅标题相同、作者不同 → 不算重复，允许上传
+    r3 = client.post("/api/datasets/cod/literature/refs",
+                     json={**ref, "authors": "李四", "confirm_real": True}, headers=founder)
+    assert r3.json().get("ok") is True

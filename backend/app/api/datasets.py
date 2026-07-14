@@ -1272,6 +1272,21 @@ def literature(slug: str, db: Session = Depends(get_db), user: User = Depends(ge
                      for r in refs]}
 
 
+def _lit_sig(title, authors, year, venue):
+    """文献判重签名：标题+作者+年份+刊物，四项都归一化。"""
+    return (normalize_name(title), normalize_name(authors),
+            str(year or "").strip(), normalize_name(venue))
+
+
+def _lit_duplicate(db, dataset_id, title, authors, year, venue) -> bool:
+    """同一数据集内是否已存在四项全一致的文献（仅标题相同不算重复）。"""
+    sig = _lit_sig(title, authors, year, venue)
+    for r in db.query(LitRef).filter_by(dataset_id=dataset_id).all():
+        if _lit_sig(r.title, r.authors, r.year, r.venue) == sig:
+            return True
+    return False
+
+
 @router.post("/datasets/{slug}/literature/refs")
 def add_ref(slug: str, body: LitRefIn, db: Session = Depends(get_db),
             user: User = Depends(get_current_user)):
@@ -1280,6 +1295,10 @@ def add_ref(slug: str, body: LitRefIn, db: Session = Depends(get_db),
         raise HTTPException(403, "需为数据集成员")
     if not (body.title and body.authors and body.year and body.venue):
         raise HTTPException(400, "标题、作者、年份、刊物/出版社为必填")
+    # 同一数据集内查重：仅当 标题+作者+年份+刊物 四项全一致才算重复
+    if _lit_duplicate(db, d.id, body.title, body.authors, body.year, body.venue):
+        return {"ok": False, "duplicate": True,
+                "detail": "本数据集内已存在标题、作者、年份、刊物完全一致的文献，不重复上传"}
     # 单条也做 AI 真实性核验：可疑且未确认真实 → 拦截并回传结论
     verdict = _ai_verify_refs([{"title": body.title, "authors": body.authors,
                                 "year": body.year, "venue": body.venue, "doi": body.doi}])[0]
@@ -1543,14 +1562,20 @@ def batch_commit_lit(slug: str, body: LitBatchIn, db: Session = Depends(get_db),
     if blocked:
         return {"ok": False, "blocked": blocked, "verdicts": verdicts,
                 "detail": "以下文献被 AI 判为可疑，请核对后勾选「确认真实文献」再导入"}
-    created = 0
+    created = 0; skipped_dupes = []
+    seen = set()   # 本批次内也去重（四项全一致）
     for r in refs:
+        sig = _lit_sig(r["title"], r.get("authors"), r.get("year"), r.get("venue"))
+        if sig in seen or _lit_duplicate(db, d.id, r["title"], r.get("authors"),
+                                         r.get("year"), r.get("venue")):
+            skipped_dupes.append(r["title"]); continue
+        seen.add(sig)
         db.add(LitRef(dataset_id=d.id, added_by=user.id, title=r["title"],
                       authors=r.get("authors"), venue=r.get("venue"), year=r.get("year"),
                       doi=r.get("doi"), url=r.get("url")))
         created += 1
     db.commit()
-    return {"ok": True, "created": created}
+    return {"ok": True, "created": created, "skipped_duplicates": skipped_dupes}
 
 
 # ================= AI 文献/用途总结（元数据-only，安全）=================
