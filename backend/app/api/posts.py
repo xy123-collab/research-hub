@@ -16,6 +16,7 @@ router = APIRouter(tags=["community"])
 @router.get("/posts")
 def feed(dataset_id: int | None = None, db: Session = Depends(get_db),
          user: User = Depends(get_current_user)):
+    from ..core.scopes import scope_visible, get_scope, scope_label
     my_groups = {m.group_id for m in db.query(GroupMember)
                  .filter_by(user_id=user.id, status="active").all()}
     q = db.query(Post)
@@ -23,12 +24,17 @@ def feed(dataset_id: int | None = None, db: Session = Depends(get_db),
         q = q.filter_by(dataset_id=dataset_id)
     out = []
     for p in q.order_by(Post.id.desc()).limit(200).all():
-        # 可见性三级
-        if p.visibility == "private" and p.author_id != user.id and not is_super_admin(user):
-            continue
-        if p.visibility == "group" and p.group_id not in my_groups \
-                and p.author_id != user.id and not is_super_admin(user):
-            continue
+        # 优先用统一可见范围 ContentScope；无记录时回退旧 visibility 三级
+        sc = get_scope(db, "post", p.id)
+        if sc:
+            if not scope_visible(db, "post", p.id, p.author_id, user):
+                continue
+        else:
+            if p.visibility == "private" and p.author_id != user.id and not is_super_admin(user):
+                continue
+            if p.visibility == "group" and p.group_id not in my_groups \
+                    and p.author_id != user.id and not is_super_admin(user):
+                continue
         tags = [t.tag for t in db.query(PostTag).filter_by(post_id=p.id).all()]
         likes = db.query(PostReaction).filter_by(post_id=p.id, type="like").count()
         author = db.get(User, p.author_id)
@@ -36,6 +42,8 @@ def feed(dataset_id: int | None = None, db: Session = Depends(get_db),
                     "author_name": author.display_name if author else "",
                     "content_zh": p.content_zh, "visibility": p.visibility,
                     "dataset_id": p.dataset_id, "cover_icon": p.cover_icon,
+                    "scope": (sc.scope if sc else "public"),
+                    "scope_label": scope_label(sc.scope if sc else "public"),
                     "tags": tags, "likes": likes})
     return out
 
@@ -43,10 +51,17 @@ def feed(dataset_id: int | None = None, db: Session = Depends(get_db),
 @router.post("/posts")
 def create_post(body: PostIn, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
+    from ..core.scopes import set_scope
+    # 兼容旧字段：由统一 scope 推导 legacy visibility
+    legacy = {"public": "platform", "self": "private"}.get(body.scope, "group")
     p = Post(author_id=user.id, content_zh=body.content_zh, content_en=body.content_en,
              dataset_id=body.dataset_id, group_id=body.group_id,
-             visibility=body.visibility, cover_icon=body.cover_icon)
+             visibility=legacy, cover_icon=body.cover_icon)
     db.add(p); db.flush()
+    try:
+        set_scope(db, "post", p.id, body.scope, body.scope_ref_id, user)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     for t in body.tags:
         db.add(PostTag(post_id=p.id, tag=t))
     record_contribution(db, user.id, "post", "post", p.id, body.dataset_id, weight=1)
@@ -148,17 +163,24 @@ from fastapi import Form
 @router.get("/projects")
 def list_projects(author_id: int | None = None, db: Session = Depends(get_db),
                   user: User = Depends(get_current_user)):
+    from ..core.scopes import scope_visible, get_scope, scope_label
     q = db.query(Project)
     if author_id:
         q = q.filter_by(author_id=author_id)
     rows = q.order_by(Project.id.desc()).all()
     out = []
     for p in rows:
+        # 可见范围过滤（本人/管理员始终可见）
+        if not scope_visible(db, "project", p.id, p.author_id, user):
+            continue
         m = db.get(ProjectMeta, p.id)
+        sc = get_scope(db, "project", p.id)
         out.append({"id": p.id, "title": p.title, "status": p.status,
                     "author_id": p.author_id, "open_for_discussion": p.open_for_discussion,
                     "body_zh": p.body_zh, "pinned": bool(m and m.pinned),
                     "has_image": bool(m and m.image_path),
+                    "scope": (sc.scope if sc else "public"),
+                    "scope_label": scope_label(sc.scope if sc else "public"),
                     "image_url": f"/api/projects/{p.id}/image" if (m and m.image_path) else None})
     # 置顶优先，其余按新→旧
     out.sort(key=lambda x: (not x["pinned"], -x["id"]))
@@ -168,10 +190,12 @@ def list_projects(author_id: int | None = None, db: Session = Depends(get_db),
 @router.post("/projects")
 def create_project(title: str = Form(...), body_zh: str = Form(...),
                    pinned: bool = Form(False), status: str | None = Form(None),
+                   scope: str = Form("public"), scope_ref_id: int | None = Form(None),
                    image: UploadFile = File(...), db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
-    """创建在做项目：标题、图片、文字均必填（图片作为封面）。可选择是否置顶。"""
+    """创建在做项目：标题、图片、文字均必填（图片作为封面）。可选择是否置顶与可见范围。"""
     from ..services.uploads import save_upload, IMG_EXT
+    from ..core.scopes import set_scope
     if not (title or "").strip() or not (body_zh or "").strip():
         raise HTTPException(400, "标题与文字均必填")
     meta = save_upload(image, f"project/cover", whitelist=IMG_EXT)
@@ -180,6 +204,10 @@ def create_project(title: str = Form(...), body_zh: str = Form(...),
     db.add(p); db.flush()
     db.add(ProjectMeta(project_id=p.id, pinned=bool(pinned), image_path=meta["file_path"],
                        image_name=meta["file_name"], image_mime=meta["mime"]))
+    try:
+        set_scope(db, "project", p.id, scope, scope_ref_id, user)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     db.commit()
     return {"id": p.id}
 

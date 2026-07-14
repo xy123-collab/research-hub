@@ -26,7 +26,7 @@ from ..models.group import ResearchGroup, Charter
 from ..models.correction import Bug
 from ..models.code import CodeScript
 from ..models.governance import VerifyFlag
-from ..schemas.models import VersionIn, LitRefIn, DatasetIn
+from ..schemas.models import VersionIn, LitRefIn, DatasetIn, LitBatchIn
 
 router = APIRouter(tags=["datasets"])
 
@@ -974,7 +974,10 @@ def literature(slug: str, db: Session = Depends(get_db), user: User = Depends(ge
                         "ai_generated": t.ai_generated} for t in topics],
             "refs": [{"id": r.id, "title": r.title, "authors": r.authors,
                       "venue": r.venue, "year": r.year, "url": r.url,
-                      "note_zh": r.note_zh} for r in refs]}
+                      "doi": getattr(r, "doi", None), "note_zh": r.note_zh,
+                      "citation": _citation(r.title, r.authors, r.year, r.venue,
+                                            getattr(r, "doi", None), r.url)}
+                     for r in refs]}
 
 
 @router.post("/datasets/{slug}/literature/refs")
@@ -986,6 +989,196 @@ def add_ref(slug: str, body: LitRefIn, db: Session = Depends(get_db),
     r = LitRef(dataset_id=d.id, added_by=user.id, **body.model_dump())
     db.add(r); db.commit()
     return {"id": r.id}
+
+
+# ================= 文献批量导入 / 引用格式 / AI 真实性核验 =================
+LIT_COLS = ["标题", "作者", "年份", "刊物/出版社", "DOI", "链接URL"]
+LIT_REQUIRED = ["标题", "作者", "年份", "刊物/出版社"]
+
+
+def _citation(title, authors, year, venue, doi=None, url=None) -> str:
+    """生成一条参考文献引用格式（作者(年份). 标题. 刊物. DOI/URL）。"""
+    parts = []
+    if authors:
+        parts.append(f"{authors}")
+    if year:
+        parts.append(f"({year}).")
+    elif authors:
+        parts[-1] = parts[-1] + "."
+    if title:
+        parts.append(f"{title}.")
+    if venue:
+        parts.append(f"{venue}.")
+    if doi:
+        parts.append(f"https://doi.org/{doi}" if not str(doi).startswith("http") else str(doi))
+    elif url:
+        parts.append(str(url))
+    return " ".join(parts).strip()
+
+
+@router.get("/datasets/{slug}/lit-template")
+def lit_template(slug: str, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """下载批量文献 Excel 模板（列头 + 填写说明）。"""
+    from openpyxl import Workbook
+    from openpyxl.comments import Comment
+    d = _get_ds(db, slug)
+    wb = Workbook()
+    ws = wb.active; ws.title = "文献"
+    ws.append(LIT_COLS)
+    notes = {
+        "标题": "文献标题（必填）。",
+        "作者": "作者，多位可用逗号或分号分隔（必填）。",
+        "年份": "发表年份，如 2021（必填）。",
+        "刊物/出版社": "期刊名或出版社（必填）。",
+        "DOI": "数字对象唯一标识（可选）。",
+        "链接URL": "可点击跳转的链接（可选）。",
+    }
+    for i, col in enumerate(LIT_COLS, start=1):
+        ws.cell(row=1, column=i).comment = Comment(notes[col], "系统")
+    ws2 = wb.create_sheet("填写说明")
+    for line in [
+        "批量文献填写说明：",
+        "1. 每一行是一条参考文献；导入后系统按行拆分预览。",
+        "2. 标题、作者、年份、刊物/出版社为必填；DOI、链接URL 可选。",
+        "3. 导入后可一键 AI 核验是否为真实文献；被判可疑的会标出，",
+        "   你核对后仍可勾选「确认真实文献」强制上传（以防 AI 误判）。",
+        "4. 支持 .xlsx / .csv，列顺序：" + "、".join(LIT_COLS) + "。",
+    ]:
+        ws2.append([line])
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{d.slug}_lit_template.xlsx"'})
+
+
+def _parse_lit(raw: bytes, filename: str) -> list[dict]:
+    name = (filename or "").lower()
+    rows = []
+    if name.endswith(".csv"):
+        import csv
+        for r in csv.DictReader(io.StringIO(raw.decode("utf-8-sig", errors="replace"))):
+            if any((v or "").strip() for v in r.values()):
+                rows.append(r)
+    else:
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        ws = wb["文献"] if "文献" in wb.sheetnames else wb.worksheets[0]
+        header = None
+        for row in ws.iter_rows(values_only=True):
+            if header is None:
+                header = [str(c).strip() if c is not None else "" for c in row]; continue
+            if row is None or all(c is None for c in row):
+                continue
+            rows.append({header[i]: row[i] for i in range(min(len(header), len(row)))})
+    out = []
+    for r in rows:
+        y = r.get("年份")
+        try:
+            y = int(str(y).strip()[:4]) if y not in (None, "") else None
+        except Exception:
+            y = None
+        item = {"title": str(r.get("标题", "") or "").strip(),
+                "authors": str(r.get("作者", "") or "").strip(),
+                "year": y, "venue": str(r.get("刊物/出版社", "") or "").strip(),
+                "doi": str(r.get("DOI", "") or "").strip() or None,
+                "url": str(r.get("链接URL", "") or "").strip() or None}
+        missing = [c for c in LIT_REQUIRED
+                   if not (item["title"] if c == "标题" else item["authors"] if c == "作者"
+                           else item["year"] if c == "年份" else item["venue"])]
+        item["missing"] = missing
+        item["citation"] = _citation(item["title"], item["authors"], item["year"],
+                                      item["venue"], item["doi"], item["url"])
+        out.append(item)
+    return out
+
+
+@router.post("/datasets/{slug}/literature/parse")
+def parse_lit(slug: str, file: UploadFile = File(...), db: Session = Depends(get_db),
+              user: User = Depends(get_current_user)):
+    """解析批量文献文件（不落库），返回逐条预览 + 必填校验 + 引用格式。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
+    rows = _parse_lit(file.file.read(), file.filename)
+    if not rows:
+        raise HTTPException(400, "未解析到有效文献行，请用模板填写")
+    return {"rows": rows}
+
+
+def _ai_verify_refs(refs: list[dict]) -> list[dict]:
+    """用 AI 判断每条文献是否可能真实存在。返回 [{index, verdict, reason}]。
+    verdict: real | suspect | unknown（AI 未启用或解析失败时为 unknown，放行）。"""
+    if not ai_client.enabled():
+        return [{"index": i, "verdict": "unknown",
+                 "reason": "AI 未启用，未做真实性核验"} for i in range(len(refs))]
+    listing = "\n".join(
+        f"{i+1}. 标题《{r.get('title','')}》；作者 {r.get('authors','')}；"
+        f"年份 {r.get('year','')}；刊物/出版社 {r.get('venue','')}；"
+        f"DOI {r.get('doi') or '无'}" for i, r in enumerate(refs))
+    sys = ("你是学术文献核验助手。判断每条参考文献是否可能是真实存在的文献。"
+           "对每条只输出一行，格式：序号|real 或 suspect|简短理由。"
+           "拿不准偏向 suspect。只输出这些行，不要多余内容。")
+    resp = ai_client.complete(listing, sys)
+    verdicts = {}
+    for line in (resp or "").splitlines():
+        parts = line.split("|")
+        if len(parts) >= 2:
+            num = "".join(c for c in parts[0] if c.isdigit())
+            if num:
+                v = parts[1].strip().lower()
+                verdict = "real" if "real" in v else ("suspect" if "suspect" in v else "unknown")
+                verdicts[int(num) - 1] = {"verdict": verdict,
+                                          "reason": (parts[2].strip() if len(parts) > 2 else "")}
+    return [{"index": i,
+             "verdict": verdicts.get(i, {}).get("verdict", "unknown"),
+             "reason": verdicts.get(i, {}).get("reason", "未能解析 AI 结果，请人工确认")}
+            for i in range(len(refs))]
+
+
+@router.post("/datasets/{slug}/literature/ai-verify")
+def ai_verify_lit(slug: str, body: LitBatchIn, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """对一批文献做 AI 真实性核验，返回逐条结论（不落库）。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
+    refs = [r.model_dump() for r in body.refs]
+    return {"results": _ai_verify_refs(refs), "ai_model": ai_client.provider}
+
+
+@router.post("/datasets/{slug}/literature/batch")
+def batch_commit_lit(slug: str, body: LitBatchIn, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """批量落库：必填校验；AI 判为可疑且未勾选「确认真实」的条目会被拒绝并返回。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
+    refs = [r.model_dump() for r in body.refs]
+    if not refs:
+        raise HTTPException(400, "没有可导入的文献")
+    # 必填校验
+    for i, r in enumerate(refs):
+        if not (r.get("title") and r.get("authors") and r.get("year") and r.get("venue")):
+            raise HTTPException(400, f"第 {i+1} 条缺少必填项（标题/作者/年份/刊物）")
+    # AI 核验：可疑且未确认 → 拦截
+    verdicts = _ai_verify_refs(refs)
+    blocked = []
+    for v in verdicts:
+        i = v["index"]
+        if v["verdict"] == "suspect" and not refs[i].get("confirm_real"):
+            blocked.append({"index": i, "title": refs[i].get("title"), "reason": v["reason"]})
+    if blocked:
+        return {"ok": False, "blocked": blocked, "verdicts": verdicts,
+                "detail": "以下文献被 AI 判为可疑，请核对后勾选「确认真实文献」再导入"}
+    created = 0
+    for r in refs:
+        db.add(LitRef(dataset_id=d.id, added_by=user.id, title=r["title"],
+                      authors=r.get("authors"), venue=r.get("venue"), year=r.get("year"),
+                      doi=r.get("doi"), url=r.get("url")))
+        created += 1
+    db.commit()
+    return {"ok": True, "created": created}
 
 
 # ================= AI 文献/用途总结（元数据-only，安全）=================

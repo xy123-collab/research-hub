@@ -49,6 +49,20 @@ def search_users(q: str = "", limit: int = 20, db: Session = Depends(get_db),
              "avatar": u.avatar} for u in rows]
 
 
+@router.get("/me/collab-scopes")
+def my_collab_scopes(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """我所在的课题组与数据集，供发布内容时的「可见范围」下拉选择。"""
+    from ..models.group import ResearchGroup, GroupMember
+    from ..models.dataset import Dataset, DatasetMember
+    gids = [m.group_id for m in db.query(GroupMember).filter_by(
+        user_id=user.id, status="active").all()]
+    dids = [m.dataset_id for m in db.query(DatasetMember).filter_by(user_id=user.id).all()]
+    groups = db.query(ResearchGroup).filter(ResearchGroup.id.in_(gids or [-1])).all()
+    datasets = db.query(Dataset).filter(Dataset.id.in_(dids or [-1])).all()
+    return {"groups": [{"id": g.id, "name": g.name_zh} for g in groups],
+            "datasets": [{"id": d.id, "name": d.name_zh} for d in datasets]}
+
+
 @router.get("/users/{uid}")
 def get_user(uid: int, db: Session = Depends(get_db)):
     u = db.get(User, uid)

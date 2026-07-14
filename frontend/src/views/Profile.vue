@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useAuth } from '../stores/auth'
 import api from '../api'
 import Icon from '../components/Icon.vue'
+import ScopeSelector from '../components/ScopeSelector.vue'
 
 const route = useRoute(); const { t } = useI18n(); const auth = useAuth()
 const uid = ref<number>(0)
@@ -125,6 +126,7 @@ async function saveResume() {
 // ==================== 在做项目：创建 + 置顶 ====================
 const showProjCreate = ref(false)
 const projForm = ref<any>({ title: '', body_zh: '', pinned: false })
+const projScope = ref<{ scope: string; scope_ref_id: number | null }>({ scope: 'public', scope_ref_id: null })
 const projImage = ref<File | null>(null); const projImgPreview = ref('')
 function pickProjImage(e: any) {
   const f = e.target.files?.[0]; if (!f) return
@@ -132,16 +134,22 @@ function pickProjImage(e: any) {
 }
 function openProjCreate() {
   projForm.value = { title: '', body_zh: '', pinned: false }
+  projScope.value = { scope: 'public', scope_ref_id: null }
   projImage.value = null; projImgPreview.value = ''; showProjCreate.value = true
 }
 async function createProject() {
   if (!projForm.value.title.trim() || !projForm.value.body_zh.trim() || !projImage.value) {
     alert('标题、图片、文字均为必填'); return
   }
+  if ((projScope.value.scope === 'group' || projScope.value.scope === 'dataset') && !projScope.value.scope_ref_id) {
+    alert('请在下拉框中选择具体的课题组/数据集'); return
+  }
   const fd = new FormData()
   fd.append('title', projForm.value.title.trim())
   fd.append('body_zh', projForm.value.body_zh.trim())
   fd.append('pinned', String(projForm.value.pinned))
+  fd.append('scope', projScope.value.scope)
+  if (projScope.value.scope_ref_id) fd.append('scope_ref_id', String(projScope.value.scope_ref_id))
   fd.append('image', projImage.value)
   try {
     await api.post('/projects', fd)
@@ -276,7 +284,8 @@ async function delEntry(eid: number) {
             <div class="p-4">
               <div class="flex items-center gap-2">
                 <span v-if="p.pinned" class="tag" style="background:#fef3c7;color:#92400e">置顶</span>
-                <h3 class="flex-1">{{ p.title }} <span class="tag ml-1">{{ p.status }}</span></h3>
+                <h3 class="flex-1">{{ p.title }} <span class="tag ml-1">{{ p.status }}</span>
+                  <span v-if="p.scope && p.scope!=='public'" class="tag ml-1">{{ p.scope_label }}</span></h3>
                 <button v-if="isMe" class="text-xs" :class="p.pinned?'text-accent2':'text-accent'"
                   @click="togglePin(p)">{{ p.pinned ? '取消置顶' : '置顶' }}</button>
               </div>
@@ -384,6 +393,7 @@ async function delEntry(eid: number) {
         </label>
         <img v-if="projImgPreview" :src="projImgPreview" class="w-full h-40 object-cover rounded mb-2" />
         <textarea v-model="projForm.body_zh" rows="4" class="input mb-2" placeholder="项目介绍文字 *"></textarea>
+        <div class="mb-2"><ScopeSelector v-model="projScope" /></div>
         <label class="flex items-center gap-2 text-sm mb-3">
           <input type="checkbox" v-model="projForm.pinned" /> 创建后置顶展示
         </label>

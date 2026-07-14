@@ -98,6 +98,8 @@ class PostIn(BaseModel):
     dataset_id: int | None = None; group_id: int | None = None
     visibility: str = "platform"; cover_icon: str | None = None
     tags: list[str] = []
+    scope: str = "public"                 # public|group|dataset|self
+    scope_ref_id: int | None = None       # 选中的课题组/数据集 id
 
 
 class CommentIn(BaseModel):
@@ -157,5 +159,15 @@ class ResumeBlockIn(BaseModel):
 # -------- literature --------
 class LitRefIn(BaseModel):
     title: str; authors: str | None = None; venue: str | None = None
-    year: int | None = None; url: str | None = None
+    year: int | None = None; url: str | None = None; doi: str | None = None
     note_zh: str | None = None
+
+
+class LitRefRow(BaseModel):
+    title: str | None = None; authors: str | None = None; venue: str | None = None
+    year: int | None = None; doi: str | None = None; url: str | None = None
+    confirm_real: bool = False   # 用户确认为真实文献（覆盖 AI 判定强制上传）
+
+
+class LitBatchIn(BaseModel):
+    refs: list[LitRefRow]

@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useAuth } from '../stores/auth'
 import api from '../api'
 import Icon from '../components/Icon.vue'
+import ScopeSelector from '../components/ScopeSelector.vue'
 
 const auth = useAuth()
 const view = ref<'sections' | 'skill' | 'generic'>('sections')
@@ -40,30 +41,29 @@ async function loadSkills() {
 
 // 发起 Skill
 const showSkill = ref(false)
-const skillForm = ref<any>({ name_zh: '', desc_zh: '', body_text: '', scope: 'public', scope_ref_id: '', github_url: '' })
+const skillForm = ref<any>({ name_zh: '', desc_zh: '', body_text: '', github_url: '' })
+const skillScope = ref<{ scope: string; scope_ref_id: number | null }>({ scope: 'public', scope_ref_id: null })
 const skillFile = ref<File | null>(null)
-const SCOPES = [
-  { v: 'public', label: '公开（全平台可见）' },
-  { v: 'group', label: '课题组成员可见' },
-  { v: 'dataset', label: '数据集成员可见' },
-  { v: 'self', label: '仅自己可见' }
-]
+const SCOPE_LABELS: Record<string, string> = {
+  public: '全平台公开', group: '课题组成员可见', dataset: '数据集成员可见', self: '仅自己可见'
+}
 function openSkillCreate() {
-  skillForm.value = { name_zh: '', desc_zh: '', body_text: '', scope: 'public', scope_ref_id: '', github_url: '' }
+  skillForm.value = { name_zh: '', desc_zh: '', body_text: '', github_url: '' }
+  skillScope.value = { scope: 'public', scope_ref_id: null }
   skillFile.value = null; showSkill.value = true
 }
 async function createSkill() {
   if (!skillForm.value.name_zh.trim()) { alert('请填写名称'); return }
   if (!skillForm.value.body_text.trim() && !skillFile.value) { alert('请上传文件或填写文字内容'); return }
-  if ((skillForm.value.scope === 'group' || skillForm.value.scope === 'dataset') && !skillForm.value.scope_ref_id) {
-    alert('该可见范围需填写课题组/数据集 ID'); return
+  if ((skillScope.value.scope === 'group' || skillScope.value.scope === 'dataset') && !skillScope.value.scope_ref_id) {
+    alert('请在下拉框中选择具体的课题组/数据集'); return
   }
   const fd = new FormData()
   fd.append('name_zh', skillForm.value.name_zh.trim())
   fd.append('desc_zh', skillForm.value.desc_zh)
   fd.append('body_text', skillForm.value.body_text)
-  fd.append('scope', skillForm.value.scope)
-  if (skillForm.value.scope_ref_id) fd.append('scope_ref_id', String(skillForm.value.scope_ref_id))
+  fd.append('scope', skillScope.value.scope)
+  if (skillScope.value.scope_ref_id) fd.append('scope_ref_id', String(skillScope.value.scope_ref_id))
   fd.append('section_id', String(activeSection.value.id))
   if (skillForm.value.github_url) fd.append('github_url', skillForm.value.github_url)
   if (skillFile.value) fd.append('file', skillFile.value)
@@ -72,7 +72,7 @@ async function createSkill() {
     showSkill.value = false; loadSkills()
   } catch (e: any) { alert(e.response?.data?.detail || '发起失败') }
 }
-function scopeLabel(v: string) { return SCOPES.find(s => s.v === v)?.label || v }
+function scopeLabel(v: string) { return SCOPE_LABELS[v] || v }
 
 // Skill 详情 + 评论（含评论的评论）
 const skillModal = ref<any>(null)
@@ -179,12 +179,7 @@ function downloadSkill(s: any) {
         <textarea v-model="skillForm.body_text" rows="4" class="input mb-2" placeholder="粘贴脚本 / 流程 / 提示词等文字内容"></textarea>
         <label class="label-cap">上传文件（可选）</label>
         <input type="file" class="text-xs mb-3 block" @change="(e)=>skillFile=e.target.files[0]" />
-        <label class="label-cap">可见范围</label>
-        <select v-model="skillForm.scope" class="input mb-2">
-          <option v-for="s in SCOPES" :key="s.v" :value="s.v">{{ s.label }}</option>
-        </select>
-        <input v-if="skillForm.scope==='group'||skillForm.scope==='dataset'" v-model="skillForm.scope_ref_id"
-          class="input mb-2" :placeholder="skillForm.scope==='group'?'课题组 ID':'数据集 ID'" />
+        <div class="mb-3"><ScopeSelector v-model="skillScope" /></div>
         <input v-model="skillForm.github_url" class="input mb-3" placeholder="GitHub 链接（可选）" />
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showSkill=false">取消</button>

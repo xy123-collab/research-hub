@@ -18,6 +18,7 @@ class LitRef(Base):
     dataset_id = Column(Integer, ForeignKey("datasets.id"))
     title = Column(String(300)); authors = Column(String(300))
     venue = Column(String(200)); year = Column(Integer); url = Column(String(300))
+    doi = Column(String(200))
     note_zh = Column(Text); note_en = Column(Text)
     added_by = Column(Integer, ForeignKey("users.id"))
 

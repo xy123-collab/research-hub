@@ -2,7 +2,7 @@ import { createI18n } from 'vue-i18n'
 
 const messages = {
   zh: {
-    nav: { home: '数据集', groups: '课题组', feed: '研究广场', profile: '我的主页',
+    nav: { home: '数据集', groups: '课题组', feed: '研究讨论区', profile: '我的主页',
            admin: '管理后台', skills: 'Skill 共享', collab: '其他协作', logout: '退出' },
     home: { myGroups: '我的课题组', discover: '发现课题组', createGroup: '＋创建课题组',
             createGroup2: '创建课题组', createDataset: '创建数据集',
@@ -11,7 +11,7 @@ const messages = {
             attachOptionalHint: '留空即为独立数据集；只能归属到你已加入的课题组。',
             emptyHint: '你还没有数据集或课题组。可以直接创建一个数据集开始协作，或先建一个课题组。',
             recentUpdates: '近期更新', standalone: '独立数据集', sensitive: '敏感',
-            recent: '研究广场·近期', members: '成员', datasets: '数据集', join: '申请加入',
+            recent: '讨论区·近期', members: '成员', datasets: '数据集', join: '申请加入',
             tagline: '科研数据协作平台',
             heroTitle: '让自建数据可信、可迭代、可复用',
             heroSub: '在数据集内完成勘误、发版、数据看板与可复用代码库协作；非成员亦可查阅 codebook 与只读看板。',
@@ -30,7 +30,7 @@ const messages = {
     ds: { founder: '发起人', contact: '联系方式', currentVersion: '当前版本', download: '下载',
           codebook: 'Codebook', overview: '概览', dashboard: '数据看板', versions: '版本库',
           bugs: '原始数据勘误', code: '处理代码库', literature: '文献地图', verify: '数据核验',
-          feed: '研究广场', activity: '更新记录', access: '成员与权限',
+          feed: '研究讨论区', activity: '更新记录', access: '成员与权限',
           joinProcess: '申请加入处理', notMemberTip: '非成员可看 codebook 与看板，但不能下载原始数据',
           members: '成员与审批记录', submitBug: '提交勘误', publishVersion: '发布新版本',
           groupOf: '归属课题组', standalone: '未归属课题组（独立数据集）',
@@ -46,7 +46,7 @@ const messages = {
               confirm: '确认', loading: '加载中…', agree: '我已阅读并同意' }
   },
   en: {
-    nav: { home: 'Datasets', groups: 'Groups', feed: 'Feed', profile: 'Profile',
+    nav: { home: 'Datasets', groups: 'Groups', feed: 'Discussion', profile: 'Profile',
            admin: 'Admin', skills: 'Skills', collab: 'Collaboration', logout: 'Logout' },
     home: { myGroups: 'My Groups', discover: 'Discover Groups', createGroup: '＋Create Group',
             createGroup2: 'Create Group', createDataset: 'Create Dataset',

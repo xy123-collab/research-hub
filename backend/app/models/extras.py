@@ -108,6 +108,33 @@ class EmailEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+# ---------- 统一可见范围（发帖 / 项目 / skill 共用）----------
+CONTENT_SCOPES = ["public", "group", "dataset", "self"]   # 全平台/课题组成员/数据集成员/仅自己
+
+
+class ContentScope(Base):
+    """内容的可见范围。content_type + content_id 唯一定位一条内容。
+
+    scope=public 全平台可见；group 指定课题组成员可见；dataset 指定数据集成员可见；
+    self 仅作者本人可见。scope_ref_id = 选中的课题组/数据集 id。
+    """
+    __tablename__ = "content_scopes"
+    id = Column(Integer, primary_key=True)
+    content_type = Column(String(20))   # post | project | skill
+    content_id = Column(Integer)
+    scope = Column(String(20), default="public")
+    scope_ref_id = Column(Integer)      # group_id 或 dataset_id
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------- 一次性数据修正标记（保证某些数据修正只执行一次）----------
+class AppliedFix(Base):
+    __tablename__ = "applied_fixes"
+    key = Column(String(80), primary_key=True)
+    applied_at = Column(DateTime, default=datetime.utcnow)
+    note = Column(Text)
+
+
 # ---------- 找回密码令牌 ----------
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"

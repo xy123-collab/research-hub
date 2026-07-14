@@ -25,6 +25,9 @@ if [ "${SEED_ON_START:-true}" = "true" ]; then
   python -m app.seed || true
 fi
 
+echo "[entrypoint] 执行数据修正（幂等/一次性）..."
+python -m app.data_fixes || true
+
 echo "[entrypoint] 启动 Gunicorn..."
 # 免费档 512MB：默认单 worker；--max-requests 让 worker 处理一定请求数后回收，
 # 释放偶发的 pandas 沙箱内存，避免缓慢增长触发 OOM 重启。
