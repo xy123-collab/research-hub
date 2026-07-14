@@ -3,7 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..core.permissions import (get_current_user, is_super_admin, is_group_admin,
-                                group_role, is_group_member, count_group_admins)
+                                group_role, is_group_member, count_group_admins,
+                                group_lead_id, is_group_lead, GROUP_ADMIN_ROLES,
+                                GROUP_LEAD_ROLES)
 from ..core.audit import write_audit
 from ..models.user import User
 from ..models.group import ResearchGroup, GroupMember, GroupJoinRequest, Charter
@@ -40,8 +42,8 @@ def create_group(body: GroupIn, user: User = Depends(get_current_user),
         raise HTTPException(400, "slug 已存在")
     g = ResearchGroup(**body.model_dump(), created_by=user.id)
     db.add(g); db.flush()
-    # 创建者成为 group_admin（角色创建时产生）
-    db.add(GroupMember(group_id=g.id, user_id=user.id, group_role="group_admin",
+    # 创建者成为课题组总管理员（group_owner）
+    db.add(GroupMember(group_id=g.id, user_id=user.id, group_role="group_owner",
                        status="active", joined_at=datetime.utcnow(), approved_by=user.id))
     db.add(Charter(scope="group", ref_id=g.id, body_zh="（请课题组管理员编辑本组公约）",
                    version=1, updated_by=user.id))
@@ -61,9 +63,14 @@ def group_detail(slug: str, user: User = Depends(get_current_user),
     datasets = db.query(Dataset).filter_by(group_id=g.id, is_deleted=False).all()
     charter = db.query(Charter).filter_by(scope="group", ref_id=g.id).order_by(
         Charter.version.desc()).first()
+    lead_id = group_lead_id(db, g.id)
+    creator = db.get(User, g.created_by)
     result = {"id": g.id, "slug": g.slug, "name_zh": g.name_zh, "name_en": g.name_en,
               "desc_zh": g.desc_zh, "icon": g.icon, "discoverable": g.discoverable,
               "is_member": is_member, "is_admin": is_group_admin(db, g.id, user),
+              "is_lead": lead_id == user.id, "lead_id": lead_id,
+              "founder": {"id": g.created_by, "name": creator.display_name if creator else "",
+                          "contact": (creator.contact or creator.email) if creator else ""},
               "charter": ({"id": charter.id, "body_zh": charter.body_zh,
                            "version": charter.version} if charter else None),
               "datasets": [{"id": d.id, "slug": d.slug, "name_zh": d.name_zh,
@@ -75,6 +82,8 @@ def group_detail(slug: str, user: User = Depends(get_current_user),
     if is_member:
         members = db.query(GroupMember).filter_by(group_id=g.id, status="active").all()
         result["members"] = [{"user_id": m.user_id, "group_role": m.group_role,
+                              "is_lead": m.user_id == lead_id,
+                              "is_admin": m.group_role in GROUP_ADMIN_ROLES,
                               "name": (db.get(User, m.user_id).display_name
                                        if db.get(User, m.user_id) else "")}
                              for m in members]
@@ -163,11 +172,13 @@ def group_join_requests(slug: str, user: User = Depends(get_current_user),
 def add_group_admin(slug: str, uid: int, user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)):
     g = _get_group(db, slug)
-    if not is_group_admin(db, g.id, user):
-        raise HTTPException(403, "需要课题组管理员")
+    if not is_group_lead(db, g.id, user):
+        raise HTTPException(403, "仅课题组总管理员可设置管理员")
     m = db.query(GroupMember).filter_by(group_id=g.id, user_id=uid, status="active").first()
     if not m:
         raise HTTPException(404, "该用户不是本组成员")
+    if m.group_role in GROUP_LEAD_ROLES:
+        raise HTTPException(400, "该用户已是总管理员")
     m.group_role = "group_admin"
     write_audit(db, user.id, "group.admin.add", "group", g.id, {"user": uid})
     db.commit()
@@ -178,15 +189,36 @@ def add_group_admin(slug: str, uid: int, user: User = Depends(get_current_user),
 def remove_group_admin(slug: str, uid: int, user: User = Depends(get_current_user),
                        db: Session = Depends(get_db)):
     g = _get_group(db, slug)
-    if not is_group_admin(db, g.id, user):
-        raise HTTPException(403, "需要课题组管理员")
+    if not is_group_lead(db, g.id, user):
+        raise HTTPException(403, "仅课题组总管理员可取消管理员")
     m = db.query(GroupMember).filter_by(group_id=g.id, user_id=uid, status="active").first()
-    if not m or m.group_role != "group_admin":
+    if not m or m.group_role not in GROUP_ADMIN_ROLES:
         raise HTTPException(404, "该用户不是课题组管理员")
-    if count_group_admins(db, g.id) <= 1:
-        raise HTTPException(400, "至少保留一名课题组管理员")
+    if m.group_role in GROUP_LEAD_ROLES:
+        raise HTTPException(400, "不能取消总管理员本人；请先把总管理员转让给他人")
     m.group_role = "member"
     write_audit(db, user.id, "group.admin.remove", "group", g.id, {"user": uid})
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/groups/{slug}/transfer-lead/{uid}")
+def transfer_group_lead(slug: str, uid: int, user: User = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    """把「课题组总管理员」转让给另一名成员；原总管理员降为普通管理员。"""
+    g = _get_group(db, slug)
+    if not is_group_lead(db, g.id, user):
+        raise HTTPException(403, "仅课题组总管理员可转让")
+    if uid == user.id:
+        raise HTTPException(400, "不能转让给自己")
+    target = db.query(GroupMember).filter_by(group_id=g.id, user_id=uid, status="active").first()
+    if not target:
+        raise HTTPException(404, "该用户不是本组成员")
+    me = db.query(GroupMember).filter_by(group_id=g.id, user_id=user.id, status="active").first()
+    target.group_role = "group_owner"
+    if me:
+        me.group_role = "group_admin"
+    write_audit(db, user.id, "group.lead.transfer", "group", g.id, {"to": uid})
     db.commit()
     return {"ok": True}
 
@@ -200,8 +232,8 @@ def remove_group_member(slug: str, uid: int, user: User = Depends(get_current_us
     m = db.query(GroupMember).filter_by(group_id=g.id, user_id=uid, status="active").first()
     if not m:
         raise HTTPException(404, "该用户不是本组成员")
-    if m.group_role == "group_admin" and count_group_admins(db, g.id) <= 1:
-        raise HTTPException(400, "该用户是唯一管理员，不能移除")
+    if m.group_role in GROUP_LEAD_ROLES:
+        raise HTTPException(400, "不能移除总管理员；请先转让总管理员身份")
     db.delete(m)
     write_audit(db, user.id, "group.member.remove", "group", g.id, {"user": uid})
     db.commit()

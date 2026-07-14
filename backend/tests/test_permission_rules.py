@@ -98,6 +98,35 @@ def test_notifications_for_admin(client, founder, member):
     assert "action_count" in notif and isinstance(notif["items"], list)
 
 
+# 两级管理员：仅总管理员可增删管理员与转让；转让后原总管理员降为普通管理员
+def test_two_tier_admin_and_transfer(client, founder, member):
+    lead = _uid(client, "lixiaoyu")   # cod 总管理员
+    mid = _uid(client, "chenmo")
+    # 总管理员把 chenmo 提为普通管理员
+    assert client.post(f"/api/datasets/cod/admins/{mid}", headers=founder).status_code == 200
+    # 普通管理员(chenmo) 不能增设管理员（仅总管理员可）
+    assert client.post(f"/api/datasets/cod/admins/{lead}", headers=member).status_code == 403
+    # 转让总管理员给 chenmo
+    assert client.post(f"/api/datasets/cod/transfer-lead/{mid}", headers=founder).status_code == 200
+    d = client.get("/api/datasets/cod", headers=member).json()
+    assert d["is_lead"] is True and d["lead_id"] == mid
+    # 新总管理员不能直接取消自己的管理员（须先转让）
+    assert client.delete(f"/api/datasets/cod/admins/{mid}", headers=member).status_code == 400
+    # 转让回去并复位
+    assert client.post(f"/api/datasets/cod/transfer-lead/{lead}", headers=member).status_code == 200
+    assert client.delete(f"/api/datasets/cod/admins/{mid}", headers=founder).status_code == 200
+
+
+# 管理控制台：按我管理的范围返回，并能取到数据集控制台指标
+def test_admin_console(client, founder):
+    scopes = client.get("/api/admin/my-scopes", headers=founder).json()
+    assert any(x["slug"] == "cod" and x["role"] == "lead" for x in scopes["datasets"])
+    con = client.get("/api/admin/datasets/cod/console", headers=founder)
+    assert con.status_code == 200
+    body = con.json()
+    assert "activity" in body and "contributions" in body and "pending" in body
+
+
 def _uid(client, username):
     # 借助登录返回或用户检索；这里用 seed 已知用户名，通过 /api 无直接接口，走数据库
     from app.core.db import SessionLocal

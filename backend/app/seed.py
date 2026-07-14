@@ -47,7 +47,7 @@ def run():
                         desc_zh="研究地方治理、官员激励与经济发展。", discoverable=True,
                         created_by=lixiaoyu.id)
     db.add(nsd); db.flush()
-    db.add(GroupMember(group_id=nsd.id, user_id=lixiaoyu.id, group_role="group_admin",
+    db.add(GroupMember(group_id=nsd.id, user_id=lixiaoyu.id, group_role="group_owner",
                        status="active", joined_at=datetime.utcnow(), approved_by=lixiaoyu.id))
     db.add(GroupMember(group_id=nsd.id, user_id=chenmo.id, group_role="member",
                        status="active", joined_at=datetime.utcnow(), approved_by=lixiaoyu.id))

@@ -8,7 +8,8 @@ from ..core.ai_client import ai_client
 from ..core.permissions import (get_current_user, is_super_admin, is_dataset_member,
                                 is_dataset_admin, dataset_membership, has_dataset_perm,
                                 count_dataset_admins, get_settings, active_grants,
-                                DS_ADMIN_ROLES)
+                                DS_ADMIN_ROLES, DS_LEAD_ROLES, dataset_lead_id,
+                                is_dataset_lead)
 from ..core.audit import write_audit, record_contribution
 from ..models.user import User
 from ..models.dataset import (Dataset, DatasetMember, JoinRequest, Variable,
@@ -172,13 +173,17 @@ def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_cu
     member = is_dataset_member(db, d.id, user)
     founder = db.get(User, d.founder_id)
     cur = db.query(DataVersion).filter_by(dataset_id=d.id, is_current=True).first()
+    lead_id = dataset_lead_id(db, d.id)
     members = db.query(DatasetMember).filter_by(dataset_id=d.id).all()
     approvals = []
     for m in members:
         u = db.get(User, m.user_id)
         approvals.append({"user_id": m.user_id, "name": u.display_name if u else "",
-                          "ds_role": m.ds_role, "joined_at": str(m.joined_at),
-                          "approved_by": m.approved_by})
+                          "ds_role": m.ds_role, "is_lead": m.user_id == lead_id,
+                          "is_admin": m.ds_role in DS_ADMIN_ROLES,
+                          "joined_at": str(m.joined_at), "approved_by": m.approved_by})
+    charter = db.query(Charter).filter_by(scope="dataset", ref_id=d.id).order_by(
+        Charter.version.desc()).first()
     pubs = db.query(Publication).filter_by(dataset_id=d.id).all()
     grp = db.get(ResearchGroup, d.group_id) if d.group_id else None
     pend = db.query(DatasetGroupRequest).filter_by(
@@ -207,6 +212,9 @@ def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_cu
         "founder": {"id": d.founder_id, "name": founder.display_name if founder else "",
                     "contact": d.founder_contact},
         "is_member": member, "is_admin": is_admin,
+        "is_lead": lead_id == user.id, "lead_id": lead_id,
+        "charter": ({"id": charter.id, "body_zh": charter.body_zh,
+                     "version": charter.version} if charter else None),
         "my_perms": my_perms,
         "settings": {"download_policy": st.download_policy,
                      "history_visible": st.history_visible,
@@ -335,9 +343,8 @@ def remove_member(slug: str, uid: int, db: Session = Depends(get_db),
     m = dataset_membership(db, d.id, uid)
     if not m:
         raise HTTPException(404, "该用户不是成员")
-    # 至少保留一名数据集管理员
-    if m.ds_role in DS_ADMIN_ROLES and count_dataset_admins(db, d.id) <= 1:
-        raise HTTPException(400, "该用户是唯一管理员，不能移除；请先指定其他管理员")
+    if m.ds_role in DS_LEAD_ROLES:
+        raise HTTPException(400, "不能移除总管理员；请先转让总管理员身份")
     db.delete(m)
     # 连带撤销其所有单独授权
     db.query(DatasetGrant).filter_by(dataset_id=d.id, user_id=uid).update({"revoked": True})
@@ -443,10 +450,12 @@ def members(slug: str, db: Session = Depends(get_db), user: User = Depends(get_c
         gs = active_grants(db, d.id, uid)
         return sorted({g.perm for g in gs})
 
+    lead_id = dataset_lead_id(db, d.id)
     out_members = [{"user_id": m.user_id, "name": uname(m.user_id), "ds_role": m.ds_role,
                     "is_admin": m.ds_role in DS_ADMIN_ROLES,
+                    "is_lead": m.user_id == lead_id,
                     "perms": perms_of(m.user_id)} for m in ms]
-    result = {"members": out_members}
+    result = {"members": out_members, "is_lead": lead_id == user.id, "lead_id": lead_id}
     # 仅管理员可见待办：加入申请 + 下载申请
     if admin:
         reqs = db.query(JoinRequest).filter_by(dataset_id=d.id, status="pending").all()
@@ -511,16 +520,18 @@ def revoke_grant(slug: str, uid: int, perm: str, db: Session = Depends(get_db),
     return {"ok": True, "revoked": n}
 
 
-# -------- 数据集管理员的增/删/交接（三节 4：至少保留一名）--------
+# -------- 数据集管理员的增/删/交接：仅「总管理员」可操作 --------
 @router.post("/datasets/{slug}/admins/{uid}")
 def add_dataset_admin(slug: str, uid: int, db: Session = Depends(get_db),
                       user: User = Depends(get_current_user)):
     d = _get_ds(db, slug)
-    if not is_dataset_admin(db, d.id, user):
-        raise HTTPException(403, "仅数据集管理员可增加管理员")
+    if not is_dataset_lead(db, d.id, user):
+        raise HTTPException(403, "仅数据集总管理员可设置管理员")
     m = dataset_membership(db, d.id, uid)
     if not m:
         raise HTTPException(404, "该用户不是成员，请先审批其加入")
+    if m.ds_role in DS_LEAD_ROLES:
+        raise HTTPException(400, "该用户已是总管理员")
     m.ds_role = "admin"
     write_audit(db, user.id, "dataset.admin.add", "dataset", d.id, {"user": uid})
     db.commit()
@@ -531,15 +542,35 @@ def add_dataset_admin(slug: str, uid: int, db: Session = Depends(get_db),
 def remove_dataset_admin(slug: str, uid: int, db: Session = Depends(get_db),
                          user: User = Depends(get_current_user)):
     d = _get_ds(db, slug)
-    if not is_dataset_admin(db, d.id, user):
-        raise HTTPException(403, "仅数据集管理员可取消管理员")
+    if not is_dataset_lead(db, d.id, user):
+        raise HTTPException(403, "仅数据集总管理员可取消管理员")
     m = dataset_membership(db, d.id, uid)
     if not m or m.ds_role not in DS_ADMIN_ROLES:
         raise HTTPException(404, "该用户不是管理员")
-    if count_dataset_admins(db, d.id) <= 1:
-        raise HTTPException(400, "至少保留一名数据集管理员")
+    if m.ds_role in DS_LEAD_ROLES:
+        raise HTTPException(400, "不能取消总管理员本人；请先把总管理员转让给他人")
     m.ds_role = "member"
     write_audit(db, user.id, "dataset.admin.remove", "dataset", d.id, {"user": uid})
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/datasets/{slug}/transfer-lead/{uid}")
+def transfer_dataset_lead(slug: str, uid: int, db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    """把「数据集总管理员」转让给另一名成员；原总管理员降为普通管理员。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_lead(db, d.id, user):
+        raise HTTPException(403, "仅数据集总管理员可转让")
+    if uid == user.id:
+        raise HTTPException(400, "不能转让给自己")
+    target = dataset_membership(db, d.id, uid)
+    if not target:
+        raise HTTPException(404, "该用户不是成员，请先审批其加入")
+    me = dataset_membership(db, d.id, user.id)
+    target.ds_role = "owner"
+    me.ds_role = "admin"
+    write_audit(db, user.id, "dataset.lead.transfer", "dataset", d.id, {"to": uid})
     db.commit()
     return {"ok": True}
 

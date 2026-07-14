@@ -27,8 +27,15 @@ from ..models.access import DatasetGrant, DatasetSettings
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
-# 视为「数据集管理员」的 ds_role 取值（founder 为历史命名，等同管理员）
-DS_ADMIN_ROLES = ("founder", "admin")
+# 两级管理员：
+#   数据集「总管理员/主管理员」= lead（ds_role in DS_LEAD_ROLES，全集内唯一）
+#   数据集「管理员」          = ds_role "admin"
+# 仅 lead 可增/删管理员与转让；lead 不能直接自撤，须先把 lead 转让出去。
+DS_LEAD_ROLES = ("founder", "owner")           # founder 为历史命名，等同 owner
+DS_ADMIN_ROLES = ("founder", "owner", "admin")  # 视为「数据集管理员」的取值
+# 课题组「总管理员」= group_owner；「管理员」= group_admin
+GROUP_LEAD_ROLES = ("group_owner",)
+GROUP_ADMIN_ROLES = ("group_owner", "group_admin")
 
 
 def get_current_user(token: str | None = Depends(oauth2_scheme),
@@ -68,12 +75,28 @@ def is_group_member(db: Session, group_id, user: User) -> bool:
 
 def is_group_admin(db: Session, group_id, user: User) -> bool:
     # 原则一：super_admin 不自动是课题组管理员
-    return group_role(db, group_id, user.id) == "group_admin"
+    return group_role(db, group_id, user.id) in GROUP_ADMIN_ROLES
 
 
 def count_group_admins(db: Session, group_id) -> int:
-    return db.query(GroupMember).filter_by(
-        group_id=group_id, group_role="group_admin", status="active").count()
+    return db.query(GroupMember).filter(
+        GroupMember.group_id == group_id, GroupMember.status == "active",
+        GroupMember.group_role.in_(GROUP_ADMIN_ROLES)).count()
+
+
+def group_lead_id(db: Session, group_id):
+    """课题组总管理员的 user_id。优先 group_owner，其次回退到 created_by（兼容历史数据）。"""
+    from ..models.group import ResearchGroup
+    m = db.query(GroupMember).filter_by(
+        group_id=group_id, group_role="group_owner", status="active").first()
+    if m:
+        return m.user_id
+    g = db.get(ResearchGroup, group_id)
+    return g.created_by if g else None
+
+
+def is_group_lead(db: Session, group_id, user: User) -> bool:
+    return group_lead_id(db, group_id) == user.id
 
 
 # ---------- 数据集级 ----------
@@ -99,6 +122,22 @@ def count_dataset_admins(db: Session, dataset_id) -> int:
     return db.query(DatasetMember).filter(
         DatasetMember.dataset_id == dataset_id,
         DatasetMember.ds_role.in_(DS_ADMIN_ROLES)).count()
+
+
+def dataset_lead_id(db: Session, dataset_id):
+    """数据集总管理员的 user_id。优先 owner/founder 角色，其次回退到 founder_id。"""
+    from ..models.dataset import Dataset
+    m = db.query(DatasetMember).filter(
+        DatasetMember.dataset_id == dataset_id,
+        DatasetMember.ds_role.in_(DS_LEAD_ROLES)).first()
+    if m:
+        return m.user_id
+    d = db.get(Dataset, dataset_id)
+    return d.founder_id if d else None
+
+
+def is_dataset_lead(db: Session, dataset_id, user: User) -> bool:
+    return dataset_lead_id(db, dataset_id) == user.id
 
 
 def active_grants(db: Session, dataset_id, user_id):

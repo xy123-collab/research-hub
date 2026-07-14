@@ -177,6 +177,20 @@ async function uploadCandidate() {
     showCand.value = false; candFile.value = null; candNote.value = ''; await loadCandidates()
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
+// 两级管理员：转让总管理员
+async function transferLead(uid: number) {
+  if (!confirm('确认把「数据集总管理员」转让给该成员？你将降为普通管理员。')) return
+  try { await api.post(`/datasets/${slug}/transfer-lead/${uid}`); await loadMembers(); await reloadDetail() }
+  catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+function roleLabel(m: any) { return m.is_lead ? '总管理员' : (m.is_admin ? '管理员' : '成员') }
+// 公约编辑
+const showCharterEdit = ref(false); const charterForm = ref({ body_zh: '' })
+function openCharterEdit() { charterForm.value = { body_zh: d.value.charter?.body_zh || '' }; showCharterEdit.value = true }
+async function saveCharter() {
+  await api.put(`/charters/${d.value.charter.id}`, charterForm.value)
+  showCharterEdit.value = false; await reloadDetail()
+}
 
 async function setActFilter(k: string) {
   actFilter.value = k
@@ -300,7 +314,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     <CharterModal scope="dataset" :refId="d.id" />
     <div class="flex items-start justify-between">
       <div>
-        <h1 class="text-2xl">{{ d.icon }} {{ d.name_zh }}
+        <h1 class="text-2xl">{{ d.name_zh }}
           <span v-if="d.is_sensitive" class="tag border-accent2 text-accent2">敏感</span></h1>
         <p class="text-gray-500 mt-1">{{ d.desc_zh }}</p>
         <p class="text-sm mt-2">
@@ -358,14 +372,21 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <p class="font-mono text-lg mt-1">{{ d.current_version?.version_id || '—' }}</p>
           <p class="text-sm text-gray-500 mt-1">{{ d.current_version?.changelog_zh }}</p>
         </div>
+        <!-- 数据集公约（与课题组一致的展示位）-->
+        <div v-if="d.charter" class="card mt-4">
+          <div class="label-cap">数据集公约 · v{{ d.charter.version }}</div>
+          <pre class="whitespace-pre-wrap bg-white text-ink border border-line mt-2">{{ d.charter.body_zh }}</pre>
+          <button v-if="d.is_admin" class="btn-ghost text-xs mt-2" @click="openCharterEdit">编辑公约</button>
+        </div>
         <div class="card mt-4">
-          <div class="label-cap">{{ t('ds.members') }}</div>
+          <div class="label-cap">{{ t('ds.members') }}（{{ d.members?.length || 0 }}）</div>
           <table class="w-full text-sm mt-2">
             <tr v-for="m in d.members" :key="m.user_id" class="border-t border-line">
-              <td class="py-1"><router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link></td>
-              <td><span class="tag">{{ m.ds_role }}</span></td>
+              <td class="py-1"><router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link>
+                <span class="text-gray-400 text-xs ml-1">ID {{ m.user_id }}</span></td>
+              <td><span class="tag" :class="m.is_lead ? 'border-accent text-accent' : ''">{{ roleLabel(m) }}</span></td>
               <td class="text-gray-400 text-xs">{{ m.joined_at?.slice(0,10) }}</td>
-              <td class="text-right"><button v-if="d.is_admin && m.ds_role!=='founder'" class="text-xs text-accent2" @click="removeMember(m.user_id)">移除</button></td>
+              <td class="text-right"><button v-if="d.is_admin && !m.is_lead" class="text-xs text-accent2" @click="removeMember(m.user_id)">移除</button></td>
             </tr>
           </table>
         </div>
@@ -574,15 +595,22 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <!-- 成员列表 + 授权 -->
         <div class="card">
           <div class="label-cap mb-2">成员与单独授权</div>
+          <p class="text-xs text-gray-400 mb-2">授权由任一管理员操作；设置/取消管理员与转让总管理员仅「总管理员」可操作。</p>
           <div v-for="m in mem.members" :key="m.user_id" class="border-t border-line py-2 text-sm">
             <div class="flex items-center gap-2 flex-wrap">
               <router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link>
-              <span class="tag">{{ m.is_admin ? '管理员' : '成员' }}</span>
-              <div class="ml-auto flex gap-2">
+              <span class="text-gray-400 text-xs">ID {{ m.user_id }}</span>
+              <span class="tag" :class="m.is_lead ? 'border-accent text-accent' : ''">{{ roleLabel(m) }}</span>
+              <div class="ml-auto flex gap-2 flex-wrap">
                 <button v-if="!m.is_admin" class="btn-ghost text-xs" @click="openGrant(m)">授权</button>
-                <button v-if="!m.is_admin" class="btn-ghost text-xs" @click="addAdmin(m.user_id)">设为管理员</button>
-                <button v-else class="btn-ghost text-xs" @click="removeAdmin(m.user_id)">取消管理员</button>
-                <button v-if="!m.is_admin" class="text-xs text-accent2" @click="removeDsMember(m.user_id)">移除</button>
+                <!-- 设置/取消管理员、转让：仅总管理员 -->
+                <template v-if="mem.is_lead && !m.is_lead">
+                  <button v-if="!m.is_admin" class="btn-ghost text-xs" @click="addAdmin(m.user_id)">设为管理员</button>
+                  <button v-else class="btn-ghost text-xs" @click="removeAdmin(m.user_id)">取消管理员</button>
+                  <button class="btn-ghost text-xs" @click="transferLead(m.user_id)">转让总管理员</button>
+                </template>
+                <!-- 移除普通成员：任一管理员可操作；管理员的移除留给总管理员 -->
+                <button v-if="!m.is_lead && (!m.is_admin || mem.is_lead)" class="text-xs text-accent2" @click="removeDsMember(m.user_id)">移除</button>
               </div>
             </div>
             <div v-if="m.perms?.length" class="mt-1 flex flex-wrap gap-1">
@@ -786,6 +814,19 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showSettings=false">取消</button>
           <button class="btn-primary" @click="saveSettings">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 编辑数据集公约 -->
+    <div v-if="showCharterEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showCharterEdit=false">
+      <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
+        <h3 class="text-lg mb-1">编辑数据集公约</h3>
+        <p class="text-xs text-gray-500 mb-3">保存后版本号 +1，成员需重新确认。</p>
+        <textarea v-model="charterForm.body_zh" class="input font-mono text-sm" rows="10"></textarea>
+        <div class="flex justify-end gap-2 mt-3">
+          <button class="btn-ghost" @click="showCharterEdit=false">取消</button>
+          <button class="btn-primary" @click="saveCharter">保存</button>
         </div>
       </div>
     </div>
