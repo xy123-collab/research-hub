@@ -134,6 +134,49 @@ def _fix_delete_user_by_keys(db, name, keys, emails=()) -> bool:
     return True
 
 
+def _cleanup_cod_demo(db) -> bool:
+    """清理 COD 数据集的样例内容（用户即将上传真实版本）：
+    删除样例版本、样例处理代码、看板派生汇总、占位样例文献；
+    保留数据集本体、成员、公约、变量定义与质量规则，便于直接上传真实数据。
+    """
+    from .models.dataset import Dataset
+    from .models.version import DataVersion, DownloadLog
+    from .models.curation import VersionExtra, CodeVersion, CodeComment, CodeGrant
+    from .models.code import CodeScript, CodeBug, CodeWriteup
+    from .models.literature import DatasetSummary, Publication, LitRef
+
+    cod = db.query(Dataset).filter_by(slug="cod").first()
+    if not cod:
+        log.info("未找到 COD 数据集，跳过样例清理")
+        return False
+    did = cod.id
+
+    # 样例处理代码及其子记录
+    code_ids = [s.id for s in db.query(CodeScript).filter_by(dataset_id=did).all()]
+    if code_ids:
+        for M in (CodeVersion, CodeComment, CodeGrant, CodeBug, CodeWriteup):
+            db.query(M).filter(M.script_id.in_(code_ids)).delete(synchronize_session=False)
+        db.query(CodeScript).filter(CodeScript.id.in_(code_ids)).delete(synchronize_session=False)
+
+    # 样例版本 + 派生汇总 + 下载日志
+    ver_ids = [v.id for v in db.query(DataVersion).filter_by(dataset_id=did).all()]
+    if ver_ids:
+        db.query(VersionExtra).filter(VersionExtra.version_id.in_(ver_ids)).delete(synchronize_session=False)
+    db.query(DownloadLog).filter_by(dataset_id=did).delete(synchronize_session=False)
+    db.query(DatasetSummary).filter_by(dataset_id=did).delete(synchronize_session=False)
+    db.query(DataVersion).filter_by(dataset_id=did).delete(synchronize_session=False)
+    cod.current_version_id = None
+
+    # 占位样例文献（seed 里作者/刊物含"示例"）
+    db.query(Publication).filter_by(dataset_id=did).delete(synchronize_session=False)
+    db.query(LitRef).filter(LitRef.dataset_id == did,
+                            LitRef.authors.like("示例%")).delete(synchronize_session=False)
+
+    db.commit()
+    log.info("已清理 COD 样例：%d 个版本、%d 段代码、看板汇总与占位文献", len(ver_ids), len(code_ids))
+    return True
+
+
 def _fix_group_owner(db):
     """确保 NSD 课题组的李小雨是 group_owner，且 created_by 已设置。幂等。"""
     lx = _find_user(db, ("李小雨", "lixiaoyu"))
@@ -187,6 +230,13 @@ def run():
                     _mark(db, "delete_luxinyi_v1", "删除卢欣一及相关数据")
             except Exception as e:
                 db.rollback(); log.warning("删除卢欣一失败（下次重试）: %s", e)
+        # 清理 COD 样例内容（只跑一次；用户之后上传的真实数据不受影响）
+        if not db.get(AppliedFix, "cleanup_cod_demo_v1"):
+            try:
+                _cleanup_cod_demo(db)
+                _mark(db, "cleanup_cod_demo_v1", "清理COD样例版本/代码/看板/文献")
+            except Exception as e:
+                db.rollback(); log.warning("清理 COD 样例失败（下次重试）: %s", e)
         # 课题组总管理员修正每次幂等执行
         try:
             _fix_group_owner(db)
