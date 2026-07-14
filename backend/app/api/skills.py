@@ -70,13 +70,17 @@ def create_section(body: SectionIn, db: Session = Depends(get_db),
 
 # ======================= Skill 可见性 =======================
 def _can_see_skill(db: Session, s: Skill, meta: SkillMeta | None, user: User) -> bool:
-    if s.founder_id == user.id:
+    from ..core.scopes import get_scopes, scope_visible
+    if s.founder_id == user.id or is_super_admin(user):
         return True
     scope = (meta.scope if meta else None) or "public"
     if scope == "public":
         return True
     if scope == "self":
         return False
+    # group / dataset：多选走 ContentScope；老数据无 ContentScope 时回退单个 ref
+    if get_scopes(db, "skill", s.id):
+        return scope_visible(db, "skill", s.id, s.founder_id, user)
     if scope == "group" and meta and meta.scope_ref_id:
         return is_group_member(db, meta.scope_ref_id, user)
     if scope == "dataset" and meta and meta.scope_ref_id:
@@ -114,21 +118,15 @@ def list_skills(section_id: int | None = None, db: Session = Depends(get_db),
 @router.post("/skills")
 def create_skill(name_zh: str = Form(...), desc_zh: str = Form(""),
                  body_text: str = Form(""), scope: str = Form("public"),
-                 scope_ref_id: int | None = Form(None), section_id: int | None = Form(None),
+                 scope_ref_ids: str = Form(""), section_id: int | None = Form(None),
                  github_url: str = Form(""), file: UploadFile | None = File(None),
                  db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """发起 Skill：可上传文件或填写文字，选择可见范围。"""
+    """发起 Skill：可上传文件或填写文字，选择可见范围（课题组/数据集可多选）。"""
+    from ..core.scopes import set_scope, _norm_ids
     if not (name_zh or "").strip():
         raise HTTPException(400, "名称必填")
     if scope not in SKILL_SCOPES:
         scope = "public"
-    if scope in ("group", "dataset"):
-        if not scope_ref_id:
-            raise HTTPException(400, "该可见范围需指定课题组/数据集")
-        ok = (is_group_member(db, scope_ref_id, user) if scope == "group"
-              else is_dataset_member(db, scope_ref_id, user))
-        if not ok:
-            raise HTTPException(403, "你不是该课题组/数据集成员，无法设为其可见范围")
     if github_url and not (github_url.startswith("http://") or github_url.startswith("https://")):
         raise HTTPException(400, "GitHub 链接需以 http(s):// 开头")
     sec = _ensure_skill_section(db)
@@ -136,8 +134,14 @@ def create_skill(name_zh: str = Form(...), desc_zh: str = Form(""),
               github_url=github_url or None, is_public=(scope == "public"))
     db.add(s); db.flush()
     db.add(SkillMember(skill_id=s.id, user_id=user.id, ds_role="founder"))
+    try:
+        set_scope(db, "skill", s.id, scope, scope_ref_ids, user)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    ids = _norm_ids(scope_ref_ids)
     meta = SkillMeta(skill_id=s.id, section_id=section_id or sec.id, scope=scope,
-                     scope_ref_id=scope_ref_id, body_text=(body_text or "").strip() or None)
+                     scope_ref_id=(ids[0] if ids else None),
+                     body_text=(body_text or "").strip() or None)
     if file is not None and getattr(file, "filename", ""):
         from ..services.uploads import save_upload
         fm = save_upload(file, f"skill/{s.id}")

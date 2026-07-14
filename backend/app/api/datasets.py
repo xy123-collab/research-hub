@@ -26,7 +26,7 @@ from ..models.group import ResearchGroup, Charter
 from ..models.correction import Bug
 from ..models.code import CodeScript
 from ..models.governance import VerifyFlag
-from ..schemas.models import VersionIn, LitRefIn, DatasetIn, LitBatchIn
+from ..schemas.models import VersionIn, LitRefIn, DatasetIn, LitBatchIn, CitationTextIn
 
 router = APIRouter(tags=["datasets"])
 
@@ -986,9 +986,89 @@ def add_ref(slug: str, body: LitRefIn, db: Session = Depends(get_db),
     d = _get_ds(db, slug)
     if not is_dataset_member(db, d.id, user):
         raise HTTPException(403, "需为数据集成员")
-    r = LitRef(dataset_id=d.id, added_by=user.id, **body.model_dump())
+    if not (body.title and body.authors and body.year and body.venue):
+        raise HTTPException(400, "标题、作者、年份、刊物/出版社为必填")
+    # 单条也做 AI 真实性核验：可疑且未确认真实 → 拦截并回传结论
+    verdict = _ai_verify_refs([{"title": body.title, "authors": body.authors,
+                                "year": body.year, "venue": body.venue, "doi": body.doi}])[0]
+    if verdict["verdict"] == "suspect" and not body.confirm_real:
+        return {"ok": False, "verdict": verdict,
+                "detail": "AI 判定该文献可疑，请核对后勾选「确认真实文献」再提交"}
+    data = body.model_dump(exclude={"confirm_real"})
+    r = LitRef(dataset_id=d.id, added_by=user.id, **data)
     db.add(r); db.commit()
-    return {"id": r.id}
+    return {"ok": True, "id": r.id, "verdict": verdict}
+
+
+@router.post("/datasets/{slug}/literature/parse-citation")
+def parse_citation(slug: str, body: CitationTextIn, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """输入一段引文文本，自动解析为「标题/作者/年份/刊物/DOI/URL」字段（AI 优先，回退正则）。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需为数据集成员")
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "请粘贴一段引文")
+    import re
+    fields = {"title": "", "authors": "", "year": None, "venue": "", "doi": None, "url": None}
+    # 通用抽取：年份、DOI、URL
+    ym = re.search(r"(19|20)\d{2}", text)
+    if ym:
+        fields["year"] = int(ym.group(0))
+    dm = re.search(r"10\.\d{4,9}/[-._;()/:A-Za-z0-9]+", text)
+    if dm:
+        fields["doi"] = dm.group(0)
+    um = re.search(r"https?://[^\s]+", text)
+    if um:
+        fields["url"] = um.group(0)
+    if ai_client.enabled():
+        sys = ("你是文献解析助手。把用户给的一条引文解析为 JSON，"
+               '字段：title, authors, year(数字), venue(刊物或出版社), doi, url。'
+               "只输出 JSON，无法确定的留空字符串或 null。")
+        import json
+        resp = ai_client.complete(text, sys)
+        try:
+            js = json.loads(resp[resp.find("{"): resp.rfind("}") + 1])
+            for k in fields:
+                if js.get(k) not in (None, ""):
+                    fields[k] = js.get(k)
+            if fields.get("year"):
+                try: fields["year"] = int(str(fields["year"])[:4])
+                except Exception: pass
+        except Exception:
+            pass
+    # 正则兜底 title/authors：以句点切分，含年份的前段常为"作者(年)."，其后为标题
+    if not fields["title"]:
+        segs = [s.strip() for s in re.split(r"[.。]", text) if s.strip()]
+        if segs:
+            if len(segs) >= 2 and ym:
+                fields["authors"] = fields["authors"] or segs[0]
+                fields["title"] = segs[1]
+                if len(segs) >= 3:
+                    fields["venue"] = fields["venue"] or segs[2]
+            else:
+                fields["title"] = segs[0]
+    fields["citation"] = _citation(fields["title"], fields["authors"], fields["year"],
+                                   fields["venue"], fields["doi"], fields["url"])
+    return {"fields": fields, "ai_model": ai_client.provider}
+
+
+@router.get("/datasets/{slug}/literature/export")
+def export_lit(slug: str, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    """一键导出全部文献为 Excel（列与上传模板一致）。"""
+    from openpyxl import Workbook
+    d = _get_ds(db, slug)
+    wb = Workbook(); ws = wb.active; ws.title = "文献"
+    ws.append(LIT_COLS)
+    for r in db.query(LitRef).filter_by(dataset_id=d.id).all():
+        ws.append([r.title, r.authors, r.year, r.venue,
+                   getattr(r, "doi", None) or "", r.url or ""])
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{d.slug}_literature.xlsx"'})
 
 
 # ================= 文献批量导入 / 引用格式 / AI 真实性核验 =================

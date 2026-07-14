@@ -4,6 +4,7 @@ import { useAuth } from '../stores/auth'
 import api from '../api'
 import Icon from '../components/Icon.vue'
 import ScopeSelector from '../components/ScopeSelector.vue'
+import { downloadFile } from '../utils/download'
 
 const auth = useAuth()
 const view = ref<'sections' | 'skill' | 'generic'>('sections')
@@ -42,28 +43,28 @@ async function loadSkills() {
 // 发起 Skill
 const showSkill = ref(false)
 const skillForm = ref<any>({ name_zh: '', desc_zh: '', body_text: '', github_url: '' })
-const skillScope = ref<{ scope: string; scope_ref_id: number | null }>({ scope: 'public', scope_ref_id: null })
+const skillScope = ref<{ scope: string; scope_ref_ids: number[] }>({ scope: 'public', scope_ref_ids: [] })
 const skillFile = ref<File | null>(null)
 const SCOPE_LABELS: Record<string, string> = {
   public: '全平台公开', group: '课题组成员可见', dataset: '数据集成员可见', self: '仅自己可见'
 }
 function openSkillCreate() {
   skillForm.value = { name_zh: '', desc_zh: '', body_text: '', github_url: '' }
-  skillScope.value = { scope: 'public', scope_ref_id: null }
+  skillScope.value = { scope: 'public', scope_ref_ids: [] }
   skillFile.value = null; showSkill.value = true
 }
 async function createSkill() {
   if (!skillForm.value.name_zh.trim()) { alert('请填写名称'); return }
   if (!skillForm.value.body_text.trim() && !skillFile.value) { alert('请上传文件或填写文字内容'); return }
-  if ((skillScope.value.scope === 'group' || skillScope.value.scope === 'dataset') && !skillScope.value.scope_ref_id) {
-    alert('请在下拉框中选择具体的课题组/数据集'); return
+  if ((skillScope.value.scope === 'group' || skillScope.value.scope === 'dataset') && !skillScope.value.scope_ref_ids.length) {
+    alert('请勾选至少一个课题组/数据集'); return
   }
   const fd = new FormData()
   fd.append('name_zh', skillForm.value.name_zh.trim())
   fd.append('desc_zh', skillForm.value.desc_zh)
   fd.append('body_text', skillForm.value.body_text)
   fd.append('scope', skillScope.value.scope)
-  if (skillScope.value.scope_ref_id) fd.append('scope_ref_id', String(skillScope.value.scope_ref_id))
+  if (skillScope.value.scope_ref_ids.length) fd.append('scope_ref_ids', skillScope.value.scope_ref_ids.join(','))
   fd.append('section_id', String(activeSection.value.id))
   if (skillForm.value.github_url) fd.append('github_url', skillForm.value.github_url)
   if (skillFile.value) fd.append('file', skillFile.value)
@@ -98,7 +99,7 @@ async function delComment(c: any) {
   await api.delete(`/skills/comments/${c.id}`); loadComments()
 }
 function downloadSkill(s: any) {
-  window.open(`/api/skills/${s.id}/download`, '_blank')
+  downloadFile(`/skills/${s.id}/download`, s.file_name || `skill_${s.id}`)
 }
 </script>
 <template>

@@ -126,7 +126,7 @@ async function saveResume() {
 // ==================== 在做项目：创建 + 置顶 ====================
 const showProjCreate = ref(false)
 const projForm = ref<any>({ title: '', body_zh: '', pinned: false })
-const projScope = ref<{ scope: string; scope_ref_id: number | null }>({ scope: 'public', scope_ref_id: null })
+const projScope = ref<{ scope: string; scope_ref_ids: number[] }>({ scope: 'public', scope_ref_ids: [] })
 const projImage = ref<File | null>(null); const projImgPreview = ref('')
 function pickProjImage(e: any) {
   const f = e.target.files?.[0]; if (!f) return
@@ -134,22 +134,22 @@ function pickProjImage(e: any) {
 }
 function openProjCreate() {
   projForm.value = { title: '', body_zh: '', pinned: false }
-  projScope.value = { scope: 'public', scope_ref_id: null }
+  projScope.value = { scope: 'public', scope_ref_ids: [] }
   projImage.value = null; projImgPreview.value = ''; showProjCreate.value = true
 }
 async function createProject() {
   if (!projForm.value.title.trim() || !projForm.value.body_zh.trim() || !projImage.value) {
     alert('标题、图片、文字均为必填'); return
   }
-  if ((projScope.value.scope === 'group' || projScope.value.scope === 'dataset') && !projScope.value.scope_ref_id) {
-    alert('请在下拉框中选择具体的课题组/数据集'); return
+  if ((projScope.value.scope === 'group' || projScope.value.scope === 'dataset') && !projScope.value.scope_ref_ids.length) {
+    alert('请勾选至少一个课题组/数据集'); return
   }
   const fd = new FormData()
   fd.append('title', projForm.value.title.trim())
   fd.append('body_zh', projForm.value.body_zh.trim())
   fd.append('pinned', String(projForm.value.pinned))
   fd.append('scope', projScope.value.scope)
-  if (projScope.value.scope_ref_id) fd.append('scope_ref_id', String(projScope.value.scope_ref_id))
+  if (projScope.value.scope_ref_ids.length) fd.append('scope_ref_ids', projScope.value.scope_ref_ids.join(','))
   fd.append('image', projImage.value)
   try {
     await api.post('/projects', fd)

@@ -99,7 +99,8 @@ class PostIn(BaseModel):
     visibility: str = "platform"; cover_icon: str | None = None
     tags: list[str] = []
     scope: str = "public"                 # public|group|dataset|self
-    scope_ref_id: int | None = None       # 选中的课题组/数据集 id
+    scope_ref_id: int | None = None       # 兼容旧单选
+    scope_ref_ids: list[int] = []         # 多选：选中的课题组/数据集 id 列表
 
 
 class CommentIn(BaseModel):
@@ -161,6 +162,11 @@ class LitRefIn(BaseModel):
     title: str; authors: str | None = None; venue: str | None = None
     year: int | None = None; url: str | None = None; doi: str | None = None
     note_zh: str | None = None
+    confirm_real: bool = False   # 用户确认为真实文献（覆盖 AI 判定强制上传）
+
+
+class CitationTextIn(BaseModel):
+    text: str
 
 
 class LitRefRow(BaseModel):

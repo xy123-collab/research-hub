@@ -9,7 +9,7 @@ import ScopeSelector from '../components/ScopeSelector.vue'
 const { t } = useI18n(); const auth = useAuth()
 const posts = ref<any[]>([])
 const form = ref({ content_zh: '', tags: '' })
-const scope = ref<{ scope: string; scope_ref_id: number | null }>({ scope: 'public', scope_ref_id: null })
+const scope = ref<{ scope: string; scope_ref_ids: number[] }>({ scope: 'public', scope_ref_ids: [] })
 
 // 评论区状态：postId -> {open, list, input, replyTo}
 const cstate = ref<Record<number, any>>({})
@@ -18,14 +18,14 @@ onMounted(load)
 async function load() { posts.value = (await api.get('/posts')).data }
 async function submit() {
   if (!form.value.content_zh) return
-  if ((scope.value.scope === 'group' || scope.value.scope === 'dataset') && !scope.value.scope_ref_id) {
-    alert('请在下拉框中选择具体的课题组/数据集'); return
+  if ((scope.value.scope === 'group' || scope.value.scope === 'dataset') && !scope.value.scope_ref_ids.length) {
+    alert('请勾选至少一个课题组/数据集'); return
   }
   try {
     await api.post('/posts', { content_zh: form.value.content_zh,
-      scope: scope.value.scope, scope_ref_id: scope.value.scope_ref_id,
+      scope: scope.value.scope, scope_ref_ids: scope.value.scope_ref_ids,
       tags: form.value.tags ? form.value.tags.split(',').map(s=>s.trim()) : [] })
-    form.value = { content_zh: '', tags: '' }; scope.value = { scope: 'public', scope_ref_id: null }
+    form.value = { content_zh: '', tags: '' }; scope.value = { scope: 'public', scope_ref_ids: [] }
     load()
   } catch (e: any) { alert(e.response?.data?.detail || '发布失败') }
 }

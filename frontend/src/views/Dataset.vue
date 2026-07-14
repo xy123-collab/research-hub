@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import api from '../api'
+import { downloadFile } from '../utils/download'
 import CharterModal from '../components/CharterModal.vue'
 import Icon from '../components/Icon.vue'
 
@@ -248,7 +249,7 @@ async function saveDataCfg() {
   showDataCfg.value = false; reloadDetail()
 }
 // ---------- 批量勘误 ----------
-function downloadTemplate() { window.open(`/api/datasets/${slug}/bug-template`, '_blank') }
+function downloadTemplate() { downloadFile(`/datasets/${slug}/bug-template`, `${slug}_bug_template.xlsx`) }
 const batchFile = ref<File | null>(null)
 async function submitBatch() {
   if (!batchFile.value) { alert('请选择填好的模板文件'); return }
@@ -281,7 +282,7 @@ async function publishCodeVer() {
     openCode(codeModal.value.id)
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
-function downloadCode(vid?: number) { window.open(`/api/code/${codeModal.value.id}/download${vid ? '?vid=' + vid : ''}`, '_blank') }
+function downloadCode(vid?: number) { downloadFile(`/code/${codeModal.value.id}/download${vid ? '?vid=' + vid : ''}`) }
 async function addCodeComment() {
   if (!codeCommentForm.value.content.trim()) return
   const fd = new FormData(); fd.append('content', codeCommentForm.value.content); fd.append('is_correction', String(codeCommentForm.value.is_correction))
@@ -352,7 +353,7 @@ async function doPublish() {
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 function download(v: any, file: string) {
-  window.open(`/api/datasets/${slug}/versions/${v.id}/download?file=${file}`, '_blank')
+  downloadFile(`/datasets/${slug}/versions/${v.id}/download?file=${file}`)
 }
 
 // ---------- dataset edit ----------
@@ -401,20 +402,45 @@ async function aiRun() {
 }
 
 // ---------- literature ----------
-async function addRef() {
+// 文献上传入口：默认收起，点「文献上传」浮层展开，三选一：单条手动 / 引文自动匹配 / 批量
+const showLitUpload = ref(false)
+const litMode = ref<'single' | 'citation' | 'batch'>('single')
+const litVerdict = ref<any>(null)   // 单条 AI 核验结论
+
+async function addRef(force = false) {
   if (!litForm.value.title || !litForm.value.authors || !litForm.value.year || !litForm.value.venue) {
     alert('标题、作者、年份、刊物/出版社为必填'); return
   }
-  await api.post(`/datasets/${slug}/literature/refs`, litForm.value)
-  litForm.value = { title: '', authors: '', venue: '', year: null, url: '', doi: '', note_zh: '' }; loadTab('literature')
+  try {
+    const r = (await api.post(`/datasets/${slug}/literature/refs`,
+      { ...litForm.value, confirm_real: force })).data
+    if (r.ok === false) { litVerdict.value = r.verdict; return }   // 可疑，等用户确认
+    litForm.value = { title: '', authors: '', venue: '', year: null, url: '', doi: '', note_zh: '' }
+    litVerdict.value = null; showLitUpload.value = false; loadTab('literature')
+  } catch (e: any) { alert(e.response?.data?.detail || '添加失败') }
 }
+
+// 引文自动匹配：粘贴一段引文 → 解析成字段
+const citationText = ref('')
+async function matchCitation() {
+  if (!citationText.value.trim()) { alert('请粘贴一段引文'); return }
+  try {
+    const f = (await api.post(`/datasets/${slug}/literature/parse-citation`, { text: citationText.value })).data.fields
+    litForm.value = { title: f.title || '', authors: f.authors || '', venue: f.venue || '',
+      year: f.year || null, doi: f.doi || '', url: f.url || '', note_zh: '' }
+    litMode.value = 'single'; litVerdict.value = null
+  } catch (e: any) { alert(e.response?.data?.detail || '解析失败') }
+}
+
+function exportLit() { downloadFile(`/datasets/${slug}/literature/export`, `${slug}_literature.xlsx`) }
+
 async function aiSummarize() {
   aiSummary.value = '生成中…'
   aiSummary.value = (await api.post(`/datasets/${slug}/literature/ai-summarize`)).data.summary
 }
 
 // ---------- 批量文献导入 + AI 真实性核验 ----------
-function downloadLitTemplate() { window.open(`/api/datasets/${slug}/lit-template`, '_blank') }
+function downloadLitTemplate() { downloadFile(`/datasets/${slug}/lit-template`, `${slug}_lit_template.xlsx`) }
 const litFile = ref<File | null>(null)
 const litRows = ref<any[]>([])            // 解析后的预览行（含 verdict/confirm）
 const litVerifying = ref(false)
@@ -456,6 +482,79 @@ function verdictBadge(v: string) {
     : v === 'suspect' ? { t: '可疑，请核对', c: 'background:#fee2e2;color:#991b1b' }
     : v ? { t: '未核验', c: 'background:#f1f5f9;color:#64748b' } : null
 }
+
+// ---------- 文献主题聚类地图（关键词词云，可缩放/平移）----------
+const STOP = new Set(['the','and','for','with','from','that','this','are','was','were','has','have','into','over','under','study','analysis','based','using','evidence','effect','effects','china','chinese','data','model','approach','of','in','on','to','a','an','研究','分析','基于','影响','效应','中国','数据','方法','关于','一个','以及','与','的','和','对','及'])
+function tokenize(text: string): string[] {
+  if (!text) return []
+  const out: string[] = []
+  // 英文单词
+  for (const w of (text.toLowerCase().match(/[a-z]{3,}/g) || [])) if (!STOP.has(w)) out.push(w)
+  // 中文 2-gram
+  const cjk = text.match(/[一-龥]{2,}/g) || []
+  for (const seg of cjk) {
+    for (let i = 0; i + 2 <= seg.length; i++) {
+      const g = seg.slice(i, i + 2)
+      if (!STOP.has(g)) out.push(g)
+    }
+  }
+  return out
+}
+// 词云布局：频率决定字号；同一篇共现的关键词做并查集聚类，聚类分区排布
+const cloud = computed(() => {
+  const refs = lit.value.refs || []
+  const freq: Record<string, number> = {}
+  const perRef: string[][] = []
+  for (const r of refs) {
+    const toks = Array.from(new Set(tokenize((r.title || '') + ' ' + (r.venue || ''))))
+    perRef.push(toks)
+    for (const t of toks) freq[t] = (freq[t] || 0) + 1
+  }
+  let words = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 50).map(x => x[0])
+  if (!words.length) return { nodes: [], w: 800, h: 460 }
+  const idx: Record<string, number> = {}; words.forEach((w, i) => idx[w] = i)
+  // 并查集
+  const par = words.map((_, i) => i)
+  const find = (x: number): number => par[x] === x ? x : (par[x] = find(par[x]))
+  const uni = (a: number, b: number) => { par[find(a)] = find(b) }
+  for (const toks of perRef) {
+    const ins = toks.filter(t => t in idx)
+    for (let i = 1; i < ins.length; i++) uni(idx[ins[0]], idx[ins[i]])
+  }
+  const clusters: Record<number, string[]> = {}
+  words.forEach(w => { const c = find(idx[w]); (clusters[c] = clusters[c] || []).push(w) })
+  const groups = Object.values(clusters).sort((a, b) => b.length - a.length)
+  // 分区网格排布
+  const W = 900, H = 500, cols = Math.ceil(Math.sqrt(groups.length)) || 1
+  const rows = Math.ceil(groups.length / cols)
+  const cw = W / cols, ch = H / rows
+  const palette = ['#2d4a7c', '#7c2d3a', '#a15c2b', '#3f6f4f', '#5b4b8a', '#0f766e', '#9d174d']
+  const maxF = Math.max(...words.map(w => freq[w]))
+  const nodes: any[] = []
+  groups.forEach((g, gi) => {
+    const cx = (gi % cols) * cw + cw / 2, cy = Math.floor(gi / cols) * ch + ch / 2
+    const color = palette[gi % palette.length]
+    g.sort((a, b) => freq[b] - freq[a])
+    g.forEach((w, wi) => {
+      // 螺旋摆放
+      const ang = wi * 2.399, rad = 8 + wi * 9
+      const size = 12 + (freq[w] / maxF) * 30
+      nodes.push({ w, x: cx + Math.cos(ang) * rad, y: cy + Math.sin(ang) * rad, size, color, count: freq[w] })
+    })
+  })
+  return { nodes, w: W, h: H }
+})
+// 缩放/平移
+const mapZoom = ref(1); const mapX = ref(0); const mapY = ref(0)
+const dragging = ref(false); let dsx = 0, dsy = 0, dox = 0, doy = 0
+function mapWheel(e: WheelEvent) {
+  const k = e.deltaY < 0 ? 1.15 : 0.87
+  mapZoom.value = Math.min(5, Math.max(0.3, mapZoom.value * k))
+}
+function mapDown(e: MouseEvent) { dragging.value = true; dsx = e.clientX; dsy = e.clientY; dox = mapX.value; doy = mapY.value }
+function mapMove(e: MouseEvent) { if (dragging.value) { mapX.value = dox + (e.clientX - dsx); mapY.value = doy + (e.clientY - dsy) } }
+function mapUp() { dragging.value = false }
+function mapReset() { mapZoom.value = 1; mapX.value = 0; mapY.value = 0 }
 async function draftFromFlag(id: number) { await api.post(`/verify-flags/${id}/draft-bug`); loadTab('verify') }
 const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 </script>
@@ -699,84 +798,142 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 
       <!-- literature -->
       <div v-else-if="tab==='literature'">
-        <div class="card">
-          <div class="flex items-center justify-between">
-            <div class="label-cap">重点文献清单</div>
-            <button v-if="d.is_member" class="btn-ghost text-xs" @click="aiSummarize">AI 总结研究用途/话题</button>
+        <!-- 顶部操作条：上传收进一个按钮，导出显眼 -->
+        <div class="flex items-center gap-2 mb-3 flex-wrap">
+          <h2 class="text-lg mr-auto">文献地图</h2>
+          <button v-if="d.is_member" class="btn-ghost text-sm" @click="aiSummarize">AI 总结话题</button>
+          <button v-if="d.is_member" class="btn-primary text-sm" @click="exportLit">⭳ 一键导出全部文献</button>
+          <button v-if="d.is_member" class="btn-primary text-sm" @click="showLitUpload=true">＋ 文献上传</button>
+        </div>
+        <pre v-if="aiSummary" class="whitespace-pre-wrap bg-paper text-ink border border-line mb-3 text-sm p-2">{{ aiSummary }}</pre>
+
+        <!-- 主板块：按主题聚类的关键词地图（可缩放/平移）-->
+        <div class="card p-0 overflow-hidden">
+          <div class="flex items-center justify-between px-3 py-2 border-b border-line">
+            <span class="label-cap">主题聚类图 · 关键词越大表示相关文献越多</span>
+            <div class="flex items-center gap-1 text-xs">
+              <button class="btn-ghost px-2" @click="mapZoom=Math.min(5,mapZoom*1.2)">＋</button>
+              <button class="btn-ghost px-2" @click="mapZoom=Math.max(0.3,mapZoom*0.83)">－</button>
+              <button class="btn-ghost px-2" @click="mapReset">重置</button>
+            </div>
           </div>
-          <pre v-if="aiSummary" class="whitespace-pre-wrap bg-paper text-ink border border-line mt-2">{{ aiSummary }}</pre>
-          <ul class="text-sm mt-2 space-y-2">
-            <li v-for="r in lit.refs" :key="r.id" class="border-b border-line pb-2">
-              <div>
-                <a v-if="r.url" :href="r.url" target="_blank" class="text-accent hover:underline">{{ r.title }} ↗</a>
-                <span v-else>{{ r.title }}</span> · {{ r.authors }} · {{ r.venue }} ({{ r.year }})
-                <span v-if="r.doi" class="text-gray-400"> · DOI {{ r.doi }}</span>
+          <div class="relative bg-paper" style="height:420px" @wheel.prevent="mapWheel"
+               @mousedown="mapDown" @mousemove="mapMove" @mouseup="mapUp" @mouseleave="mapUp">
+            <svg v-if="cloud.nodes.length" :viewBox="`0 0 ${cloud.w} ${cloud.h}`" class="w-full h-full select-none"
+                 :style="{ cursor: dragging ? 'grabbing' : 'grab' }">
+              <g :transform="`translate(${mapX},${mapY}) scale(${mapZoom})`">
+                <text v-for="(n,i) in cloud.nodes" :key="i" :x="n.x" :y="n.y"
+                      :font-size="n.size" :fill="n.color" text-anchor="middle"
+                      style="font-weight:600;cursor:default">
+                  {{ n.w }}<title>{{ n.w }}：{{ n.count }} 篇</title>
+                </text>
+              </g>
+            </svg>
+            <div v-else class="h-full flex items-center justify-center text-gray-400 text-sm">
+              暂无文献，添加后这里会自动生成主题聚类图。
+            </div>
+          </div>
+        </div>
+
+        <!-- 文献清单：滚动显示 + 就近的导出按钮 -->
+        <div class="card mt-3">
+          <div class="flex items-center justify-between mb-2">
+            <div class="label-cap">文献清单（{{ lit.refs.length }}）</div>
+            <button v-if="d.is_member && lit.refs.length" class="btn-ghost text-xs" @click="exportLit">⭳ 导出</button>
+          </div>
+          <div class="overflow-y-auto pr-1" style="max-height:320px">
+            <ul class="text-sm space-y-2">
+              <li v-for="r in lit.refs" :key="r.id" class="border-b border-line pb-2">
+                <div>
+                  <a v-if="r.url" :href="r.url" target="_blank" class="text-accent hover:underline">{{ r.title }} ↗</a>
+                  <span v-else>{{ r.title }}</span> · {{ r.authors }} · {{ r.venue }} ({{ r.year }})
+                  <span v-if="r.doi" class="text-gray-400"> · DOI {{ r.doi }}</span>
+                </div>
+                <div v-if="r.citation" class="text-xs text-gray-500 mt-0.5">引用格式：{{ r.citation }}</div>
+              </li>
+            </ul>
+            <p v-if="!lit.refs.length" class="text-gray-400 text-sm">暂无文献。</p>
+          </div>
+        </div>
+
+        <!-- 文献上传浮层：三选一 -->
+        <div v-if="showLitUpload" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showLitUpload=false">
+          <div class="bg-white rounded-lg max-w-2xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-lg">文献上传</h3>
+              <button class="text-gray-400" @click="showLitUpload=false"><Icon name="close" class="ico" style="width:18px;height:18px" /></button>
+            </div>
+            <div class="flex gap-1 border-b border-line mb-3 text-sm">
+              <button v-for="[k,l] in [['single','单条手动输入'],['citation','引文自动匹配'],['batch','批量上传']]" :key="k"
+                @click="litMode=k as any" :class="['px-3 py-1.5', litMode===k?'border-b-2 border-accent text-accent':'text-gray-500']">{{ l }}</button>
+            </div>
+
+            <!-- 引文自动匹配 -->
+            <div v-if="litMode==='citation'">
+              <p class="text-xs text-gray-500 mb-2">粘贴一段引文，自动识别标题/作者/年份/刊物/DOI/链接，识别后转到「单条手动」核对再提交。</p>
+              <textarea v-model="citationText" rows="3" class="input mb-2" placeholder="如：Barro, R. (1991). Economic growth in a cross section of countries. QJE, 106(2). https://doi.org/10.2307/2937943"></textarea>
+              <button class="btn-primary text-sm" @click="matchCitation">自动匹配</button>
+            </div>
+
+            <!-- 单条手动 -->
+            <div v-if="litMode==='single'">
+              <div class="grid grid-cols-2 gap-2">
+                <input v-model="litForm.title" class="input" placeholder="标题 *" />
+                <input v-model="litForm.authors" class="input" placeholder="作者 *" />
+                <input v-model="litForm.venue" class="input" placeholder="刊物/出版社 *" />
+                <input v-model.number="litForm.year" class="input" placeholder="年份 *" />
+                <input v-model="litForm.doi" class="input" placeholder="DOI（可选）" />
+                <input v-model="litForm.url" class="input" placeholder="链接 URL（可选）" />
               </div>
-              <div v-if="r.citation" class="text-xs text-gray-500 mt-0.5">引用格式：{{ r.citation }}</div>
-            </li>
-          </ul>
-          <p v-if="!lit.refs.length" class="text-gray-400 text-sm">暂无文献。</p>
-        </div>
-
-        <!-- 批量文献导入（布局参考批量勘误）-->
-        <div v-if="d.is_member" class="card mt-3">
-          <div class="label-cap mb-2">批量导入文献（Excel/CSV 一次多条）</div>
-          <p class="text-xs text-gray-500 mb-2">先下载模板，按「标题/作者/年份/刊物·出版社/DOI/链接URL」填写（前四项必填，DOI 与链接可选）；导入后系统按行拆分预览，可一键 AI 核验真实性——被判可疑的可核对后勾选「确认真实」强制上传。</p>
-          <div class="flex items-center gap-2 flex-wrap">
-            <button class="btn-ghost text-xs" @click="downloadLitTemplate">下载批量模板</button>
-            <input type="file" accept=".xlsx,.csv" class="text-xs" @change="(e)=>litFile=e.target.files[0]" />
-            <button class="btn-primary text-xs" @click="parseLit">解析预览</button>
-          </div>
-
-          <div v-if="litRows.length" class="mt-3">
-            <div class="flex items-center gap-2 mb-2">
-              <button class="btn-ghost text-xs" :disabled="litVerifying" @click="verifyLit">{{ litVerifying ? 'AI 核验中…' : 'AI 核验真实性' }}</button>
-              <button class="btn-primary text-xs" @click="commitLit">确认导入（{{ litRows.length }} 条）</button>
+              <div v-if="litVerdict && litVerdict.verdict==='suspect'" class="mt-2 p-2 rounded bg-red-50 text-sm">
+                <div class="text-red-700">AI 判定该文献可疑：{{ litVerdict.reason }}</div>
+                <button class="btn-ghost text-xs mt-1" @click="addRef(true)">我已核对，确认为真实文献并强制上传</button>
+              </div>
+              <button class="btn-primary mt-2" @click="addRef(false)">添加（提交前会 AI 核验真实性）</button>
             </div>
-            <div class="overflow-x-auto">
-              <table class="w-full text-xs border border-line">
-                <thead class="bg-paper text-gray-500">
-                  <tr>
-                    <th class="p-1 text-left">标题</th><th class="p-1">作者</th><th class="p-1">年份</th>
-                    <th class="p-1">刊物/出版社</th><th class="p-1">AI 核验</th><th class="p-1">确认真实</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(r,i) in litRows" :key="i" class="border-t border-line"
-                      :class="r.missing && r.missing.length ? 'bg-red-50' : ''">
-                    <td class="p-1"><input v-model="r.title" class="input text-xs" /></td>
-                    <td class="p-1"><input v-model="r.authors" class="input text-xs w-24" /></td>
-                    <td class="p-1"><input v-model.number="r.year" class="input text-xs w-14" /></td>
-                    <td class="p-1"><input v-model="r.venue" class="input text-xs w-28" /></td>
-                    <td class="p-1 text-center">
-                      <span v-if="verdictBadge(r.verdict)" class="tag" :style="verdictBadge(r.verdict)!.c">{{ verdictBadge(r.verdict)!.t }}</span>
-                      <span v-else class="text-gray-300">—</span>
-                      <div v-if="r.reason && r.verdict==='suspect'" class="text-[10px] text-red-600 mt-0.5">{{ r.reason }}</div>
-                    </td>
-                    <td class="p-1 text-center">
-                      <input v-if="r.verdict==='suspect'" type="checkbox" v-model="r.confirm_real" title="确认为真实文献，强制上传" />
-                      <span v-else class="text-gray-300">—</span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <p class="text-[11px] text-gray-400 mt-1">红色行缺少必填项，请在上方直接修改后再导入。</p>
-          </div>
-        </div>
 
-        <!-- 单条添加 -->
-        <div v-if="d.is_member" class="card mt-3">
-          <div class="label-cap mb-2">添加单条文献（标题·作者·年份·刊物必填）</div>
-          <div class="grid grid-cols-2 gap-2">
-            <input v-model="litForm.title" class="input" placeholder="标题 *" />
-            <input v-model="litForm.authors" class="input" placeholder="作者 *" />
-            <input v-model="litForm.venue" class="input" placeholder="刊物/出版社 *" />
-            <input v-model.number="litForm.year" class="input" placeholder="年份 *" />
-            <input v-model="litForm.doi" class="input" placeholder="DOI（可选）" />
-            <input v-model="litForm.url" class="input" placeholder="链接 URL（可选）" />
+            <!-- 批量上传 -->
+            <div v-if="litMode==='batch'">
+              <p class="text-xs text-gray-500 mb-2">下载模板，按「标题/作者/年份/刊物·出版社/DOI/链接URL」填写（前四必填）；导入后按行预览，可一键 AI 核验，可疑项核对后勾选「确认真实」强制上传。</p>
+              <div class="flex items-center gap-2 flex-wrap">
+                <button class="btn-ghost text-xs" @click="downloadLitTemplate">下载批量模板</button>
+                <input type="file" accept=".xlsx,.csv" class="text-xs" @change="(e)=>litFile=e.target.files[0]" />
+                <button class="btn-primary text-xs" @click="parseLit">解析预览</button>
+              </div>
+              <div v-if="litRows.length" class="mt-3">
+                <div class="flex items-center gap-2 mb-2">
+                  <button class="btn-ghost text-xs" :disabled="litVerifying" @click="verifyLit">{{ litVerifying ? 'AI 核验中…' : 'AI 核验真实性' }}</button>
+                  <button class="btn-primary text-xs" @click="commitLit">确认导入（{{ litRows.length }} 条）</button>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-xs border border-line">
+                    <thead class="bg-paper text-gray-500"><tr>
+                      <th class="p-1 text-left">标题</th><th class="p-1">作者</th><th class="p-1">年份</th>
+                      <th class="p-1">刊物/出版社</th><th class="p-1">AI 核验</th><th class="p-1">确认真实</th>
+                    </tr></thead>
+                    <tbody>
+                      <tr v-for="(r,i) in litRows" :key="i" class="border-t border-line" :class="r.missing && r.missing.length ? 'bg-red-50' : ''">
+                        <td class="p-1"><input v-model="r.title" class="input text-xs" /></td>
+                        <td class="p-1"><input v-model="r.authors" class="input text-xs w-24" /></td>
+                        <td class="p-1"><input v-model.number="r.year" class="input text-xs w-14" /></td>
+                        <td class="p-1"><input v-model="r.venue" class="input text-xs w-28" /></td>
+                        <td class="p-1 text-center">
+                          <span v-if="verdictBadge(r.verdict)" class="tag" :style="verdictBadge(r.verdict)!.c">{{ verdictBadge(r.verdict)!.t }}</span>
+                          <span v-else class="text-gray-300">—</span>
+                          <div v-if="r.reason && r.verdict==='suspect'" class="text-[10px] text-red-600 mt-0.5">{{ r.reason }}</div>
+                        </td>
+                        <td class="p-1 text-center">
+                          <input v-if="r.verdict==='suspect'" type="checkbox" v-model="r.confirm_real" />
+                          <span v-else class="text-gray-300">—</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p class="text-[11px] text-gray-400 mt-1">红色行缺必填项，可直接在表内修改。</p>
+              </div>
+            </div>
           </div>
-          <button class="btn-primary mt-2" @click="addRef">添加</button>
         </div>
       </div>
 
