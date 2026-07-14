@@ -36,6 +36,12 @@ def feed(dataset_id: int | None = None, db: Session = Depends(get_db),
                     and p.author_id != user.id and not is_super_admin(user):
                 continue
         _sum = scope_summary(db, "post", p.id)
+        ds_slug = ds_name = None
+        if p.dataset_id:
+            from ..models.dataset import Dataset
+            dsx = db.get(Dataset, p.dataset_id)
+            if dsx:
+                ds_slug = dsx.slug; ds_name = dsx.name_zh
         tags = [t.tag for t in db.query(PostTag).filter_by(post_id=p.id).all()]
         likes = db.query(PostReaction).filter_by(post_id=p.id, type="like").count()
         author = db.get(User, p.author_id)
@@ -44,6 +50,7 @@ def feed(dataset_id: int | None = None, db: Session = Depends(get_db),
                     "content_zh": p.content_zh, "visibility": p.visibility,
                     "dataset_id": p.dataset_id, "cover_icon": p.cover_icon,
                     "scope": _sum["scope"], "scope_label": _sum["label"],
+                    "dataset_slug": ds_slug, "dataset_name": ds_name,
                     "tags": tags, "likes": likes})
     return out
 

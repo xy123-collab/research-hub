@@ -85,6 +85,33 @@ def test_single_add_verify_and_required(client, founder):
     assert r.status_code == 200 and r.json().get("ok") is True
 
 
+def test_perm_request_flow(client, founder, member):
+    # 成员申请在线分析
+    r = client.post("/api/datasets/cod/perm-requests", json={"perm": "analysis.online", "purpose": "x"}, headers=member)
+    assert r.status_code == 200
+    # 重复申请被拒
+    assert client.post("/api/datasets/cod/perm-requests", json={"perm": "analysis.online"}, headers=member).status_code == 400
+    # 管理员能看到并审批
+    mem = client.get("/api/datasets/cod/members", headers=founder).json()
+    assert mem["perm_requests"] and mem["perm_requests"][0]["perm"] == "analysis.online"
+    rid = mem["perm_requests"][0]["id"]
+    assert client.post(f"/api/perm-requests/{rid}/decide", params={"approve": True}, headers=founder).status_code == 200
+    det = client.get("/api/datasets/cod", headers=member).json()
+    assert "analysis.online" in (det.get("my_perms") or [])
+    # 还原共享测试库状态：撤销授权，避免影响后续用例
+    uid = client.get("/api/me", headers=member).json()["id"]
+    client.post(f"/api/datasets/cod/members/{uid}/revoke", params={"perm": "analysis.online"}, headers=founder)
+
+
+def test_dataset_search_and_feed_link(client, founder, member):
+    res = client.get("/api/datasets/search", params={"q": "COD"}, headers=member).json()
+    assert res and any("COD" in d["name"] for d in res)
+    did = res[0]["id"]
+    client.post("/api/posts", json={"content_zh": "关联讨论xyz", "tags": [], "dataset_id": did}, headers=member)
+    fp = [p for p in client.get("/api/posts", headers=member).json() if p["content_zh"] == "关联讨论xyz"][0]
+    assert fp["dataset_slug"] and fp["dataset_name"]
+
+
 def test_super_admin_primary_and_roles(client, founder):
     admin = _h(client, "admin", "admin123")          # seed 里 admin 是总管理员
     # 非总管理员看不到

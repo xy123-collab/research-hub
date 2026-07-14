@@ -243,15 +243,13 @@ async function delEntry(eid: number) {
 <template>
   <div v-if="profile">
     <!-- 顶部资料卡 -->
-    <div class="rounded-lg p-6 text-white relative" style="background: linear-gradient(135deg,#2d4a7c,#3d5a8c)">
-      <button v-if="isMe" class="absolute top-4 right-4 text-xs bg-white/15 hover:bg-white/25 rounded px-3 py-1.5"
-        @click="openEdit">编辑资料</button>
-      <div class="flex items-center gap-4">
-        <div class="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center overflow-hidden">
+    <div class="rounded-lg p-6 text-white" style="background: linear-gradient(135deg,#2d4a7c,#3d5a8c)">
+      <div class="flex items-start gap-4">
+        <div class="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center overflow-hidden shrink-0">
           <img v-if="profile.avatar" :src="profile.avatar" class="w-full h-full object-cover" />
           <Icon v-else name="users" class="ico" style="width:26px;height:26px" />
         </div>
-        <div>
+        <div class="min-w-0 flex-1">
           <h1 class="text-2xl font-serif">{{ profile.display_name }}
             <span class="text-white/50 text-sm font-sans">ID {{ profile.id }}</span></h1>
           <p v-if="profile.research_direction" class="text-white/85 text-sm mt-0.5">
@@ -260,9 +258,14 @@ async function delEntry(eid: number) {
             <span v-for="k in keywordList" :key="k" class="text-[11px] bg-white/15 rounded px-2 py-0.5">{{ k }}</span>
           </div>
         </div>
-        <div class="ml-auto text-right self-start">
-          <div class="text-3xl font-serif">{{ profile.contribution }}</div>
-          <div class="label-cap text-white/70">{{ t('profile.contribution') }}</div>
+        <!-- 右侧：编辑资料按钮在上，贡献度在下，纵向排列，互不重叠 -->
+        <div class="flex flex-col items-end gap-2 shrink-0">
+          <button v-if="isMe" class="text-xs bg-white/15 hover:bg-white/25 rounded px-3 py-1.5"
+            @click="openEdit">编辑资料</button>
+          <div class="text-right">
+            <div class="text-3xl font-serif leading-none">{{ profile.contribution }}</div>
+            <div class="label-cap text-white/70 mt-1">{{ t('profile.contribution') }}</div>
+          </div>
         </div>
       </div>
     </div>

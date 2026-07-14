@@ -10,6 +10,20 @@ const { t } = useI18n(); const auth = useAuth()
 const posts = ref<any[]>([])
 const form = ref({ content_zh: '', tags: '' })
 const scope = ref<{ scope: string; scope_ref_ids: number[] }>({ scope: 'public', scope_ref_ids: [] })
+// 关联数据集（可选）：输入关键词自动匹配
+const dsQuery = ref(''); const dsResults = ref<any[]>([]); const dsLinked = ref<any>(null)
+let dsTimer: any = null
+function onDsInput() {
+  dsLinked.value = null
+  clearTimeout(dsTimer)
+  dsTimer = setTimeout(async () => {
+    const q = dsQuery.value.trim()
+    if (!q) { dsResults.value = []; return }
+    try { dsResults.value = (await api.get('/datasets/search', { params: { q } })).data } catch { dsResults.value = [] }
+  }, 250)
+}
+function pickDs(d: any) { dsLinked.value = d; dsQuery.value = d.name; dsResults.value = [] }
+function clearDs() { dsLinked.value = null; dsQuery.value = ''; dsResults.value = [] }
 
 // 评论区状态：postId -> {open, list, input, replyTo}
 const cstate = ref<Record<number, any>>({})
@@ -24,9 +38,10 @@ async function submit() {
   try {
     await api.post('/posts', { content_zh: form.value.content_zh,
       scope: scope.value.scope, scope_ref_ids: scope.value.scope_ref_ids,
+      dataset_id: dsLinked.value?.id || null,
       tags: form.value.tags ? form.value.tags.split(',').map(s=>s.trim()) : [] })
     form.value = { content_zh: '', tags: '' }; scope.value = { scope: 'public', scope_ref_ids: [] }
-    load()
+    clearDs(); load()
   } catch (e: any) { alert(e.response?.data?.detail || '发布失败') }
 }
 async function like(p: any) { await api.post(`/posts/${p.id}/react`, null, { params: { type: 'like' } }); load() }
@@ -61,6 +76,21 @@ async function delComment(pid: number, c: any) {
       <div>
         <label class="label-cap">标签</label>
         <input v-model="form.tags" class="input" placeholder="标签（逗号分隔，如 COD）" />
+        <!-- 关联数据集（可选，自动匹配）-->
+        <label class="label-cap mt-2">关联数据集（可选）</label>
+        <div class="relative">
+          <div v-if="dsLinked" class="flex items-center gap-2 text-sm">
+            <span class="tag border-accent text-accent">🔗 {{ dsLinked.name }}（ID {{ dsLinked.id }}）</span>
+            <button class="text-accent2 text-xs" @click="clearDs">取消关联</button>
+          </div>
+          <template v-else>
+            <input v-model="dsQuery" class="input" placeholder="输入关键词自动匹配数据集" @input="onDsInput" />
+            <div v-if="dsResults.length" class="absolute z-10 left-0 right-0 bg-white border border-line rounded mt-1 max-h-40 overflow-y-auto shadow">
+              <button v-for="d in dsResults" :key="d.id" class="w-full text-left px-3 py-1.5 text-sm hover:bg-paper"
+                @click="pickDs(d)">{{ d.name }} <span class="text-gray-400 text-xs">ID {{ d.id }}</span></button>
+            </div>
+          </template>
+        </div>
       </div>
     </div>
     <div class="flex justify-end mt-2"><button class="btn-primary" @click="submit">{{ t('feed.post') }}</button></div>
@@ -73,6 +103,10 @@ async function delComment(pid: number, c: any) {
         <span class="tag ml-auto">{{ p.scope_label || p.visibility }}</span>
       </div>
       <p class="mt-2 text-sm">{{ p.content_zh }}</p>
+      <router-link v-if="p.dataset_slug" :to="`/datasets/${p.dataset_slug}`"
+        class="inline-flex items-center gap-1 mt-2 text-xs text-accent hover:underline">
+        🔗 关联数据集：{{ p.dataset_name }} ↗
+      </router-link>
       <div class="mt-2 flex items-center gap-2">
         <span v-for="tag in p.tags" :key="tag" class="tag">{{ tag }}</span>
         <button class="text-xs text-gray-500 ml-auto hover:text-accent" @click="toggleComments(p)">

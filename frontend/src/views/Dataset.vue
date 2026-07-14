@@ -143,6 +143,38 @@ async function doGrant() {
 async function revokePerm(uid: number, perm: string) {
   await api.post(`/datasets/${slug}/members/${uid}/revoke`, null, { params: { perm } }); await loadMembers()
 }
+// ---------- 申请加入数据集（成员）----------
+const joinApplied = ref(false)
+async function joinDataset() {
+  try {
+    await api.post(`/datasets/${slug}/join-requests`)
+    joinApplied.value = true
+    alert('已提交加入申请，等待数据集管理员审批')
+  } catch (e: any) { alert(e.response?.data?.detail || '申请失败') }
+}
+// ---------- 申请在线分析权限（成员）----------
+async function requestAnalysis() {
+  try {
+    await api.post(`/datasets/${slug}/perm-requests`, { perm: 'analysis.online' })
+    alert('在线分析权限申请已提交，等待管理员审批')
+  } catch (e: any) { alert(e.response?.data?.detail || '申请失败') }
+}
+// ---------- 申请其他单独授权（成员）----------
+const showPermReq = ref(false); const permReqForm = ref<any>({ perm: '', purpose: '' })
+const grantablePerms = ['download.current','download.masked','version.history.view','download.history','analysis.online','upload.candidate','codebook.draft','code.maintain']
+const myLackPerms = computed(() => grantablePerms.filter(p => !((d.value?.my_perms)||[]).includes(p)))
+function openPermReq() { permReqForm.value = { perm: myLackPerms.value[0] || '', purpose: '' }; showPermReq.value = true }
+async function submitPermReq() {
+  if (!permReqForm.value.perm) { alert('请选择要申请的权限'); return }
+  try {
+    await api.post(`/datasets/${slug}/perm-requests`, permReqForm.value)
+    showPermReq.value = false; alert('权限申请已提交，等待管理员审批')
+  } catch (e: any) { alert(e.response?.data?.detail || '申请失败') }
+}
+async function decidePerm(id: number, approve: boolean) {
+  await api.post(`/perm-requests/${id}/decide`, null, { params: { approve } })
+  await loadMembers(); await reloadDetail()
+}
 // ---------- 下载申请（成员）----------
 function openDlReq() {
   dlReq.value = { purpose: '', scope_version: d.value.current_version?.version_id || '', planned_until: '', share_with_others: false, agree_charter: false }
@@ -203,6 +235,30 @@ const filteredMembers = computed(() => {
 // ---------- 版本数据分类 ----------
 const kindLabel: Record<string, string> = { raw: '原始数据', masked: '脱敏数据', sample: '样例数据' }
 const kindColor: Record<string, string> = { raw: 'border-accent text-accent', masked: 'border-emerald-600 text-emerald-700', sample: 'border-gray-400 text-gray-500' }
+// 版本库筛选 + 展示优先级
+const verKind = ref<'all' | 'raw' | 'masked' | 'sample'>('all')
+const sortedVersions = computed(() => {
+  const list = (versions.value || []).slice()
+  if (verKind.value !== 'all') {
+    // 单类：从最新到最老（id 越大越新）
+    return list.filter(v => v.data_kind === verKind.value).sort((a, b) => b.id - a.id)
+  }
+  // 全部：样例置顶 → 当前版本 → 其余版本（新→老），同版本内原始在前、脱敏在后
+  const samples = list.filter(v => v.data_kind === 'sample').sort((a, b) => b.id - a.id)
+  const nonSample = list.filter(v => v.data_kind !== 'sample')
+  const groups: Record<string, any[]> = {}
+  for (const v of nonSample) (groups[v.version_id] = groups[v.version_id] || []).push(v)
+  const keys = Object.keys(groups).sort((ka, kb) => {
+    const ca = groups[ka].some(v => v.is_current), cb = groups[kb].some(v => v.is_current)
+    if (ca !== cb) return ca ? -1 : 1
+    return Math.max(...groups[kb].map(v => v.id)) - Math.max(...groups[ka].map(v => v.id))
+  })
+  const ordered: any[] = []
+  for (const k of keys) {
+    ordered.push(...groups[k].sort((a, b) => (a.data_kind === 'raw' ? 0 : 1) - (b.data_kind === 'raw' ? 0 : 1)))
+  }
+  return [...samples, ...ordered]
+})
 // ---------- 一键脱敏 ----------
 const showDesens = ref(false); const desensForm = ref<any>({ from: null, new_version_id: '', changelog_zh: '' })
 function openDesens(v: any) { desensForm.value = { from: v, new_version_id: '', changelog_zh: '' }; showDesens.value = true }
@@ -621,8 +677,9 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <button v-if="d.is_admin" class="btn-ghost" @click="openEdit">编辑数据集</button>
         <button v-if="d.is_admin" class="btn-ghost" @click="openSettings">数据集设置</button>
         <button v-if="d.is_admin" class="btn-ghost" @click="toggleClose">{{ d.settings?.is_closed ? '重新开放' : '关闭数据集' }}</button>
-        <button v-if="!d.is_member && !d.settings?.is_closed" class="btn-ghost" @click="api.post(`/datasets/${slug}/join-requests`).then(()=>alert('已申请，等待管理员审批')).catch((e)=>alert(e.response?.data?.detail||'失败'))">
-          {{ t('ds.joinProcess') }}
+        <button v-if="!d.is_member && !d.settings?.is_closed" class="btn-primary"
+          :disabled="joinApplied" @click="joinDataset">
+          {{ joinApplied ? '已提交申请' : '申请加入数据集' }}
         </button>
       </div>
     </div>
@@ -631,6 +688,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     <p v-if="d.is_member && !d.is_admin" class="text-xs text-gray-500 mt-2">
       当前下载策略：<b>{{ policyLabel[d.settings?.download_policy] || d.settings?.download_policy }}</b>。
       我的授权：<span v-if="(d.my_perms||[]).length"><span v-for="p in d.my_perms" :key="p" class="tag mr-1">{{ permLabel[p]||p }}</span></span><span v-else class="text-gray-400">暂无单独授权（加入数据集不等于获得下载权）</span>
+      <button v-if="myLackPerms.length" class="text-accent ml-2 hover:underline" @click="openPermReq">申请其他权限</button>
     </p>
 
     <!-- 成员协作快捷条：核心协作动作一键直达 -->
@@ -739,7 +797,12 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <textarea v-model="aiCode" class="input mt-2 font-mono text-xs" rows="4" placeholder="生成/手写的 pandas 代码（result=...）"></textarea>
             <pre v-if="aiResult" class="mt-2">{{ JSON.stringify(aiResult, null, 2) }}</pre>
           </template>
-          <p v-else class="text-sm text-gray-400 mt-2">在线分析功能需数据集管理员单独授权后开放。</p>
+          <div v-else class="mt-2">
+            <p class="text-sm text-gray-400">在线分析功能需数据集管理员单独授权后开放。</p>
+            <button v-if="d.is_member && !d.is_admin" class="btn-ghost text-xs text-accent mt-2" @click="requestAnalysis">
+              申请开通在线分析权限
+            </button>
+          </div>
         </div>
       </div>
 
@@ -750,8 +813,14 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <button class="btn-ghost" @click="openApply">一键应用已采纳勘误发版</button>
           <button class="btn-ghost" @click="openDataCfg">数据处理设置（唯一ID/脱敏规则）</button>
         </div>
-        <p class="text-xs text-gray-500 mb-3">数据分类：<b>原始</b>与<b>脱敏</b>同步迭代（有当前推荐版）；<b>样例</b>公开可下、独立不迭代。</p>
-        <div v-for="v in versions" :key="v.id" class="card mb-3 flex items-center justify-between">
+        <p class="text-xs text-gray-500 mb-2">数据分类：<b>原始</b>与<b>脱敏</b>同步迭代（有当前推荐版）；<b>样例</b>公开可下、独立不迭代。默认样例置顶、当前版本随后。</p>
+        <!-- 三类筛选 -->
+        <div class="flex flex-wrap gap-1 mb-3 text-xs">
+          <button v-for="[k,l] in [['all','全部'],['raw','原始数据'],['masked','脱敏数据'],['sample','样例数据']]" :key="k"
+            :class="['px-2.5 py-1 rounded-full', verKind===k ? 'bg-accent text-white':'bg-paper text-gray-600']"
+            @click="verKind=k as any">{{ l }}</button>
+        </div>
+        <div v-for="v in sortedVersions" :key="v.id" class="card mb-3 flex items-center justify-between">
           <div>
             <span class="font-mono">{{ v.version_id }}</span>
             <span class="tag ml-2 border" :class="kindColor[v.data_kind]||''">{{ kindLabel[v.data_kind]||'原始数据' }}</span>
@@ -772,7 +841,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           </div>
         </div>
         <p v-if="d.is_member && !d.is_admin" class="text-xs text-gray-400 mb-2">下载权限由数据集管理员单独授予；样例数据所有登录用户可下。</p>
-        <p v-if="!versions.length" class="text-gray-400 text-sm">暂无版本。</p>
+        <p v-if="!sortedVersions.length" class="text-gray-400 text-sm">{{ versions.length ? '该分类下暂无版本。' : '暂无版本。' }}</p>
       </div>
 
       <!-- bugs -->
@@ -1030,6 +1099,20 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <p class="text-gray-500 mt-1">用途：{{ r.purpose }}<span v-if="r.planned_until"> · 预计使用至 {{ r.planned_until }}</span></p>
           </div>
           <p v-if="!mem.download_requests?.length" class="text-gray-400 text-sm">暂无待审批的下载申请。</p>
+        </div>
+        <!-- 权限申请（在线分析等单独授权）审批 -->
+        <div class="card mb-4">
+          <div class="label-cap mb-2">权限申请审批（在线分析等）</div>
+          <div v-for="r in mem.perm_requests" :key="r.id" class="border-t border-line py-2 text-sm flex items-center gap-2">
+            <router-link :to="`/users/${r.user_id}`" class="text-accent hover:underline">{{ r.name }}</router-link>
+            <span>申请「{{ r.perm_label }}」</span>
+            <span v-if="r.purpose" class="text-gray-400 truncate">· {{ r.purpose }}</span>
+            <div class="ml-auto flex gap-2">
+              <button class="btn-primary text-xs" @click="decidePerm(r.id,true)">批准</button>
+              <button class="btn-ghost text-xs" @click="decidePerm(r.id,false)">拒绝</button>
+            </div>
+          </div>
+          <p v-if="!mem.perm_requests?.length" class="text-gray-400 text-sm">暂无待审批的权限申请。</p>
         </div>
         <!-- 成员列表 + 授权 -->
         <div class="card">
@@ -1353,6 +1436,23 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showDlReq=false">取消</button>
           <button class="btn-primary" :disabled="!dlReq.agree_charter" @click="submitDlReq">提交申请</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 申请其他单独授权（成员）-->
+    <div v-if="showPermReq" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showPermReq=false">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
+        <h3 class="text-lg mb-3">申请单独授权</h3>
+        <label class="label-cap">选择要申请的权限</label>
+        <select v-model="permReqForm.perm" class="input mb-2">
+          <option v-for="p in myLackPerms" :key="p" :value="p">{{ permLabel[p] || p }}</option>
+        </select>
+        <label class="label-cap">用途说明（可选）</label>
+        <textarea v-model="permReqForm.purpose" class="input mb-3" placeholder="简要说明申请该权限的用途"></textarea>
+        <div class="flex justify-end gap-2">
+          <button class="btn-ghost" @click="showPermReq=false">取消</button>
+          <button class="btn-primary" @click="submitPermReq">提交申请</button>
         </div>
       </div>
     </div>

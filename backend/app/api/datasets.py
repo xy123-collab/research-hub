@@ -63,6 +63,22 @@ def wall(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
             db.query(Dataset).filter_by(is_deleted=False, is_public=True).all()]
 
 
+@router.get("/datasets/search")
+def search_datasets(q: str = "", limit: int = 10, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """按名称或 ID 检索数据集（用于发帖时关联数据集的自动匹配）。"""
+    from sqlalchemy import or_
+    q = (q or "").strip()
+    query = db.query(Dataset).filter_by(is_deleted=False)
+    if q:
+        conds = [Dataset.name_zh.ilike(f"%{q}%")]
+        if q.isdigit():
+            conds.append(Dataset.id == int(q))
+        query = query.filter(or_(*conds))
+    rows = query.order_by(Dataset.id.desc()).limit(min(limit, 20)).all()
+    return [{"id": d.id, "slug": d.slug, "name": d.name_zh} for d in rows]
+
+
 def _recent_events(db, d):
     """数据集近期消息：最新版本 + 最新勘误，供首页直观展示。"""
     ev = []
@@ -491,6 +507,12 @@ def members(slug: str, db: Session = Depends(get_db), user: User = Depends(get_c
              "agree_charter": r.agree_charter} for r in dls]
         result["grant_catalog"] = [{"perm": p, "label": PERM_LABELS_ZH[p]}
                                    for p in GRANTABLE_PERMS]
+        from ..models.extras import PermRequest
+        prs = db.query(PermRequest).filter_by(dataset_id=d.id, status="pending").all()
+        result["perm_requests"] = [
+            {"id": r.id, "user_id": r.user_id, "name": uname(r.user_id),
+             "perm": r.perm, "perm_label": PERM_LABELS_ZH.get(r.perm, r.perm),
+             "purpose": r.purpose} for r in prs]
     return result
 
 
@@ -791,6 +813,57 @@ def revoke_download_request(rid: int, db: Session = Depends(get_db),
     write_audit(db, user.id, "download.request.revoke", "dataset", r.dataset_id, {"req": rid})
     db.commit()
     return {"ok": True}
+
+
+# -------- 成员申请单独授权（在线分析等）--------
+from pydantic import BaseModel as _BM
+
+
+class PermReqIn(_BM):
+    perm: str
+    purpose: str = ""
+
+
+@router.post("/datasets/{slug}/perm-requests")
+def request_perm(slug: str, body: PermReqIn, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """成员申请某项单独授权（GRANTABLE_PERMS）。"""
+    from ..models.extras import PermRequest
+    d = _get_ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "需先加入数据集")
+    if body.perm not in GRANTABLE_PERMS:
+        raise HTTPException(400, "未知权限项")
+    if has_dataset_perm(db, d.id, user, body.perm):
+        raise HTTPException(400, "你已拥有该权限，无需申请")
+    exist = db.query(PermRequest).filter_by(
+        dataset_id=d.id, user_id=user.id, perm=body.perm, status="pending").first()
+    if exist:
+        raise HTTPException(400, "该权限申请正在审批中")
+    r = PermRequest(dataset_id=d.id, user_id=user.id, perm=body.perm, purpose=body.purpose)
+    db.add(r); db.commit()
+    return {"ok": True, "id": r.id}
+
+
+@router.post("/perm-requests/{rid}/decide")
+def decide_perm_request(rid: int, approve: bool, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """管理员审批权限申请。通过即建立对应 DatasetGrant（永久，可后续在成员页调整/撤销）。"""
+    from ..models.extras import PermRequest
+    r = db.get(PermRequest, rid)
+    if not r or r.status != "pending":
+        raise HTTPException(404, "申请不存在或已处理")
+    if not is_dataset_admin(db, r.dataset_id, user):
+        raise HTTPException(403, "仅数据集管理员可审批")
+    r.status = "approved" if approve else "rejected"
+    r.decided_by = user.id; r.decided_at = datetime.utcnow()
+    if approve:
+        db.add(DatasetGrant(dataset_id=r.dataset_id, user_id=r.user_id, perm=r.perm,
+                            scope_type="permanent", granted_by=user.id))
+    write_audit(db, user.id, "perm.request.decide", "dataset", r.dataset_id,
+                {"req": rid, "perm": r.perm, "approve": approve})
+    db.commit()
+    return {"ok": True, "status": r.status}
 
 
 # -------- 版本候选文件（九节 1：获授权成员上传，管理员发布）--------

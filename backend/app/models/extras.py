@@ -127,6 +127,21 @@ class ContentScope(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+# ---------- 成员申请单独授权（在线分析等 GRANTABLE_PERMS）----------
+class PermRequest(Base):
+    """成员向数据集管理员申请某项单独授权（如在线分析）。审批通过即建 DatasetGrant。"""
+    __tablename__ = "perm_requests"
+    id = Column(Integer, primary_key=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    perm = Column(String(40))          # GRANTABLE_PERMS 之一
+    purpose = Column(Text)
+    status = Column(String(20), default="pending")   # pending|approved|rejected
+    decided_by = Column(Integer, ForeignKey("users.id"))
+    decided_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ---------- 平台级设置（键值对，如平台总管理员 uid）----------
 class PlatformSetting(Base):
     __tablename__ = "platform_settings"

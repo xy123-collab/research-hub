@@ -17,7 +17,7 @@ from .skill import Skill, SkillMember, SkillVersion, SkillBug, GithubSkillReco
 from .resume import Resume, ResumeBlock
 from .extras import (UserProfile, ProjectMeta, WorkspaceEntry, CollabSection,
                      SkillMeta, SkillComment, EmailEvent, PasswordResetToken,
-                     ContentScope, AppliedFix, PlatformSetting)
+                     ContentScope, AppliedFix, PlatformSetting, PermRequest)
 from .governance import (AuditLog, ContributionEvent, QualityRule, QualityRun, VerifyFlag)
 from .literature import (LitTopic, LitRef, DatasetSummaryAI, Publication,
                          DatasetSummary, AnalysisSnippet)

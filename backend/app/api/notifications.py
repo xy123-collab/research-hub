@@ -86,6 +86,17 @@ def build_notifications(db: Session, user: User) -> dict:
                 title="勘误待终审",
                 subtitle=f"「{d.name_zh if d else ''}」勘误 #{b.id} 等待审核",
                 link=f"/datasets/{d.slug}?tab=bugs&bug={b.id}" if d else "/", sort=b.id)
+        from ..models.extras import PermRequest
+        from ..models.access import PERM_LABELS_ZH
+        for r in db.query(PermRequest).filter(
+                PermRequest.dataset_id.in_(ds_admin_ids),
+                PermRequest.status == "pending").all():
+            d = ds_map.get(r.dataset_id)
+            add(type="perm_request", level="action", category="todo",
+                title="权限申请待审批",
+                subtitle=f"{uname(r.user_id)} 申请「{PERM_LABELS_ZH.get(r.perm, r.perm)}」",
+                link=f"/datasets/{d.slug}?tab=access" if d else "/",
+                at=str(r.created_at) if r.created_at else None, sort=r.id)
     if grp_admin_ids:
         for r in db.query(GroupJoinRequest).filter(
                 GroupJoinRequest.group_id.in_(grp_admin_ids),
