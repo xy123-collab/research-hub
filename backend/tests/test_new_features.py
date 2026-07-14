@@ -112,6 +112,34 @@ def test_file_correction_invalid_target(client, member):
 
 
 # ---------------- 文献同集查重（标题+作者+年份+刊物 四项全一致才算重复）----------------
+def test_founder_shows_current_lead_email_and_follows_transfer(client, founder):
+    """数据集「负责人及邮箱」= 当前总管理员及其注册邮箱；转让后自动更换。"""
+    from app.core.db import SessionLocal
+    from app.models.user import User
+    from app.models.dataset import Dataset, DatasetMember
+    from datetime import datetime
+    # 建集（lixiaoyu 为总管理员），给两位用户设注册邮箱，并把 chenmo 加为成员
+    r = client.post("/api/datasets", json={"slug": "lead-email-ds",
+                    "name_zh": "负责人邮箱测试集", "desc_zh": "x"}, headers=founder)
+    assert r.status_code == 200
+    db = SessionLocal()
+    lx = db.query(User).filter_by(username="lixiaoyu").first()
+    cm = db.query(User).filter_by(username="chenmo").first()
+    lx.email = "lixiaoyu@reg.com"; cm.email = "chenmo@reg.com"
+    d = db.query(Dataset).filter_by(slug="lead-email-ds").first()
+    db.add(DatasetMember(dataset_id=d.id, user_id=cm.id, ds_role="member",
+                         joined_at=datetime.utcnow(), approved_by=lx.id))
+    db.commit(); cm_id = cm.id; db.close()
+    # 负责人 = 当前总管理员 lixiaoyu，邮箱 = 其注册邮箱
+    det = client.get("/api/datasets/lead-email-ds", headers=founder).json()
+    assert det["founder"]["name"] == "李小雨" and det["founder"]["contact"] == "lixiaoyu@reg.com"
+    # 转让总管理员给 chenmo → 负责人及邮箱自动跟着变
+    t = client.post(f"/api/datasets/lead-email-ds/transfer-lead/{cm_id}", headers=founder)
+    assert t.status_code == 200
+    det2 = client.get("/api/datasets/lead-email-ds", headers=founder).json()
+    assert det2["founder"]["id"] == cm_id and det2["founder"]["contact"] == "chenmo@reg.com"
+
+
 def test_literature_duplicate_only_when_all_four_match(client, founder):
     ref = {"title": "Officials and Growth ZZ", "authors": "张三", "year": 2020, "venue": "经济研究"}
     r1 = client.post("/api/datasets/cod/literature/refs", json={**ref, "confirm_real": True}, headers=founder)

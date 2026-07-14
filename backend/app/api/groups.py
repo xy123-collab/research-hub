@@ -67,13 +67,14 @@ def group_detail(slug: str, user: User = Depends(get_current_user),
     charter = db.query(Charter).filter_by(scope="group", ref_id=g.id).order_by(
         Charter.version.desc()).first()
     lead_id = group_lead_id(db, g.id)
-    creator = db.get(User, g.created_by)
+    # 「负责人」永远指向当前总管理员：转让后自动更换；联系方式默认取其注册邮箱
+    lead_user = db.get(User, lead_id) if lead_id else None
     result = {"id": g.id, "slug": g.slug, "name_zh": g.name_zh, "name_en": g.name_en,
               "desc_zh": g.desc_zh, "icon": g.icon, "discoverable": g.discoverable,
               "is_member": is_member, "is_admin": is_group_admin(db, g.id, user),
               "is_lead": lead_id == user.id, "lead_id": lead_id,
-              "founder": {"id": g.created_by, "name": creator.display_name if creator else "",
-                          "contact": (creator.contact or creator.email) if creator else ""},
+              "founder": {"id": lead_id, "name": lead_user.display_name if lead_user else "",
+                          "contact": (lead_user.email if lead_user else "") or ""},
               "charter": ({"id": charter.id, "body_zh": charter.body_zh,
                            "version": charter.version} if charter else None),
               "datasets": [{"id": d.id, "slug": d.slug, "name_zh": d.name_zh,
@@ -260,7 +261,9 @@ def create_dataset(slug: str, body: DatasetIn, user: User = Depends(get_current_
         raise HTTPException(400, "数据集 slug 已存在")
     ensure_unique(db, Dataset, "name_zh", body.name_zh, "数据集名称",
                   extra_filter={"is_deleted": False})
-    d = Dataset(group_id=g.id, founder_id=user.id, **body.model_dump())
+    data = body.model_dump()
+    data["founder_contact"] = data.get("founder_contact") or ""  # 列非空；联系方式已改为自动取总管理员邮箱
+    d = Dataset(group_id=g.id, founder_id=user.id, **data)
     db.add(d); db.flush()
     # 发起人成为 founder
     db.add(DatasetMember(dataset_id=d.id, user_id=user.id, ds_role="founder",

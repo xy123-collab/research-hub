@@ -22,9 +22,11 @@ async function load() {
   }
 }
 async function createDs() {
-  if (!dsForm.value.founder_contact) { alert('发起人联系方式必填'); return }
-  await api.post(`/groups/${slug()}/datasets`, dsForm.value)
-  showDs.value = false; load()
+  if (!dsForm.value.slug || !dsForm.value.name_zh) { alert('数据集标识、名称为必填'); return }
+  try {
+    await api.post(`/groups/${slug()}/datasets`, dsForm.value)
+    showDs.value = false; load()
+  } catch (e: any) { alert(e.response?.data?.detail || '创建失败') }
 }
 async function join() {
   try { await api.post(`/groups/${slug()}/join-requests`); alert('已提交申请，等待管理员审批') }
@@ -89,8 +91,8 @@ const evLabel = (x: string) => x === 'version' ? '版本' : x === 'post' ? '发�
         <h1 class="text-2xl mt-1">{{ g.name_zh }}</h1>
         <p class="text-gray-500 mt-1">{{ g.desc_zh }}</p>
         <p v-if="g.founder" class="text-sm mt-2">
-          发起人：<router-link :to="`/users/${g.founder.id}`" class="text-accent hover:underline">{{ g.founder.name }}</router-link>
-          <span v-if="g.founder.contact"> · 联系方式：{{ g.founder.contact }}</span>
+          总管理员：<router-link :to="`/users/${g.founder.id}`" class="text-accent hover:underline">{{ g.founder.name }}</router-link>
+          <span v-if="g.founder.contact"> · 邮箱：{{ g.founder.contact }}</span>
         </p>
         <div class="mt-2 text-xs text-gray-400">{{ g.member_count }} {{ t('home.members') }}</div>
       </div>
@@ -194,8 +196,7 @@ const evLabel = (x: string) => x === 'version' ? '版本' : x === 'post' ? '发�
         <h3 class="text-lg mb-3">发起新数据集</h3>
         <input v-model="dsForm.slug" class="input mb-2" placeholder="slug" />
         <input v-model="dsForm.name_zh" class="input mb-2" placeholder="数据集名称" />
-        <textarea v-model="dsForm.desc_zh" class="input mb-2" placeholder="简介"></textarea>
-        <input v-model="dsForm.founder_contact" class="input mb-3" placeholder="发起人联系方式（必填）" />
+        <textarea v-model="dsForm.desc_zh" class="input mb-3" placeholder="简介"></textarea>
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showDs=false">{{ t('common.cancel') }}</button>
           <button class="btn-primary" @click="createDs">{{ t('common.confirm') }}</button>

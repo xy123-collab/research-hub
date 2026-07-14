@@ -43,13 +43,13 @@ function resolveGroup() {
   return myGroups.value.find((g: any) => String(g.id) === v || g.slug === v || g.name_zh === v) || false
 }
 async function createDs() {
-  if (!dsForm.value.slug || !dsForm.value.name_zh || !dsForm.value.founder_contact) {
-    alert('数据集标识、名称、发起人联系方式为必填'); return
+  if (!dsForm.value.slug || !dsForm.value.name_zh) {
+    alert('数据集标识、名称为必填'); return
   }
   const grp = resolveGroup()
   if (grp === false) { alert('未找到你所在的课题组（可按名称或 ID 填写；只能归属到你已加入的课题组）'); return }
   const body = { slug: dsForm.value.slug, name_zh: dsForm.value.name_zh, desc_zh: dsForm.value.desc_zh,
-                 founder_contact: dsForm.value.founder_contact, is_sensitive: dsForm.value.is_sensitive }
+                 is_sensitive: dsForm.value.is_sensitive }
   try {
     const r = grp ? await api.post(`/groups/${grp.slug}/datasets`, body) : await api.post('/datasets', body)
     showDs.value = false
@@ -190,7 +190,6 @@ const evColor = (x: string) => x === 'version' ? '#2d4a7c' : '#7c2d3a'
       <input v-model="dsForm.slug" class="input mb-2" placeholder="slug（英文唯一标识）" />
       <input v-model="dsForm.name_zh" class="input mb-2" placeholder="数据集名称" />
       <textarea v-model="dsForm.desc_zh" class="input mb-2" placeholder="简介"></textarea>
-      <input v-model="dsForm.founder_contact" class="input mb-2" placeholder="发起人联系方式（必填）" />
       <input v-model="dsForm.group" list="mygroups" class="input mb-1" :placeholder="t('home.attachOptional')" />
       <datalist id="mygroups">
         <option v-for="g in myGroups" :key="g.id" :value="g.name_zh">ID {{ g.id }}</option>

@@ -20,15 +20,11 @@ class GroupOut(ORMModel):
 class DatasetIn(BaseModel):
     slug: str; name_zh: str; name_en: str | None = None
     desc_zh: str | None = None; desc_en: str | None = None
-    icon: str | None = None; founder_contact: str  # 必填
+    icon: str | None = None
+    # 联系方式不再手填：数据集「负责人」及邮箱一律取当前总管理员的注册邮箱（自动、随转让更新）。
+    # 字段保留为可选，兼容历史调用。
+    founder_contact: str | None = None
     is_sensitive: bool = False
-
-    @field_validator("founder_contact")
-    @classmethod
-    def _c(cls, v):
-        if not v or not v.strip():
-            raise ValueError("发起人联系方式必填")
-        return v
 
 
 class DatasetOut(ORMModel):
