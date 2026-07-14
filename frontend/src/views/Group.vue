@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import api from '../api'
@@ -67,6 +67,14 @@ function openCharterEdit() { charterForm.value = { body_zh: g.value.charter?.bod
 async function saveCharter() {
   await api.put(`/charters/${g.value.charter.id}`, charterForm.value); showCharterEdit.value = false; load()
 }
+// 全部成员弹窗 + 检索
+const showMembers = ref(false); const memberQ = ref('')
+const filteredMembers = computed(() => {
+  const q = memberQ.value.trim().toLowerCase()
+  const list = g.value?.members || []
+  if (!q) return list
+  return list.filter((m: any) => (m.name || '').toLowerCase().includes(q) || String(m.user_id).includes(q))
+})
 const evColor = (x: string) => x === 'version' ? '#2d4a7c' : x === 'post' ? '#4b5563' : '#7c2d3a'
 const evLabel = (x: string) => x === 'version' ? '版本' : x === 'post' ? '发帖' : '勘误'
 </script>
@@ -107,32 +115,28 @@ const evLabel = (x: string) => x === 'version' ? '版本' : x === 'post' ? '发�
       </div>
     </section>
 
-    <!-- 成员（所有成员可见：展示成员ID并可进入主页）-->
-    <section v-if="g.is_member && g.members?.length" class="mt-6">
-      <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line">成员（{{ g.members.length }}）</h2>
-      <div class="rounded-lg border border-line bg-white divide-y divide-line">
-        <div v-for="m in g.members" :key="m.user_id" class="flex items-center gap-2 px-4 py-2.5 text-sm">
-          <router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link>
-          <span class="text-gray-400 text-xs">ID {{ m.user_id }}</span>
-          <span class="tag" :class="m.is_lead ? 'border-accent text-accent' : ''">{{ roleLabel(m) }}</span>
-          <!-- 管理操作：设置/取消管理员、转让仅总管理员；移除普通成员任一管理员 -->
-          <div class="ml-auto flex gap-2 flex-wrap">
-            <template v-if="g.is_lead && !m.is_lead">
-              <button v-if="!m.is_admin" class="btn-ghost text-xs" @click="addAdmin(m.user_id)">设为管理员</button>
-              <button v-else class="btn-ghost text-xs" @click="removeAdmin(m.user_id)">取消管理员</button>
-              <button class="btn-ghost text-xs" @click="transferLead(m.user_id)">转让总管理员</button>
-            </template>
-            <button v-if="g.is_admin && !m.is_lead && (!m.is_admin || g.is_lead)" class="text-xs text-accent2" @click="removeMember(m.user_id)">移除</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
+    <!-- 公约（放在成员上方）-->
     <div v-if="g.charter" class="card mt-5">
       <div class="label-cap">{{ t('grp.charter') }} · v{{ g.charter.version }}</div>
       <pre class="whitespace-pre-wrap bg-white text-ink border border-line mt-2">{{ g.charter.body_zh }}</pre>
       <button v-if="g.is_admin" class="btn-ghost text-xs mt-2" @click="openCharterEdit">编辑公约</button>
     </div>
+
+    <!-- 成员（默认显示3个，点标题看全部/检索）-->
+    <section v-if="g.is_member && g.members?.length" class="mt-6">
+      <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line flex items-center gap-2">
+        <button class="hover:text-accent" @click="showMembers=true">成员（{{ g.members.length }}）</button>
+        <span class="text-xs text-gray-400 font-normal">点击查看全部</span>
+      </h2>
+      <div class="rounded-lg border border-line bg-white divide-y divide-line">
+        <div v-for="m in g.members.slice(0,3)" :key="m.user_id" class="flex items-center gap-2 px-4 py-2.5 text-sm">
+          <router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link>
+          <span class="text-gray-400 text-xs">ID {{ m.user_id }}</span>
+          <span class="tag" :class="m.is_lead ? 'border-accent text-accent' : ''">{{ roleLabel(m) }}</span>
+        </div>
+        <button v-if="g.members.length>3" class="w-full text-center text-xs text-accent py-2 hover:bg-paper" @click="showMembers=true">查看全部 {{ g.members.length }} 名成员 →</button>
+      </div>
+    </section>
 
     <!-- 数据集归属申请（仅课题组管理员可见） -->
     <section v-if="g.is_admin && requests.length" class="mt-6">
@@ -195,6 +199,35 @@ const evLabel = (x: string) => x === 'version' ? '版本' : x === 'post' ? '发�
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showDs=false">{{ t('common.cancel') }}</button>
           <button class="btn-primary" @click="createDs">{{ t('common.confirm') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 全部成员弹窗（检索栏在最上方，可下拉滚动）-->
+    <div v-if="showMembers" class="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-16" @click.self="showMembers=false">
+      <div class="bg-white rounded-lg max-w-lg w-full m-4 max-h-[75vh] flex flex-col">
+        <div class="p-4 border-b border-line">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-lg">全部成员（{{ g.members.length }}）</h3>
+            <button class="text-gray-400" @click="showMembers=false">×</button>
+          </div>
+          <input v-model="memberQ" class="input" placeholder="按姓名或 ID 检索成员" autofocus />
+        </div>
+        <div class="overflow-y-auto divide-y divide-line">
+          <div v-for="m in filteredMembers" :key="m.user_id" class="flex items-center gap-2 px-4 py-2.5 text-sm">
+            <router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link>
+            <span class="text-gray-400 text-xs">ID {{ m.user_id }}</span>
+            <span class="tag" :class="m.is_lead ? 'border-accent text-accent' : ''">{{ roleLabel(m) }}</span>
+            <div class="ml-auto flex gap-2 flex-wrap">
+              <template v-if="g.is_lead && !m.is_lead">
+                <button v-if="!m.is_admin" class="btn-ghost text-xs" @click="addAdmin(m.user_id)">设为管理员</button>
+                <button v-else class="btn-ghost text-xs" @click="removeAdmin(m.user_id)">取消管理员</button>
+                <button class="btn-ghost text-xs" @click="transferLead(m.user_id)">转让</button>
+              </template>
+              <button v-if="g.is_admin && !m.is_lead && (!m.is_admin || g.is_lead)" class="text-xs text-accent2" @click="removeMember(m.user_id)">移除</button>
+            </div>
+          </div>
+          <p v-if="!filteredMembers.length" class="px-4 py-6 text-center text-gray-400 text-sm">没有匹配的成员。</p>
         </div>
       </div>
     </div>

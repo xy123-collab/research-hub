@@ -1,3 +1,4 @@
+import io
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -17,6 +18,8 @@ from ..models.dataset import (Dataset, DatasetMember, JoinRequest, Variable,
 from ..models.access import (DatasetGrant, DatasetSettings, DownloadRequest,
                              VersionCandidate, CodebookDraft, GRANTABLE_PERMS,
                              PERM_LABELS_ZH, DOWNLOAD_POLICIES)
+from ..models.curation import (VersionExtra, DatasetDataConfig, VariableMaskRule,
+                               DATA_KINDS, MASK_ACTIONS)
 from ..models.version import DataVersion, DownloadLog
 from ..models.literature import (LitTopic, LitRef, Publication, DatasetSummary)
 from ..models.group import ResearchGroup, Charter
@@ -213,6 +216,7 @@ def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_cu
                     "contact": d.founder_contact},
         "is_member": member, "is_admin": is_admin,
         "is_lead": lead_id == user.id, "lead_id": lead_id,
+        "unique_id_var": (_data_config(db, d.id).unique_id_var),
         "charter": ({"id": charter.id, "body_zh": charter.body_zh,
                      "version": charter.version} if charter else None),
         "my_perms": my_perms,
@@ -245,9 +249,15 @@ def list_versions(slug: str, db: Session = Depends(get_db),
     d = _get_ds(db, slug)
     vs = db.query(DataVersion).filter_by(dataset_id=d.id).order_by(
         DataVersion.id.desc()).all()
-    return [{"id": v.id, "version_id": v.version_id, "based_on": v.based_on_version,
-             "release_date": str(v.release_date), "changelog_zh": v.changelog_zh,
-             "is_current": v.is_current} for v in vs]
+    out = []
+    for v in vs:
+        ex = db.get(VersionExtra, v.id)
+        out.append({"id": v.id, "version_id": v.version_id, "based_on": v.based_on_version,
+                    "release_date": str(v.release_date), "changelog_zh": v.changelog_zh,
+                    "is_current": v.is_current, "has_data": bool(v.data_file_path),
+                    "data_kind": ex.data_kind if ex else "raw",
+                    "masked_source": ex.masked_source_version if ex else None})
+    return out
 
 
 @router.post("/datasets/{slug}/versions")
@@ -255,6 +265,7 @@ async def publish_version(slug: str, version_id: str = Form(...),
                           based_on_version: str = Form(""),
                           changelog_zh: str = Form(""), changelog_en: str = Form(""),
                           fixed_bug_ids: str = Form(""),  # 逗号分隔：本次修复的已采纳勘误
+                          data_kind: str = Form("raw"),    # raw|masked|sample
                           data_file: UploadFile | None = File(None),
                           codebook_file: UploadFile | None = File(None),
                           db: Session = Depends(get_db),
@@ -264,6 +275,8 @@ async def publish_version(slug: str, version_id: str = Form(...),
         raise HTTPException(403, "仅发起人/管理员可发版")
     if get_settings(db, d.id).is_closed:
         raise HTTPException(400, "数据集已关闭，不再发布新版本")
+    if data_kind not in DATA_KINDS:
+        raise HTTPException(400, "数据分类须为 原始/脱敏/样例")
     # 版本不可覆盖：同 (dataset, version_id) 不允许重复
     if db.query(DataVersion).filter_by(dataset_id=d.id, version_id=version_id).first():
         raise HTTPException(400, f"版本 {version_id} 已存在，版本不可覆盖")
@@ -276,16 +289,20 @@ async def publish_version(slug: str, version_id: str = Form(...),
     if codebook_file:
         codebook_key = f"versions/{d.slug}/{version_id}/{codebook_file.filename}"
         storage.save(codebook_key, codebook_file.file)
-    # 取消旧 current（旧版本文件保留、不覆盖，只是不再是推荐版）
-    db.query(DataVersion).filter_by(dataset_id=d.id, is_current=True).update(
-        {"is_current": False, "valid_to": datetime.utcnow()})
+    # 样例数据不参与"当前推荐版"迭代（公开、独立、不迭代）；原始/脱敏才竞争 current
+    is_iterating = data_kind in ("raw", "masked")
+    if is_iterating:
+        db.query(DataVersion).filter_by(dataset_id=d.id, is_current=True).update(
+            {"is_current": False, "valid_to": datetime.utcnow()})
     v = DataVersion(dataset_id=d.id, version_id=version_id, based_on_version=based_on_version,
                     release_date=datetime.utcnow(), data_file_path=data_key,
                     codebook_file_path=codebook_key, changelog_zh=changelog_zh,
-                    changelog_en=changelog_en, created_by=user.id, is_current=True,
+                    changelog_en=changelog_en, created_by=user.id, is_current=is_iterating,
                     valid_from=datetime.utcnow())
     db.add(v); db.flush()
-    d.current_version_id = v.id
+    db.add(VersionExtra(version_id=v.id, data_kind=data_kind))
+    if is_iterating:
+        d.current_version_id = v.id
     # 核心闭环最后一环：本次修复的已采纳勘误标 fixed + fixed_in_version_id
     from ..models.correction import Bug
     fixed = []
@@ -368,6 +385,10 @@ def _has_approved_download(db, dataset_id, user_id, version_id) -> bool:
 
 def check_download(db, d, v, user):
     """返回 (允许?, 权限来源/原因)。落实 原则三 与 七节 下载权限类型。"""
+    # 样例数据：公开，所有登录用户可下载
+    ex = db.get(VersionExtra, v.id)
+    if ex and ex.data_kind == "sample":
+        return True, "sample"
     admin = is_dataset_admin(db, d.id, user)
     if admin:
         return True, "admin"
@@ -611,6 +632,105 @@ def close_dataset(slug: str, closed: bool = True, db: Session = Depends(get_db),
     return {"ok": True, "is_closed": st.is_closed}
 
 
+# -------- 数据处理配置：唯一ID + 脱敏规则 --------
+def _data_config(db, dataset_id) -> DatasetDataConfig:
+    c = db.get(DatasetDataConfig, dataset_id)
+    if not c:
+        c = DatasetDataConfig(dataset_id=dataset_id)
+        db.add(c); db.flush()
+    return c
+
+
+@router.get("/datasets/{slug}/data-config")
+def get_data_config(slug: str, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    d = _get_ds(db, slug)
+    c = _data_config(db, d.id)
+    rules = {r.var_name: {"mask_action": r.mask_action, "bucket_size": r.bucket_size}
+             for r in db.query(VariableMaskRule).filter_by(dataset_id=d.id).all()}
+    vs = db.query(Variable).filter_by(dataset_id=d.id, enabled=True).all()
+    return {"unique_id_var": c.unique_id_var, "script_only": c.script_only,
+            "variables": [{"var_name": v.var_name, "label_zh": v.label_zh,
+                           "mask_action": rules.get(v.var_name, {}).get("mask_action", "keep"),
+                           "bucket_size": rules.get(v.var_name, {}).get("bucket_size")}
+                          for v in vs],
+            "mask_actions": MASK_ACTIONS}
+
+
+@router.put("/datasets/{slug}/data-config")
+def set_data_config(slug: str, body: dict, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """设置唯一ID变量、是否仅脚本模式、以及各变量脱敏动作。"""
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集管理员可配置")
+    c = _data_config(db, d.id)
+    if "unique_id_var" in body:
+        c.unique_id_var = body["unique_id_var"] or None
+    if "script_only" in body:
+        c.script_only = bool(body["script_only"])
+    # 脱敏规则（可选整表替换）
+    if "rules" in body and isinstance(body["rules"], list):
+        db.query(VariableMaskRule).filter_by(dataset_id=d.id).delete()
+        for r in body["rules"]:
+            act = r.get("mask_action", "keep")
+            if act not in MASK_ACTIONS:
+                continue
+            db.add(VariableMaskRule(dataset_id=d.id, var_name=r["var_name"],
+                                    mask_action=act, bucket_size=r.get("bucket_size")))
+    write_audit(db, user.id, "dataset.data_config", "dataset", d.id)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/datasets/{slug}/versions/{vid}/desensitize")
+def desensitize_version(slug: str, vid: int, new_version_id: str = Form(...),
+                        changelog_zh: str = Form(""), db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """按脱敏规则，从某原始版本一键生成脱敏版本。服务器可处理则直接建版；
+    否则返回脚本供本地运行后再上传。"""
+    from ..services.data_ops import desensitize
+    d = _get_ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集管理员可生成脱敏版")
+    src = db.get(DataVersion, vid)
+    if not src or src.dataset_id != d.id:
+        raise HTTPException(404, "源版本不存在")
+    if not src.data_file_path:
+        raise HTTPException(400, "源版本没有数据文件")
+    if db.query(DataVersion).filter_by(dataset_id=d.id, version_id=new_version_id).first():
+        raise HTTPException(400, f"版本 {new_version_id} 已存在")
+    c = _data_config(db, d.id)
+    rules = [{"var_name": r.var_name, "mask_action": r.mask_action,
+              "bucket_size": r.bucket_size}
+             for r in db.query(VariableMaskRule).filter_by(dataset_id=d.id).all()]
+    new_bytes, source, script = desensitize(src.data_file_path, rules,
+                                            c.unique_id_var, c.script_only)
+    if new_bytes is None:
+        # 回退：返回脚本，不建版
+        write_audit(db, user.id, "dataset.desensitize.script", "dataset", d.id)
+        return {"generated": "script", "script": script,
+                "note": "数据过大或设为仅脚本模式：请在本地运行该脚本生成脱敏数据后，"
+                        "用「发布新版本·脱敏」上传。"}
+    key = f"versions/{d.slug}/{new_version_id}/masked.dta"
+    storage.save(key, io.BytesIO(new_bytes))
+    # 脱敏版参与迭代：取代当前推荐版
+    db.query(DataVersion).filter_by(dataset_id=d.id, is_current=True).update(
+        {"is_current": False, "valid_to": datetime.utcnow()})
+    v = DataVersion(dataset_id=d.id, version_id=new_version_id,
+                    based_on_version=src.version_id, release_date=datetime.utcnow(),
+                    data_file_path=key, changelog_zh=changelog_zh or f"由 {src.version_id} 脱敏生成",
+                    created_by=user.id, is_current=True, valid_from=datetime.utcnow())
+    db.add(v); db.flush()
+    db.add(VersionExtra(version_id=v.id, data_kind="masked",
+                        masked_source_version=src.version_id, generated=source))
+    d.current_version_id = v.id
+    write_audit(db, user.id, "dataset.desensitize.server", "dataset", d.id,
+                {"from": src.version_id, "to": new_version_id})
+    db.commit()
+    return {"generated": "server", "id": v.id, "version_id": new_version_id}
+
+
 # -------- 下载申请与审批（七节 3）--------
 @router.post("/datasets/{slug}/download-requests")
 def create_download_request(slug: str, body: dict, db: Session = Depends(get_db),
@@ -807,11 +927,24 @@ def gen_analysis(slug: str, prompt: str, db: Session = Depends(get_db),
     """AI 只接收变量名/codebook/需求，返回分析代码；不接收原始数据行。"""
     d = _get_ds(db, slug)
     _require_analysis(db, d, user)
-    vs = db.query(Variable).filter_by(dataset_id=d.id).all()
-    schema = ", ".join(v.var_name for v in vs)
-    sys = ("你是数据分析助手。只可基于给定变量名生成 pandas 只读描述性分析代码，"
-           "结果赋值给变量 result。禁止任何文件/网络/写操作。")
-    code = ai_client.complete(f"变量: {schema}\n需求: {prompt}\n生成 pandas 代码：", sys)
+    vs = db.query(Variable).filter_by(dataset_id=d.id, enabled=True).all()
+    var_list = ", ".join(f"{v.var_name}" + (f"（{v.label_zh}）" if v.label_zh else "") for v in vs)
+    groups = sorted({r.group_key for r in
+                     db.query(DatasetSummary).filter_by(dataset_id=d.id).all() if r.group_key})
+    vars_in_summary = sorted({r.var_name for r in
+                              db.query(DatasetSummary).filter_by(dataset_id=d.id).all()})
+    # 关键：明确告诉 AI 沙箱里 df 的真实结构（派生汇总长表），避免用不存在的原始列名
+    sys = (
+        "你是数据分析助手，为一个只读沙箱写 pandas 代码。沙箱里已有一个名为 df 的 DataFrame，"
+        "它不是原始个体数据，而是【派生汇总长表】，恰好有四列：\n"
+        "  var_name(变量名) | group_key(分组，如性别/年份) | bucket(取值区间/类别) | value(该桶的计数或统计量)\n"
+        "因此要按某变量分析时，应先 df[df['var_name']=='变量名']，再对 bucket/value 聚合，"
+        "不要直接使用原始变量名作为列名。把最终结果赋值给变量 result。禁止文件/网络/写操作。")
+    ctx = (f"该数据集包含的变量：{var_list}\n"
+           f"汇总表里已有的 var_name：{', '.join(vars_in_summary) or '（暂无）'}\n"
+           f"汇总表里已有的 group_key：{', '.join(groups) or '（无分组）'}\n"
+           f"分析需求：{prompt}\n请只输出 pandas 代码：")
+    code = ai_client.complete(ctx, sys)
     return {"code": code, "lang": "Python"}
 
 

@@ -1,17 +1,31 @@
+import io
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from ..core.db import get_db
+from ..core.storage import storage
 from ..core.permissions import get_current_user, is_dataset_member, is_dataset_admin
 from ..core.audit import write_audit, record_contribution
 from ..core.ai_client import ai_client
 from ..models.user import User
 from ..models.dataset import Dataset
 from ..models.code import CodeScript, CodeBug, CodeWriteup
+from ..models.curation import CodeVersion, CodeGrant, CodeComment
 from ..models.correction import CorrectionReview, CorrectionFinal
 from ..schemas.models import CodeIn, CodeBugIn, ReviewIn, FinalizeIn
 
 router = APIRouter(tags=["code"])
+
+
+def _code_perm(db, c: CodeScript, user, kind: str) -> bool:
+    """kind: edit|publish。作者、被授权者、或数据集管理员。"""
+    if c.author_id == user.id or is_dataset_admin(db, c.dataset_id, user):
+        return True
+    g = db.query(CodeGrant).filter_by(script_id=c.id, user_id=user.id).first()
+    if not g:
+        return False
+    return g.can_edit if kind == "edit" else g.can_publish
 
 
 def _ds(db, slug):
@@ -48,8 +62,155 @@ def get_code(cid: int, db: Session = Depends(get_db), user: User = Depends(get_c
     c = db.get(CodeScript, cid)
     if not c:
         raise HTTPException(404, "代码不存在")
-    return {"id": c.id, "filename": c.filename, "lang": c.lang, "title_zh": c.title_zh,
-            "desc_zh": c.desc_zh, "source_code": c.source_code, "author_id": c.author_id}
+    author = db.get(User, c.author_id)
+    versions = db.query(CodeVersion).filter_by(script_id=cid).order_by(
+        CodeVersion.id.desc()).all()
+    grants = db.query(CodeGrant).filter_by(script_id=cid).all()
+    is_member = is_dataset_member(db, c.dataset_id, user)
+    return {"id": c.id, "dataset_id": c.dataset_id, "filename": c.filename, "lang": c.lang,
+            "title_zh": c.title_zh, "desc_zh": c.desc_zh, "source_code": c.source_code,
+            "author_id": c.author_id, "author_name": author.display_name if author else "",
+            "is_member": is_member,
+            "can_edit": _code_perm(db, c, user, "edit"),
+            "can_publish": _code_perm(db, c, user, "publish"),
+            "can_grant": (c.author_id == user.id or is_dataset_admin(db, c.dataset_id, user)),
+            "versions": [{"id": v.id, "version_label": v.version_label, "filename": v.filename,
+                          "changelog": v.changelog, "is_current": v.is_current,
+                          "created_at": str(v.created_at)[:10] if v.created_at else ""}
+                         for v in versions],
+            "grants": [{"user_id": g.user_id, "can_edit": g.can_edit,
+                        "can_publish": g.can_publish} for g in grants]}
+
+
+@router.patch("/code/{cid}")
+def edit_code(cid: int, body: dict, db: Session = Depends(get_db),
+              user: User = Depends(get_current_user)):
+    c = db.get(CodeScript, cid)
+    if not c:
+        raise HTTPException(404, "代码不存在")
+    if not _code_perm(db, c, user, "edit"):
+        raise HTTPException(403, "无修改权限（需作者授予或为数据集管理员）")
+    for k in ("title_zh", "desc_zh", "source_code", "lang"):
+        if k in body:
+            setattr(c, k, body[k])
+    write_audit(db, user.id, "code.edit", "code", c.id)
+    db.commit()
+    return {"ok": True}
+
+
+# -------- 代码版本迭代（发布新版本需写修改内容）--------
+@router.post("/code/{cid}/versions")
+def publish_code_version(cid: int, version_label: str = Form(...), changelog: str = Form(...),
+                         file: UploadFile | None = File(None), source_code: str = Form(""),
+                         db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    c = db.get(CodeScript, cid)
+    if not c:
+        raise HTTPException(404, "代码不存在")
+    if not _code_perm(db, c, user, "publish"):
+        raise HTTPException(403, "无重新发布权限（需作者授予或为数据集管理员）")
+    if not changelog.strip():
+        raise HTTPException(400, "请写清本次修改内容")
+    if db.query(CodeVersion).filter_by(script_id=cid, version_label=version_label).first():
+        raise HTTPException(400, f"版本 {version_label} 已存在")
+    filename = c.filename; key = None; src = source_code
+    if file is not None:
+        raw = file.file.read()
+        try:
+            src = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            src = raw.decode("latin-1", errors="replace")
+        filename = file.filename
+        key = f"code/{cid}/{version_label}/{filename}"
+        storage.save(key, io.BytesIO(raw))
+    db.query(CodeVersion).filter_by(script_id=cid, is_current=True).update({"is_current": False})
+    v = CodeVersion(script_id=cid, version_label=version_label, filename=filename,
+                    file_path=key, source_code=src, changelog=changelog,
+                    created_by=user.id, created_at=datetime.utcnow(), is_current=True)
+    db.add(v)
+    # 同步主记录的当前源码/文件名
+    if src:
+        c.source_code = src
+    c.filename = filename
+    write_audit(db, user.id, "code.version.publish", "code", cid, {"v": version_label})
+    db.commit()
+    return {"id": v.id, "version_label": version_label}
+
+
+@router.get("/code/{cid}/download")
+def download_code(cid: int, vid: int | None = None, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """数据集成员默认可下载代码文件（当前版本或指定版本）。"""
+    c = db.get(CodeScript, cid)
+    if not c:
+        raise HTTPException(404, "代码不存在")
+    if not is_dataset_member(db, c.dataset_id, user):
+        raise HTTPException(403, "需为数据集成员")
+    filename = c.filename or f"code_{cid}.txt"
+    data = (c.source_code or "").encode("utf-8")
+    if vid:
+        v = db.get(CodeVersion, vid)
+        if v and v.script_id == cid:
+            filename = v.filename or filename
+            data = (v.source_code or "").encode("utf-8")
+            if v.file_path:
+                return StreamingResponse(storage.open(v.file_path),
+                    media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="code_{vid}"'})
+    write_audit(db, user.id, "code.download", "code", cid)
+    db.commit()
+    safe = f"code_{cid}.txt"
+    return StreamingResponse(io.BytesIO(data), media_type="text/plain; charset=utf-8",
+                             headers={"Content-Disposition": f'attachment; filename="{safe}"'})
+
+
+# -------- 作者授予修改/重发权限 --------
+@router.post("/code/{cid}/grants")
+def grant_code(cid: int, user_id: int = Form(...), can_edit: bool = Form(False),
+               can_publish: bool = Form(False), db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    c = db.get(CodeScript, cid)
+    if not c:
+        raise HTTPException(404, "代码不存在")
+    if not (c.author_id == user.id or is_dataset_admin(db, c.dataset_id, user)):
+        raise HTTPException(403, "仅代码作者或数据集管理员可授权")
+    if not is_dataset_member(db, c.dataset_id, db.get(User, user_id)):
+        raise HTTPException(400, "对方需为数据集成员")
+    g = db.query(CodeGrant).filter_by(script_id=cid, user_id=user_id).first()
+    if not g:
+        g = CodeGrant(script_id=cid, user_id=user_id, granted_by=user.id)
+        db.add(g)
+    g.can_edit = bool(can_edit); g.can_publish = bool(can_publish)
+    write_audit(db, user.id, "code.grant", "code", cid, {"user": user_id})
+    db.commit()
+    return {"ok": True}
+
+
+# -------- 评论（可标记为勘误类）--------
+@router.get("/code/{cid}/comments")
+def list_code_comments(cid: int, db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    rows = db.query(CodeComment).filter_by(script_id=cid).order_by(CodeComment.id.desc()).all()
+    out = []
+    for cm in rows:
+        u = db.get(User, cm.user_id)
+        out.append({"id": cm.id, "user_id": cm.user_id, "name": u.display_name if u else "",
+                    "content": cm.content, "is_correction": cm.is_correction,
+                    "created_at": str(cm.created_at)[:16] if cm.created_at else ""})
+    return out
+
+
+@router.post("/code/{cid}/comments")
+def add_code_comment(cid: int, content: str = Form(...), is_correction: bool = Form(False),
+                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    c = db.get(CodeScript, cid)
+    if not c:
+        raise HTTPException(404, "代码不存在")
+    if not is_dataset_member(db, c.dataset_id, user):
+        raise HTTPException(403, "需为数据集成员")
+    cm = CodeComment(script_id=cid, user_id=user.id, content=content,
+                     is_correction=bool(is_correction), created_at=datetime.utcnow())
+    db.add(cm); db.commit()
+    return {"id": cm.id}
 
 
 @router.post("/code/{cid}/writeup")

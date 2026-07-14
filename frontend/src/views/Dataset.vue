@@ -191,6 +191,110 @@ async function saveCharter() {
   await api.put(`/charters/${d.value.charter.id}`, charterForm.value)
   showCharterEdit.value = false; await reloadDetail()
 }
+// ---------- 成员弹窗（默认显示3个）----------
+const showMembers = ref(false); const memberQ = ref('')
+const filteredMembers = computed(() => {
+  const q = memberQ.value.trim().toLowerCase()
+  const list = d.value?.members || []
+  if (!q) return list
+  return list.filter((m: any) => (m.name || '').toLowerCase().includes(q) || String(m.user_id).includes(q))
+})
+// ---------- 版本数据分类 ----------
+const kindLabel: Record<string, string> = { raw: '原始数据', masked: '脱敏数据', sample: '样例数据' }
+const kindColor: Record<string, string> = { raw: 'border-accent text-accent', masked: 'border-emerald-600 text-emerald-700', sample: 'border-gray-400 text-gray-500' }
+// ---------- 一键脱敏 ----------
+const showDesens = ref(false); const desensForm = ref<any>({ from: null, new_version_id: '', changelog_zh: '' })
+function openDesens(v: any) { desensForm.value = { from: v, new_version_id: '', changelog_zh: '' }; showDesens.value = true }
+async function doDesensitize() {
+  try {
+    const fd = new FormData(); fd.append('new_version_id', desensForm.value.new_version_id)
+    fd.append('changelog_zh', desensForm.value.changelog_zh)
+    const r = await api.post(`/datasets/${slug}/versions/${desensForm.value.from.id}/desensitize`, fd)
+    if (r.data.generated === 'script') { downloadText(r.data.script, 'desensitize.do'); alert(r.data.note) }
+    else alert('已生成脱敏版本 ' + r.data.version_id)
+    showDesens.value = false; loadTab('versions'); reloadDetail()
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+// ---------- 一键应用已采纳勘误 ----------
+const showApply = ref(false); const applyForm = ref<any>({ base_version_id: null, new_version_id: '', changelog_zh: '' })
+function openApply() {
+  applyForm.value = { base_version_id: d.value.current_version?.id || null, new_version_id: '', changelog_zh: '' }
+  showApply.value = true
+}
+async function doApply() {
+  try {
+    const fd = new FormData()
+    fd.append('base_version_id', applyForm.value.base_version_id)
+    fd.append('new_version_id', applyForm.value.new_version_id)
+    fd.append('changelog_zh', applyForm.value.changelog_zh)
+    const r = await api.post(`/datasets/${slug}/apply-corrections`, fd)
+    if (r.data.generated === 'script') { downloadText(r.data.script, 'apply_corrections.do'); alert(r.data.note) }
+    else alert(`已生成新版本 ${r.data.version_id}，应用 ${r.data.applied} 条勘误`)
+    showApply.value = false; loadTab('versions'); reloadDetail()
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+function downloadText(text: string, name: string) {
+  const blob = new Blob([text], { type: 'text/plain' })
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click()
+}
+// ---------- 数据处理配置（唯一ID + 脱敏规则）----------
+const showDataCfg = ref(false); const dataCfg = ref<any>({ unique_id_var: '', script_only: false, variables: [] })
+async function openDataCfg() { dataCfg.value = (await api.get(`/datasets/${slug}/data-config`)).data; showDataCfg.value = true }
+async function saveDataCfg() {
+  await api.put(`/datasets/${slug}/data-config`, {
+    unique_id_var: dataCfg.value.unique_id_var, script_only: dataCfg.value.script_only,
+    rules: dataCfg.value.variables.map((v: any) => ({ var_name: v.var_name, mask_action: v.mask_action, bucket_size: v.bucket_size }))
+  })
+  showDataCfg.value = false; reloadDetail()
+}
+// ---------- 批量勘误 ----------
+function downloadTemplate() { window.open(`/api/datasets/${slug}/bug-template`, '_blank') }
+const batchFile = ref<File | null>(null)
+async function submitBatch() {
+  if (!batchFile.value) { alert('请选择填好的模板文件'); return }
+  const fd = new FormData(); fd.append('file', batchFile.value)
+  try {
+    const r = await api.post(`/datasets/${slug}/bugs/batch`, fd)
+    alert(`已导入 ${r.data.items} 条修改，集成为一条勘误`); batchFile.value = null; loadTab('bugs')
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+// 逐条子项终审 / AI
+async function finalizeItem(iid: number, adopt: string, score: number) {
+  await api.post(`/bug-items/${iid}/finalize`, { adopt_level: adopt, final_score: score }); openBug(bugModal.value.id)
+}
+async function aiReviewItem(iid: number) { await api.post(`/bug-items/${iid}/ai-review`); openBug(bugModal.value.id) }
+// ---------- 代码库版本/权限/评论 ----------
+const codeVerForm = ref<any>({ version_label: '', changelog: '', source_code: '' }); const codeVerFile = ref<File | null>(null)
+const codeComments = ref<any[]>([]); const codeCommentForm = ref<any>({ content: '', is_correction: false })
+const showCodeVer = ref(false); const showCodeGrant = ref(false); const codeGrantForm = ref<any>({ user_id: null, can_edit: false, can_publish: true })
+async function openCode(id: number) {
+  codeModal.value = (await api.get(`/code/${id}`)).data
+  codeComments.value = (await api.get(`/code/${id}/comments`)).data
+}
+async function publishCodeVer() {
+  const fd = new FormData()
+  fd.append('version_label', codeVerForm.value.version_label); fd.append('changelog', codeVerForm.value.changelog)
+  if (codeVerFile.value) fd.append('file', codeVerFile.value); else fd.append('source_code', codeVerForm.value.source_code)
+  try {
+    await api.post(`/code/${codeModal.value.id}/versions`, fd)
+    showCodeVer.value = false; codeVerForm.value = { version_label: '', changelog: '', source_code: '' }; codeVerFile.value = null
+    openCode(codeModal.value.id)
+  } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+function downloadCode(vid?: number) { window.open(`/api/code/${codeModal.value.id}/download${vid ? '?vid=' + vid : ''}`, '_blank') }
+async function addCodeComment() {
+  if (!codeCommentForm.value.content.trim()) return
+  const fd = new FormData(); fd.append('content', codeCommentForm.value.content); fd.append('is_correction', String(codeCommentForm.value.is_correction))
+  await api.post(`/code/${codeModal.value.id}/comments`, fd)
+  codeCommentForm.value = { content: '', is_correction: false }; codeComments.value = (await api.get(`/code/${codeModal.value.id}/comments`)).data
+}
+async function grantCode() {
+  const fd = new FormData(); fd.append('user_id', codeGrantForm.value.user_id)
+  fd.append('can_edit', String(codeGrantForm.value.can_edit)); fd.append('can_publish', String(codeGrantForm.value.can_publish))
+  try { await api.post(`/code/${codeModal.value.id}/grants`, fd); showCodeGrant.value = false; openCode(codeModal.value.id) }
+  catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+function goDownloadTab() { loadTab('versions'); const el = document.getElementById('ds-tabs'); if (el) el.scrollIntoView({ behavior: 'smooth' }) }
 
 async function setActFilter(k: string) {
   actFilter.value = k
@@ -230,7 +334,7 @@ async function finalizeBug(id: number, adopt: string, score: number) {
 // ---------- version publish ----------
 async function openPublish() {
   acceptedBugs.value = (await api.get(`/datasets/${slug}/bugs`)).data.filter((b: any) => b.status === 'accepted')
-  pub.value = { version_id: '', changelog_zh: '', fixed: [] }; pubData.value = pubCode.value = null
+  pub.value = { version_id: '', changelog_zh: '', fixed: [], data_kind: 'raw' }; pubData.value = pubCode.value = null
   showPublish.value = true
 }
 async function doPublish() {
@@ -238,6 +342,7 @@ async function doPublish() {
     const fd = new FormData()
     fd.append('version_id', pub.value.version_id)
     fd.append('changelog_zh', pub.value.changelog_zh)
+    fd.append('data_kind', pub.value.data_kind || 'raw')
     fd.append('fixed_bug_ids', pub.value.fixed.join(','))
     if (pubData.value) fd.append('data_file', pubData.value)
     if (pubCode.value) fd.append('codebook_file', pubCode.value)
@@ -267,7 +372,6 @@ async function removeMember(uid: number) {
 }
 
 // ---------- code ----------
-async function openCode(id: number) { codeModal.value = (await api.get(`/code/${id}`)).data }
 async function addCode() {
   try {
     if (codeFile.value) {
@@ -312,6 +416,13 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 <template>
   <div v-if="d">
     <CharterModal scope="dataset" :refId="d.id" />
+
+    <!-- 悬浮：下载最新数据 → 跳版本库 -->
+    <button class="ds-download-fab" @click="goDownloadTab">
+      <Icon name="data" class="ico" style="width:18px;height:18px" />
+      <span>下载最新数据</span>
+    </button>
+
     <div class="flex items-start justify-between">
       <div>
         <h1 class="text-2xl">{{ d.name_zh }}
@@ -357,7 +468,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
       <button v-if="d.is_admin" class="btn-primary text-xs flex items-center gap-1.5" @click="loadTab('versions'); openPublish()"><Icon name="publish" class="ico" style="width:15px;height:15px" /> {{ t('ds.publishVersion') }}</button>
     </div>
 
-    <div class="flex gap-1 border-b border-line mt-5 text-sm overflow-x-auto">
+    <div id="ds-tabs" class="flex gap-1 border-b border-line mt-5 text-sm overflow-x-auto">
       <button v-for="[k,label] in tabs" :key="k" @click="loadTab(k)"
         :class="['px-3 py-2 whitespace-nowrap', tab===k?'border-b-2 border-accent text-accent':'text-gray-500']">
         {{ t(label) }}
@@ -379,16 +490,19 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <button v-if="d.is_admin" class="btn-ghost text-xs mt-2" @click="openCharterEdit">编辑公约</button>
         </div>
         <div class="card mt-4">
-          <div class="label-cap">{{ t('ds.members') }}（{{ d.members?.length || 0 }}）</div>
+          <div class="label-cap flex items-center gap-2">
+            <button class="hover:text-accent" @click="showMembers=true">{{ t('ds.members') }}（{{ d.members?.length || 0 }}）</button>
+            <span class="text-[11px] text-gray-400 normal-case">点击查看全部</span>
+          </div>
           <table class="w-full text-sm mt-2">
-            <tr v-for="m in d.members" :key="m.user_id" class="border-t border-line">
+            <tr v-for="m in (d.members||[]).slice(0,3)" :key="m.user_id" class="border-t border-line">
               <td class="py-1"><router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link>
                 <span class="text-gray-400 text-xs ml-1">ID {{ m.user_id }}</span></td>
               <td><span class="tag" :class="m.is_lead ? 'border-accent text-accent' : ''">{{ roleLabel(m) }}</span></td>
               <td class="text-gray-400 text-xs">{{ m.joined_at?.slice(0,10) }}</td>
-              <td class="text-right"><button v-if="d.is_admin && !m.is_lead" class="text-xs text-accent2" @click="removeMember(m.user_id)">移除</button></td>
             </tr>
           </table>
+          <button v-if="(d.members||[]).length>3" class="text-xs text-accent mt-2 hover:underline" @click="showMembers=true">查看全部 {{ d.members.length }} 名成员 →</button>
         </div>
         <div v-if="d.publications?.length" class="card mt-4">
           <div class="label-cap">近期刊物</div>
@@ -425,6 +539,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 
       <!-- dashboard -->
       <div v-else-if="tab==='dashboard'">
+        <p class="text-xs text-gray-500 mb-3">看板与在线分析基于「派生汇总表」（不含原始个体数据）：df 有四列 var_name/group_key/bucket/value。分析代码在服务器的只读隔离子进程里运行，禁文件/网络/写操作，10 秒超时，绝不改原始数据。</p>
         <div class="card">
           <div class="label-cap">样本描述性统计 · gender（只读，从派生汇总出图）</div>
           <div class="mt-3 space-y-2">
@@ -452,33 +567,52 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 
       <!-- versions -->
       <div v-else-if="tab==='versions'">
-        <div v-if="d.is_admin" class="mb-3"><button class="btn-primary" @click="openPublish">{{ t('ds.publishVersion') }}</button></div>
+        <div v-if="d.is_admin" class="mb-3 flex flex-wrap gap-2">
+          <button class="btn-primary" @click="openPublish">{{ t('ds.publishVersion') }}</button>
+          <button class="btn-ghost" @click="openApply">一键应用已采纳勘误发版</button>
+          <button class="btn-ghost" @click="openDataCfg">数据处理设置（唯一ID/脱敏规则）</button>
+        </div>
+        <p class="text-xs text-gray-500 mb-3">数据分类：<b>原始</b>与<b>脱敏</b>同步迭代（有当前推荐版）；<b>样例</b>公开可下、独立不迭代。</p>
         <div v-for="v in versions" :key="v.id" class="card mb-3 flex items-center justify-between">
           <div>
             <span class="font-mono">{{ v.version_id }}</span>
-            <span v-if="v.is_current" class="tag ml-2">当前</span>
+            <span class="tag ml-2 border" :class="kindColor[v.data_kind]||''">{{ kindLabel[v.data_kind]||'原始数据' }}</span>
+            <span v-if="v.is_current" class="tag ml-1">当前</span>
             <span v-if="v.based_on" class="text-xs text-gray-400 ml-2">基于 {{ v.based_on }}</span>
+            <span v-if="v.masked_source" class="text-xs text-gray-400 ml-1">（脱敏自 {{ v.masked_source }}）</span>
             <p class="text-sm text-gray-500 mt-1">{{ v.changelog_zh }}</p>
           </div>
-          <div class="flex gap-2 items-center">
+          <div class="flex gap-2 items-center flex-wrap justify-end">
+            <button v-if="v.data_kind==='raw' && d.is_admin" class="btn-ghost text-xs" @click="openDesens(v)">生成脱敏版</button>
             <button class="btn-ghost text-xs" @click="download(v,'codebook')">Codebook</button>
-            <button v-if="d.is_admin || (v.is_current ? canDownloadCurrent : (d.settings?.history_downloadable || (d.my_perms||[]).includes('download.history')))"
-              class="btn-ghost text-xs" @click="download(v,'data')">.dta</button>
+            <button v-if="!v.has_data" class="text-xs text-gray-400">无数据文件</button>
+            <button v-else-if="v.data_kind==='sample' || d.is_admin || (v.is_current ? canDownloadCurrent : (d.settings?.history_downloadable || (d.my_perms||[]).includes('download.history')))"
+              class="btn-ghost text-xs" @click="download(v,'data')">下载 .dta</button>
             <button v-else-if="d.is_member && v.is_current && d.settings?.download_policy==='approval'"
               class="btn-ghost text-xs text-accent" @click="openDlReq">申请下载</button>
             <span v-else class="text-xs text-gray-400">无下载权限</span>
           </div>
         </div>
-        <p v-if="d.is_member && !d.is_admin" class="text-xs text-gray-400 mb-2">下载权限由数据集管理员单独授予；历史版本另需授权。</p>
+        <p v-if="d.is_member && !d.is_admin" class="text-xs text-gray-400 mb-2">下载权限由数据集管理员单独授予；样例数据所有登录用户可下。</p>
         <p v-if="!versions.length" class="text-gray-400 text-sm">暂无版本。</p>
       </div>
 
       <!-- bugs -->
       <div v-else-if="tab==='bugs'">
+        <!-- 批量勘误 -->
         <div v-if="d.is_member" class="card mb-4">
-          <div class="label-cap mb-2">{{ t('ds.submitBug') }}</div>
+          <div class="label-cap mb-2">批量勘误（Excel/CSV 一次多条，集成为一条勘误）</div>
+          <p class="text-xs text-gray-500 mb-2">先下载模板，按「唯一ID值/变量名/当前值/建议值/说明与证据」填写；导入后系统按行拆分，逐条打分与终审。</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <button class="btn-ghost text-xs" @click="downloadTemplate">下载批量模板</button>
+            <input type="file" accept=".xlsx,.csv" @change="(e:any)=>batchFile=e.target.files[0]" class="text-xs" />
+            <button class="btn-primary text-xs" @click="submitBatch">导入批量勘误</button>
+          </div>
+        </div>
+        <div v-if="d.is_member" class="card mb-4">
+          <div class="label-cap mb-2">{{ t('ds.submitBug') }}（单条）</div>
           <div class="grid grid-cols-2 gap-2">
-            <input v-model="bugForm.officer_id" class="input" placeholder="officerID" />
+            <input v-model="bugForm.officer_id" class="input" :placeholder="d.unique_id_var ? (d.unique_id_var + '（唯一ID）') : '唯一ID（管理员未设置）'" />
             <select v-model="bugForm.variable_id" class="input">
               <option :value="null">选择变量</option>
               <option v-for="v in vars" :key="v.id" :value="v.id">{{ v.var_name }}</option>
@@ -486,6 +620,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <input v-model="bugForm.current_value" class="input" placeholder="当前值" />
             <input v-model="bugForm.suggested_value" class="input" placeholder="建议值" />
           </div>
+          <p class="text-[11px] text-gray-400 mt-1">第一格为唯一ID：{{ d.unique_id_var || '（管理员可在版本库·数据处理设置中指定）' }}，唯一ID本身不可修改。</p>
           <textarea v-model="bugForm.description_zh" class="input mt-2" placeholder="说明与证据"></textarea>
           <div class="flex items-center gap-2 mt-2">
             <input type="file" @change="(e:any)=>bugFile=e.target.files[0]" class="text-xs" />
@@ -647,8 +782,32 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <button @click="bugModal=null" class="text-gray-400">×</button>
         </div>
         <p class="text-sm mt-2">提交人：<router-link :to="`/users/${bugModal.reporter.id}`" class="text-accent">{{ bugModal.reporter.name }}</router-link></p>
-        <p class="text-sm mt-1">{{ bugModal.description_zh }}（{{ bugModal.current_value }} → {{ bugModal.suggested_value }}）</p>
+        <p class="text-sm mt-1">{{ bugModal.description_zh }}</p>
         <p v-if="bugModal.fixed_in_version" class="text-xs text-accent mt-1">已在版本 {{ bugModal.fixed_in_version }} 修复</p>
+
+        <!-- 逐条修改项（批量或单条统一按子项确认）-->
+        <div v-if="bugModal.items?.length" class="mt-3 border-t border-line pt-3">
+          <div class="label-cap mb-1">修改项（逐条打分与终审，共 {{ bugModal.items.length }} 条）</div>
+          <div v-for="it in bugModal.items" :key="it.id" class="border border-line rounded p-2 mb-2 text-sm">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-mono text-xs">{{ it.uid_value }}</span>
+              <span class="text-gray-500">{{ it.var_name }}：{{ it.current_value }} → <b>{{ it.suggested_value }}</b></span>
+              <span class="tag ml-auto">{{ it.status }}</span>
+            </div>
+            <p v-if="it.reason" class="text-xs text-gray-500 mt-1">{{ it.reason }}</p>
+            <div class="flex items-center gap-2 mt-1 flex-wrap">
+              <span v-if="it.ai_score!=null" class="text-xs text-gray-400">AI {{ it.ai_score }}/10</span>
+              <span v-if="it.final_score!=null" class="text-xs text-accent">终审 {{ it.final_score }}/10（{{ it.adopt_level }}）</span>
+              <template v-if="d.is_admin && it.status==='pending'">
+                <button class="btn-ghost text-[11px]" @click="aiReviewItem(it.id)">AI评分</button>
+                <button class="btn-primary text-[11px]" @click="finalizeItem(it.id,'full',9)">采纳(9)</button>
+                <button class="btn-ghost text-[11px]" @click="finalizeItem(it.id,'partial',6)">部分(6)</button>
+                <button class="btn-ghost text-[11px]" @click="finalizeItem(it.id,'reject',0)">拒绝</button>
+              </template>
+            </div>
+          </div>
+          <p class="text-[11px] text-gray-400">采纳后可在版本库「一键应用已采纳勘误发版」，按唯一ID自动改上一版数据。</p>
+        </div>
         <div v-if="bugModal.attachments.length" class="mt-2">
           <div class="label-cap">证据附件</div>
           <a v-for="a in bugModal.attachments" :key="a.id" :href="`/api/bug-attachments/${a.id}/download`" target="_blank" class="text-accent text-xs flex items-center gap-1 hover:underline"><Icon name="clip" class="ico" style="width:13px;height:13px" /> {{ a.file_name }}</a>
@@ -685,9 +844,75 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <h3 class="text-lg font-mono">{{ codeModal.filename }}</h3>
           <button @click="codeModal=null" class="text-gray-400">×</button>
         </div>
-        <p class="text-sm text-gray-500 mt-1">{{ codeModal.title_zh }} · {{ codeModal.desc_zh }}</p>
+        <p class="text-sm text-gray-500 mt-1">{{ codeModal.title_zh }} · {{ codeModal.desc_zh }}
+          <span class="text-gray-400">· 作者 {{ codeModal.author_name }}</span></p>
+        <div class="flex flex-wrap gap-2 mt-2">
+          <button v-if="codeModal.is_member" class="btn-ghost text-xs" @click="downloadCode()">下载代码文件</button>
+          <button v-if="codeModal.can_publish" class="btn-ghost text-xs" @click="showCodeVer=true">发布新版本</button>
+          <button v-if="codeModal.can_grant" class="btn-ghost text-xs" @click="showCodeGrant=true">授予权限</button>
+          <button v-if="d.is_member" class="btn-ghost text-xs" @click="genWriteup(codeModal.id)">AI 生成处理说明</button>
+        </div>
         <pre class="mt-2">{{ codeModal.source_code }}</pre>
-        <button v-if="d.is_member" class="btn-ghost text-xs mt-2" @click="genWriteup(codeModal.id)">一键生成数据处理说明（AI）</button>
+
+        <!-- 版本迭代 -->
+        <div v-if="codeModal.versions?.length" class="mt-3 border-t border-line pt-3">
+          <div class="label-cap mb-1">版本迭代</div>
+          <div v-for="v in codeModal.versions" :key="v.id" class="text-sm flex items-center gap-2 border-t border-line py-1">
+            <span class="font-mono text-xs">{{ v.version_label }}</span>
+            <span v-if="v.is_current" class="tag">当前</span>
+            <span class="text-gray-500 truncate">{{ v.changelog }}</span>
+            <span class="text-gray-400 text-xs ml-auto">{{ v.created_at }}</span>
+            <button v-if="codeModal.is_member" class="btn-ghost text-[11px]" @click="downloadCode(v.id)">下载</button>
+          </div>
+        </div>
+
+        <!-- 评论（可选勘误类）-->
+        <div class="mt-3 border-t border-line pt-3">
+          <div class="label-cap mb-1">评论</div>
+          <div v-for="c in codeComments" :key="c.id" class="text-sm border-t border-line py-1">
+            <router-link :to="`/users/${c.user_id}`" class="text-accent hover:underline">{{ c.name }}</router-link>
+            <span v-if="c.is_correction" class="tag border-accent2 text-accent2 ml-1">勘误</span>
+            <span class="text-gray-400 text-xs ml-1">{{ c.created_at }}</span>
+            <p class="text-gray-600">{{ c.content }}</p>
+          </div>
+          <div v-if="codeModal.is_member" class="mt-2">
+            <textarea v-model="codeCommentForm.content" class="input text-sm" rows="2" placeholder="写评论"></textarea>
+            <div class="flex items-center gap-2 mt-1">
+              <label class="text-xs flex items-center gap-1"><input type="checkbox" v-model="codeCommentForm.is_correction" /> 标记为勘误类评论（指出代码问题）</label>
+              <button class="btn-primary text-xs ml-auto" @click="addCodeComment">发表</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 发布代码新版本 -->
+    <div v-if="showCodeVer" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]" @click.self="showCodeVer=false">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
+        <h3 class="text-lg mb-3">发布代码新版本</h3>
+        <input v-model="codeVerForm.version_label" class="input mb-2 font-mono" placeholder="版本号，如 v2" />
+        <textarea v-model="codeVerForm.changelog" class="input mb-2" placeholder="本次修改内容（必填）"></textarea>
+        <label class="label-cap">上传新代码文件（或下方粘贴）</label>
+        <input type="file" @change="(e:any)=>codeVerFile=e.target.files[0]" class="text-xs mb-2 block" />
+        <textarea v-model="codeVerForm.source_code" class="input font-mono text-xs" rows="4" placeholder="粘贴新代码（上传文件时可留空）"></textarea>
+        <div class="flex justify-end gap-2 mt-3">
+          <button class="btn-ghost" @click="showCodeVer=false">取消</button>
+          <button class="btn-primary" @click="publishCodeVer">发布</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 授予代码权限 -->
+    <div v-if="showCodeGrant" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]" @click.self="showCodeGrant=false">
+      <div class="bg-white rounded-lg max-w-sm w-full p-6 m-4">
+        <h3 class="text-lg mb-3">授予代码权限</h3>
+        <input v-model.number="codeGrantForm.user_id" type="number" class="input mb-2" placeholder="成员用户 ID" />
+        <label class="flex items-center gap-2 text-sm mb-1"><input type="checkbox" v-model="codeGrantForm.can_edit" /> 可修改</label>
+        <label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" v-model="codeGrantForm.can_publish" /> 可重新发布版本</label>
+        <div class="flex justify-end gap-2">
+          <button class="btn-ghost" @click="showCodeGrant=false">取消</button>
+          <button class="btn-primary" @click="grantCode">授予</button>
+        </div>
       </div>
     </div>
 
@@ -696,6 +921,12 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-3">发布新版本（旧版本保留、不可覆盖）</h3>
         <input v-model="pub.version_id" class="input mb-2 font-mono" placeholder="版本号，如 v1.1.0 / v1.0.1-hotfix" />
+        <label class="label-cap">数据分类</label>
+        <select v-model="pub.data_kind" class="input mb-2">
+          <option value="raw">原始数据（与脱敏同步迭代）</option>
+          <option value="masked">脱敏数据（与原始同步迭代）</option>
+          <option value="sample">样例数据（公开可下、独立不迭代）</option>
+        </select>
         <textarea v-model="pub.changelog_zh" class="input mb-2" placeholder="更新说明 changelog"></textarea>
         <label class="label-cap">数据文件 (.dta)</label>
         <input type="file" accept=".dta" @change="(e:any)=>pubData=e.target.files[0]" class="text-xs mb-2 block" />
@@ -848,5 +1079,99 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
       </div>
     </div>
+
+    <!-- 一键生成脱敏版 -->
+    <div v-if="showDesens" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showDesens=false">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
+        <h3 class="text-lg mb-1">从「{{ desensForm.from?.version_id }}」生成脱敏版</h3>
+        <p class="text-xs text-gray-500 mb-3">按「数据处理设置」里的脱敏规则处理。数据不大将在服务器直接生成；否则返回脚本供本地运行。</p>
+        <input v-model="desensForm.new_version_id" class="input mb-2 font-mono" placeholder="脱敏版本号，如 v1.0.0-masked" />
+        <textarea v-model="desensForm.changelog_zh" class="input mb-2" placeholder="说明（可留空）"></textarea>
+        <div class="flex justify-end gap-2">
+          <button class="btn-ghost" @click="showDesens=false">取消</button>
+          <button class="btn-primary" @click="doDesensitize">生成</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 一键应用已采纳勘误发版 -->
+    <div v-if="showApply" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showApply=false">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
+        <h3 class="text-lg mb-1">应用已采纳勘误 → 生成新版本</h3>
+        <p class="text-xs text-gray-500 mb-3">按唯一ID+变量名定位单元格，自动改上一版数据。需先在「数据处理设置」指定唯一ID。数据过大将回退为脚本。</p>
+        <label class="label-cap">基准版本</label>
+        <select v-model="applyForm.base_version_id" class="input mb-2">
+          <option v-for="v in versions.filter(x=>x.has_data)" :key="v.id" :value="v.id">{{ v.version_id }}（{{ kindLabel[v.data_kind] }}）</option>
+        </select>
+        <input v-model="applyForm.new_version_id" class="input mb-2 font-mono" placeholder="新版本号，如 v1.1.0" />
+        <textarea v-model="applyForm.changelog_zh" class="input mb-2" placeholder="更新说明（可留空，自动记录应用条数）"></textarea>
+        <div class="flex justify-end gap-2">
+          <button class="btn-ghost" @click="showApply=false">取消</button>
+          <button class="btn-primary" @click="doApply">应用并发版</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 数据处理设置：唯一ID + 脱敏规则 -->
+    <div v-if="showDataCfg" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showDataCfg=false">
+      <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
+        <h3 class="text-lg mb-1">数据处理设置</h3>
+        <p class="text-xs text-gray-500 mb-3">唯一ID用于批量勘误定位记录（其本身不可修改）；脱敏规则用于一键生成脱敏版。</p>
+        <label class="label-cap">唯一ID变量</label>
+        <select v-model="dataCfg.unique_id_var" class="input mb-2">
+          <option value="">（未设置）</option>
+          <option v-for="v in dataCfg.variables" :key="v.var_name" :value="v.var_name">{{ v.var_name }} {{ v.label_zh ? '（'+v.label_zh+'）' : '' }}</option>
+        </select>
+        <label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" v-model="dataCfg.script_only" /> 仅脚本模式（数据大/不在服务器改，改为生成脚本本地运行）</label>
+        <div class="label-cap mb-1">各变量脱敏动作</div>
+        <div class="border border-line rounded divide-y divide-line max-h-56 overflow-y-auto">
+          <div v-for="v in dataCfg.variables" :key="v.var_name" class="flex items-center gap-2 px-3 py-1.5 text-sm">
+            <span class="font-mono text-xs flex-1">{{ v.var_name }}</span>
+            <select v-model="v.mask_action" class="input py-1 w-28 text-xs">
+              <option value="keep">保留</option><option value="drop">删除</option>
+              <option value="hash">哈希</option><option value="bucket">分桶</option>
+            </select>
+            <input v-if="v.mask_action==='bucket'" v-model.number="v.bucket_size" type="number" class="input py-1 w-20 text-xs" placeholder="桶宽" />
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 mt-3">
+          <button class="btn-ghost" @click="showDataCfg=false">取消</button>
+          <button class="btn-primary" @click="saveDataCfg">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 全部成员弹窗（检索栏在最上方）-->
+    <div v-if="showMembers" class="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-16" @click.self="showMembers=false">
+      <div class="bg-white rounded-lg max-w-lg w-full m-4 max-h-[75vh] flex flex-col">
+        <div class="p-4 border-b border-line">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-lg">全部成员（{{ d.members?.length || 0 }}）</h3>
+            <button class="text-gray-400" @click="showMembers=false">×</button>
+          </div>
+          <input v-model="memberQ" class="input" placeholder="按姓名或 ID 检索成员" />
+        </div>
+        <div class="overflow-y-auto divide-y divide-line">
+          <div v-for="m in filteredMembers" :key="m.user_id" class="flex items-center gap-2 px-4 py-2.5 text-sm">
+            <router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link>
+            <span class="text-gray-400 text-xs">ID {{ m.user_id }}</span>
+            <span class="tag" :class="m.is_lead ? 'border-accent text-accent' : ''">{{ roleLabel(m) }}</span>
+          </div>
+          <p v-if="!filteredMembers.length" class="px-4 py-6 text-center text-gray-400 text-sm">没有匹配的成员。</p>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.ds-download-fab {
+  position: fixed; left: 22px; bottom: 22px; z-index: 55;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px; border-radius: 9999px;
+  background: var(--accent); color: #fff; font-size: 13px;
+  box-shadow: 0 6px 20px rgba(45, 74, 124, .35);
+  transition: transform .15s, box-shadow .15s;
+}
+.ds-download-fab:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(45, 74, 124, .45); }
+</style>

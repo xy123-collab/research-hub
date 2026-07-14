@@ -4,6 +4,8 @@ from .group import ResearchGroup, GroupMember, GroupJoinRequest, Charter, Charte
 from .dataset import Dataset, DatasetMember, JoinRequest, Variable, DatasetGroupRequest
 from .access import (DatasetGrant, DatasetSettings, DownloadRequest,
                      VersionCandidate, CodebookDraft)
+from .curation import (VersionExtra, DatasetDataConfig, VariableMaskRule, BugItem,
+                       CodeVersion, CodeGrant, CodeComment)
 from .version import DataVersion, DownloadLog
 from .correction import Bug, BugAttachment, CorrectionReview, CorrectionFinal
 from .code import CodeScript, CodeBug, CodeWriteup
