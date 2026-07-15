@@ -79,8 +79,10 @@ const editForm = ref<any>({ display_name: '', research_direction: '', keywords: 
 const editSnapshot = ref('')
 const avatarFile = ref<File | null>(null); const avatarPreview = ref('')
 const saving = ref(false)
-const dirty = computed(() => JSON.stringify(editForm.value) !== editSnapshot.value || !!avatarFile.value)
+const dirty = computed(() => JSON.stringify(editForm.value) !== editSnapshot.value || !!avatarFile.value
+  || accountEmail.value !== accountEmailSnapshot.value)
 
+const accountEmail = ref(''); const accountEmailSnapshot = ref(''); const testingEmail = ref('')
 function openEdit() {
   editForm.value = {
     display_name: profile.value.display_name || '',
@@ -89,9 +91,30 @@ function openEdit() {
     email: profile.value.email || '',
     avatar: profile.value.avatar || ''
   }
+  accountEmail.value = auth.user?.email || ''
+  accountEmailSnapshot.value = accountEmail.value
+  testingEmail.value = ''
   editSnapshot.value = JSON.stringify(editForm.value)
   avatarFile.value = null; avatarPreview.value = ''
   showEdit.value = true
+}
+async function sendTestEmail() {
+  testingEmail.value = '发送中…'
+  try {
+    // 若注册邮箱有改动，先保存再发，测试信才发到新地址
+    if (accountEmail.value.trim() && accountEmail.value.trim() !== accountEmailSnapshot.value) {
+      await api.put('/me/account-email', { email: accountEmail.value.trim() })
+      accountEmailSnapshot.value = accountEmail.value.trim(); await auth.fetchMe()
+    }
+    const r = (await api.post('/me/test-email')).data
+    const msg: Record<string, string> = {
+      sent: `已发送到 ${r.to}，请查收（含垃圾箱）`,
+      mock: `当前为 mock 模式（EMAIL_BACKEND=mock），只记录未真正发送。请把 EMAIL_BACKEND 设为 smtp。`,
+      failed: `发送失败：${r.error || '未知错误'}`,
+      skipped: `已跳过（后端为 none 或无收件邮箱）`
+    }
+    testingEmail.value = msg[r.status] || `状态：${r.status}`
+  } catch (e: any) { testingEmail.value = '失败：' + (e.response?.data?.detail || '请稍后重试') }
 }
 function pickAvatar(e: any) {
   const f = e.target.files?.[0]; if (!f) return
@@ -108,6 +131,11 @@ async function saveEdit() {
       const fd = new FormData(); fd.append('file', await compressImage(avatarFile.value, 512, 0.85))
       const r = await api.post('/me/avatar', fd)
       editForm.value.avatar = r.data.avatar
+    }
+    // 注册邮箱（账号邮箱）单独走带唯一性校验的接口
+    if (accountEmail.value.trim() !== accountEmailSnapshot.value) {
+      await api.put('/me/account-email', { email: accountEmail.value.trim() })
+      accountEmailSnapshot.value = accountEmail.value.trim()
     }
     await api.patch('/me', {
       display_name: editForm.value.display_name,
@@ -615,7 +643,17 @@ async function removeWsMember(m: any) {
         <label class="label-cap">关键词（逗号分隔）</label>
         <input v-model="editForm.keywords" class="input mb-2" placeholder="如：反垄断, 平台经济, 因果推断" />
         <label class="label-cap">公开联系邮箱（选填，将展示在主页卡片）</label>
-        <input v-model="editForm.email" type="email" class="input mb-4" placeholder="如：name@school.edu.cn" />
+        <input v-model="editForm.email" type="email" class="input mb-3" placeholder="如：name@school.edu.cn" />
+
+        <!-- 注册邮箱（账号邮箱，仅本人可见/可改）-->
+        <div class="border-t border-line pt-3 mb-4">
+          <label class="label-cap">注册邮箱（账号邮箱，用于找回密码与系统通知，仅你可见）</label>
+          <input v-model="accountEmail" type="email" class="input" placeholder="如：name@mail.school.edu.cn" />
+          <div class="flex items-center gap-2 mt-2">
+            <button class="btn-ghost text-xs" @click="sendTestEmail">发送测试邮件到此邮箱</button>
+            <span v-if="testingEmail" class="text-xs text-gray-500">{{ testingEmail }}</span>
+          </div>
+        </div>
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="closeEdit">取消</button>
           <button class="btn-primary" :disabled="saving" @click="saveEdit">{{ saving ? '保存中…' : '保存' }}</button>

@@ -100,6 +100,57 @@ def patch_me(body: ProfilePatch, user: User = Depends(get_current_user),
     return {"ok": True}
 
 
+# -------- 注册邮箱（账号邮箱）：本人查看 / 修改 / 发测试信 --------
+import re as _re
+
+_EMAIL_RE = _re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class AccountEmailIn(BaseModel):
+    email: str
+
+
+@router.get("/me/account-email")
+def get_account_email(user: User = Depends(get_current_user)):
+    """返回本人注册邮箱（账号邮箱），仅本人可见。"""
+    return {"email": user.email or ""}
+
+
+@router.put("/me/account-email")
+def set_account_email(body: AccountEmailIn, user: User = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    """修改本人注册邮箱：校验格式 + 全局唯一（找回密码等靠它）。"""
+    from ..core.naming import ensure_unique
+    email = (body.email or "").strip()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(400, "邮箱格式不正确")
+    ensure_unique(db, User, "email", email, "注册邮箱", exclude_id=user.id)
+    user.email = email
+    db.commit()
+    return {"ok": True, "email": email}
+
+
+@router.post("/me/test-email")
+def send_test_email(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """给本人注册邮箱发一封测试邮件，用于验证邮件（SMTP）配置是否生效。
+    返回投递状态，前端可据此提示成功/失败原因。"""
+    from ..core.email_service import send_email
+    from ..core.config import settings
+    if not (user.email or "").strip():
+        raise HTTPException(400, "你还没有设置注册邮箱，请先填写并保存")
+    ev = send_email(
+        db, user_id=user.id, to_email=user.email,
+        subject="【科研数据共享平台】测试邮件",
+        body=(f"{user.display_name or user.username} 你好：\n\n"
+              "这是一封来自科研数据共享平台的测试邮件。\n"
+              "如果你收到了它，说明平台的邮件发送配置已经生效，"
+              "密码找回、每日消息摘要等邮件功能都可以正常使用。\n\n"
+              "——科研数据共享平台"),
+        kind="system", meta={"kind": "test"})
+    return {"status": ev.status, "error": ev.error, "to": user.email,
+            "backend": settings.EMAIL_BACKEND}
+
+
 @router.post("/me/avatar")
 def upload_avatar(file: UploadFile = File(...), user: User = Depends(get_current_user),
                   db: Session = Depends(get_db)):
