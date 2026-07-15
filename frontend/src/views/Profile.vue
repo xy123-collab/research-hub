@@ -701,7 +701,8 @@ async function removeWsMember(m: any) {
           <button @click="projDetail=null" class="text-gray-400 shrink-0"><Icon name="close" class="ico" style="width:18px;height:18px" /></button>
         </div>
 
-        <img v-if="projDetail.image_url" :src="projDetail.image_url" class="w-full max-h-72 object-cover rounded mt-3" />
+        <img v-if="projDetail.image_url" :src="projDetail.image_url"
+          class="block mx-auto max-w-full max-h-[70vh] w-auto h-auto object-contain rounded mt-3 bg-paper" />
 
         <!-- 正文 / 编辑 -->
         <div v-if="!projEdit" class="mt-3">
