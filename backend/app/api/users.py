@@ -24,6 +24,7 @@ class ProfilePatch(BaseModel):
     contact: str | None = None
     research_direction: str | None = None   # 研究方向（存 UserProfile）
     keywords: str | None = None             # 关键词（存 UserProfile）
+    email: str | None = None                # 公开联系邮箱（存 UserProfile，选填）
 
 
 def _profile_extra(db: Session, uid: int) -> UserProfile:
@@ -76,6 +77,7 @@ def get_user(uid: int, db: Session = Depends(get_db)):
             "contact": u.contact, "contribution": user_total(db, uid),
             "research_direction": ex.research_direction if ex else None,
             "keywords": ex.keywords if ex else None,
+            "email": ex.email if ex else None,
             "post_count": posts, "project_count": projects}
 
 
@@ -83,7 +85,7 @@ def get_user(uid: int, db: Session = Depends(get_db)):
 def patch_me(body: ProfilePatch, user: User = Depends(get_current_user),
              db: Session = Depends(get_db)):
     data = body.model_dump(exclude_none=True)
-    extra_keys = {"research_direction", "keywords"}
+    extra_keys = {"research_direction", "keywords", "email"}
     if data.keys() & extra_keys:
         p = _profile_extra(db, user.id)
         for k in list(extra_keys):
@@ -205,8 +207,55 @@ def del_block(bid: int, user: User = Depends(get_current_user),
 @router.get("/me/contributions")
 def my_contributions(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from ..models.governance import ContributionEvent
+    from ..models.dataset import Dataset
     rows = db.query(ContributionEvent).filter_by(user_id=user.id).all()
-    return {"total": user_total(db, user.id),
-            "events": [{"type": e.event_type, "ref_type": e.ref_type,
-                        "ref_id": e.ref_id, "dataset_id": e.dataset_id,
-                        "weight": e.weight} for e in rows]}
+    # 预取涉及的数据集，供前端一键跳转
+    ds_ids = {e.dataset_id for e in rows if e.dataset_id}
+    ds_map = {d.id: d for d in db.query(Dataset).filter(
+        Dataset.id.in_(ds_ids or [-1])).all()}
+    events = []
+    for e in rows:
+        d = ds_map.get(e.dataset_id)
+        events.append({"type": e.event_type, "ref_type": e.ref_type,
+                       "ref_id": e.ref_id, "dataset_id": e.dataset_id,
+                       "dataset_slug": d.slug if d else None,
+                       "dataset_name": d.name_zh if d else None,
+                       "weight": e.weight})
+    return {"total": user_total(db, user.id), "events": events}
+
+
+# -------- 简历 AI 一键排版 --------
+class ResumeAIFormatIn(BaseModel):
+    text: str
+
+
+@router.post("/me/resume/ai-format")
+def ai_format_resume(body: ResumeAIFormatIn, user: User = Depends(get_current_user)):
+    """把用户散乱的简历文字整理成本平台的简历结构标记，仅返回文本供用户预览确认。
+
+    结构约定与手动编辑一致：# 大标题 / ## 小标题 / - 分点 / 其余为正文。
+    只做排版整理，不虚构内容。"""
+    from ..core.ai_client import ai_client, OutboundGuardError
+    raw = (body.text or "").strip()
+    if not raw:
+        raise HTTPException(400, "请先填写简历内容")
+    if not ai_client.enabled():
+        raise HTTPException(400, "AI 未启用：请在环境变量配置 AI_PROVIDER 与 AI_API_KEY")
+    system = (
+        "你是中文学术个人简历排版助手。把用户给的简历原文整理成规范的结构化纯文本，"
+        "严格使用以下标记，每行一条：\n"
+        "# 表示大标题（如：教育经历、工作经历、研究成果、获奖）\n"
+        "## 表示小标题（如：某学校·某学位、某职位）\n"
+        "- 表示分点（时间、职责、成果等）\n"
+        "其余普通文字作为正文段落。\n"
+        "要求：只做归类与排版，不要虚构或添加原文没有的信息；不要输出解释、不要用代码围栏、"
+        "不要用 Markdown 加粗；直接输出整理后的文本。")
+    try:
+        out = ai_client.complete(raw, system=system)
+    except OutboundGuardError as e:
+        raise HTTPException(400, str(e))
+    # 去掉可能的 ``` 围栏
+    out = out.strip()
+    if out.startswith("```"):
+        out = "\n".join(l for l in out.splitlines() if not l.strip().startswith("```"))
+    return {"text": out.strip()}

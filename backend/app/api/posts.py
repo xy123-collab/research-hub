@@ -263,7 +263,97 @@ def del_project(pid: int, db: Session = Depends(get_db), user: User = Depends(ge
     p = db.get(Project, pid)
     if not p or (p.author_id != user.id and not is_super_admin(user)):
         raise HTTPException(403, "无权删除")
+    from ..models.community import ProjectComment
+    db.query(ProjectComment).filter_by(project_id=pid).delete()
     db.delete(p); db.commit()
+    return {"ok": True}
+
+
+@router.get("/projects/{pid}")
+def get_project(pid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """项目详情（含正文、封面、可编辑/可评论标记）。"""
+    from ..core.scopes import scope_visible, scope_summary
+    p = db.get(Project, pid)
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not scope_visible(db, "project", p.id, p.author_id, user):
+        raise HTTPException(403, "无权查看该项目")
+    m = db.get(ProjectMeta, pid)
+    au = db.get(User, p.author_id)
+    _sum = scope_summary(db, "project", p.id)
+    return {"id": p.id, "title": p.title, "body_zh": p.body_zh, "status": p.status,
+            "author_id": p.author_id, "author_name": au.display_name if au else "",
+            "open_for_discussion": p.open_for_discussion,
+            "pinned": bool(m and m.pinned),
+            "can_edit": p.author_id == user.id,
+            "can_manage": p.author_id == user.id or is_super_admin(user),
+            "scope": _sum["scope"], "scope_label": _sum["label"],
+            "image_url": f"/api/projects/{p.id}/image" if (m and m.image_path) else None}
+
+
+# -------- 项目评论 --------
+def _proj_bj(dt):
+    if not dt:
+        return None
+    from datetime import timedelta
+    return (dt + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+
+
+@router.get("/projects/{pid}/comments")
+def list_project_comments(pid: int, db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    from ..core.scopes import scope_visible
+    from ..models.community import ProjectComment
+    p = db.get(Project, pid)
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not scope_visible(db, "project", p.id, p.author_id, user):
+        raise HTTPException(403, "无权查看")
+    rows = (db.query(ProjectComment).filter_by(project_id=pid)
+            .order_by(ProjectComment.id.asc()).all())
+    out = []
+    for c in rows:
+        u = db.get(User, c.user_id)
+        out.append({"id": c.id, "user_id": c.user_id,
+                    "user_name": u.display_name if u else f"用户#{c.user_id}",
+                    "content": c.content, "parent_id": c.parent_id,
+                    "created_at": _proj_bj(c.created_at),
+                    "can_delete": c.user_id == user.id or p.author_id == user.id
+                    or is_super_admin(user)})
+    return out
+
+
+@router.post("/projects/{pid}/comments")
+def add_project_comment(pid: int, body: CommentIn, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    from ..core.scopes import scope_visible
+    from ..models.community import ProjectComment
+    p = db.get(Project, pid)
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.open_for_discussion and p.author_id != user.id:
+        raise HTTPException(403, "该项目未开放讨论")
+    if not scope_visible(db, "project", p.id, p.author_id, user):
+        raise HTTPException(403, "无权评论")
+    if not (body.content or "").strip():
+        raise HTTPException(400, "评论内容不能为空")
+    c = ProjectComment(project_id=pid, user_id=user.id,
+                       content=body.content.strip(), parent_id=body.parent_id)
+    db.add(c); db.commit(); db.refresh(c)
+    return {"id": c.id}
+
+
+@router.delete("/projects/{pid}/comments/{cid}")
+def del_project_comment(pid: int, cid: int, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    from ..models.community import ProjectComment
+    p = db.get(Project, pid)
+    c = db.get(ProjectComment, cid)
+    if not c or c.project_id != pid:
+        raise HTTPException(404, "评论不存在")
+    if c.user_id != user.id and (not p or p.author_id != user.id) and not is_super_admin(user):
+        raise HTTPException(403, "无权删除")
+    db.delete(c); db.commit()
     return {"ok": True}
 
 

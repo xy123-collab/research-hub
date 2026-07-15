@@ -83,3 +83,13 @@ class ProjectTag(Base):
     id = Column(Integer, primary_key=True)
     project_id = Column(Integer, ForeignKey("projects.id"))
     tag = Column(String(80))
+
+
+class ProjectComment(Base):
+    __tablename__ = "project_comments"
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    content = Column(Text)
+    parent_id = Column(Integer, ForeignKey("project_comments.id"))   # 评论的评论
+    created_at = Column(DateTime, default=datetime.utcnow)

@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuth } from '../stores/auth'
 import api from '../api'
 import Icon from '../components/Icon.vue'
 import ScopeSelector from '../components/ScopeSelector.vue'
 
-const route = useRoute(); const { t } = useI18n(); const auth = useAuth()
+const route = useRoute(); const router = useRouter(); const { t } = useI18n(); const auth = useAuth()
 const uid = ref<number>(0)
 const profile = ref<any>(null); const tab = ref('projects')
 const projects = ref<any[]>([]); const contrib = ref<any>({ total: 0, events: [] })
@@ -31,9 +31,30 @@ async function load() {
   }
 }
 
+// ==================== 图片压缩（上传前，显著提速）====================
+// 大照片在浏览器端先等比缩小 + 转 JPEG，再上传，减少体积、提升丝滑度。
+async function compressImage(file: File, maxDim = 1600, quality = 0.82): Promise<File> {
+  if (!file.type.startsWith('image/') || file.type === 'image/gif') return file
+  try {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url })
+    let w = img.naturalWidth, h = img.naturalHeight
+    const scale = Math.min(1, maxDim / Math.max(w, h))
+    w = Math.round(w * scale); h = Math.round(h * scale)
+    const canvas = document.createElement('canvas')
+    canvas.width = w; canvas.height = h
+    canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
+    URL.revokeObjectURL(url)
+    const blob: Blob | null = await new Promise((res) => canvas.toBlob(b => res(b), 'image/jpeg', quality))
+    if (!blob || blob.size >= file.size) return file   // 没变小就用原图
+    return new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' })
+  } catch { return file }
+}
+
 // ==================== 编辑资料 ====================
 const showEdit = ref(false)
-const editForm = ref<any>({ display_name: '', research_direction: '', keywords: '', avatar: '' })
+const editForm = ref<any>({ display_name: '', research_direction: '', keywords: '', email: '', avatar: '' })
 const editSnapshot = ref('')
 const avatarFile = ref<File | null>(null); const avatarPreview = ref('')
 const saving = ref(false)
@@ -44,6 +65,7 @@ function openEdit() {
     display_name: profile.value.display_name || '',
     research_direction: profile.value.research_direction || '',
     keywords: profile.value.keywords || '',
+    email: profile.value.email || '',
     avatar: profile.value.avatar || ''
   }
   editSnapshot.value = JSON.stringify(editForm.value)
@@ -62,14 +84,15 @@ async function saveEdit() {
   saving.value = true
   try {
     if (avatarFile.value) {
-      const fd = new FormData(); fd.append('file', avatarFile.value)
+      const fd = new FormData(); fd.append('file', await compressImage(avatarFile.value, 512, 0.85))
       const r = await api.post('/me/avatar', fd)
       editForm.value.avatar = r.data.avatar
     }
     await api.patch('/me', {
       display_name: editForm.value.display_name,
       research_direction: editForm.value.research_direction,
-      keywords: editForm.value.keywords
+      keywords: editForm.value.keywords,
+      email: editForm.value.email
     })
     await auth.fetchMe()
     profile.value = (await api.get(`/users/${uid.value}`)).data
@@ -82,10 +105,11 @@ async function saveEdit() {
 const keywordList = computed(() =>
   (profile.value?.keywords || '').split(/[,，、]/).map((s: string) => s.trim()).filter(Boolean))
 
-// ==================== 简历（整块编辑，更快）====================
-// 用一个文本框编辑整份简历：# 大标题 / ## 小标题 / - 分点 / 其余为正文
+// ==================== 简历（整块编辑 + AI 一键排版）====================
+// 用一个文本框编辑整份简历：# 大标题 / ## 小标题 / - 分点 / 其余正文
 const showResumeEdit = ref(false)
 const resumeText = ref(''); const resumeSnapshot = ref('')
+const aiFormatting = ref(false); const resumeSaving = ref(false)
 const resumeDirty = computed(() => resumeText.value !== resumeSnapshot.value)
 function blocksToText(blocks: any[]) {
   return blocks.map(b => {
@@ -114,17 +138,29 @@ function closeResumeEdit() {
   if (resumeDirty.value && !confirm('有未保存的修改，确定放弃吗？')) return
   showResumeEdit.value = false
 }
+async function aiFormatResume() {
+  if (!resumeText.value.trim()) { alert('请先填写简历内容，再让 AI 排版'); return }
+  if (!confirm('AI 会把当前文本重新归类排版（# 大标题 / ## 小标题 / - 分点），只整理不虚构。是否继续？')) return
+  aiFormatting.value = true
+  try {
+    const r = await api.post('/me/resume/ai-format', { text: resumeText.value })
+    resumeText.value = r.data.text
+  } catch (e: any) { alert(e.response?.data?.detail || 'AI 排版失败') }
+  finally { aiFormatting.value = false }
+}
 async function saveResume() {
+  resumeSaving.value = true
   try {
     await api.put('/me/resume/blocks', { blocks: textToBlocks(resumeText.value) })
     resume.value = (await api.get(`/users/${uid.value}/resume`)).data
     resumeSnapshot.value = resumeText.value
     showResumeEdit.value = false
   } catch (e: any) { alert(e.response?.data?.detail || '保存失败') }
+  finally { resumeSaving.value = false }
 }
 
-// ==================== 在做项目：创建 + 置顶 ====================
-const showProjCreate = ref(false)
+// ==================== 在做项目：创建 + 置顶 + 详情/编辑/删除/评论 ====================
+const showProjCreate = ref(false); const projSaving = ref(false)
 const projForm = ref<any>({ title: '', body_zh: '', pinned: false })
 const projScope = ref<{ scope: string; scope_ref_ids: number[] }>({ scope: 'public', scope_ref_ids: [] })
 const projImage = ref<File | null>(null); const projImgPreview = ref('')
@@ -144,41 +180,106 @@ async function createProject() {
   if ((projScope.value.scope === 'group' || projScope.value.scope === 'dataset') && !projScope.value.scope_ref_ids.length) {
     alert('请勾选至少一个课题组/数据集'); return
   }
-  const fd = new FormData()
-  fd.append('title', projForm.value.title.trim())
-  fd.append('body_zh', projForm.value.body_zh.trim())
-  fd.append('pinned', String(projForm.value.pinned))
-  fd.append('scope', projScope.value.scope)
-  if (projScope.value.scope_ref_ids.length) fd.append('scope_ref_ids', projScope.value.scope_ref_ids.join(','))
-  fd.append('image', projImage.value)
+  projSaving.value = true
   try {
+    const fd = new FormData()
+    fd.append('title', projForm.value.title.trim())
+    fd.append('body_zh', projForm.value.body_zh.trim())
+    fd.append('pinned', String(projForm.value.pinned))
+    fd.append('scope', projScope.value.scope)
+    if (projScope.value.scope_ref_ids.length) fd.append('scope_ref_ids', projScope.value.scope_ref_ids.join(','))
+    fd.append('image', await compressImage(projImage.value))
     await api.post('/projects', fd)
     showProjCreate.value = false
     projects.value = (await api.get('/projects', { params: { author_id: uid.value } })).data
   } catch (e: any) { alert(e.response?.data?.detail || '创建失败') }
+  finally { projSaving.value = false }
 }
 async function togglePin(p: any) {
+  const next = !p.pinned
   try {
-    await api.post(`/projects/${p.id}/pin`, null, { params: { pinned: !p.pinned } })
+    await api.post(`/projects/${p.id}/pin`, null, { params: { pinned: next } })
     projects.value = (await api.get('/projects', { params: { author_id: uid.value } })).data
+    if (projDetail.value && projDetail.value.id === p.id) projDetail.value.pinned = next
   } catch (e: any) { alert(e.response?.data?.detail || '操作失败') }
 }
 
+// —— 项目详情 / 编辑 / 评论 ——
+const projDetail = ref<any>(null)
+const projComments = ref<any[]>([])
+const projEdit = ref(false); const projEditForm = ref<any>({ title: '', body_zh: '' })
+const commentText = ref(''); const replyTo = ref<any>(null); const commentPosting = ref(false)
+async function openProject(id: number) {
+  projEdit.value = false; commentText.value = ''; replyTo.value = null
+  try {
+    projDetail.value = (await api.get(`/projects/${id}`)).data
+    projComments.value = (await api.get(`/projects/${id}/comments`)).data
+  } catch (e: any) { alert(e.response?.data?.detail || '打开失败') }
+}
+function startProjEdit() {
+  projEditForm.value = { title: projDetail.value.title, body_zh: projDetail.value.body_zh || '' }
+  projEdit.value = true
+}
+async function saveProjEdit() {
+  if (!projEditForm.value.title.trim()) { alert('标题不能为空'); return }
+  try {
+    await api.patch(`/projects/${projDetail.value.id}`, {
+      title: projEditForm.value.title.trim(), body_zh: projEditForm.value.body_zh
+    })
+    projDetail.value.title = projEditForm.value.title.trim()
+    projDetail.value.body_zh = projEditForm.value.body_zh
+    projEdit.value = false
+    projects.value = (await api.get('/projects', { params: { author_id: uid.value } })).data
+  } catch (e: any) { alert(e.response?.data?.detail || '保存失败') }
+}
+async function deleteProject() {
+  if (!confirm('确定删除这个项目？（评论也会一并删除）')) return
+  try {
+    await api.delete(`/projects/${projDetail.value.id}`)
+    projDetail.value = null
+    projects.value = (await api.get('/projects', { params: { author_id: uid.value } })).data
+  } catch (e: any) { alert(e.response?.data?.detail || '删除失败') }
+}
+const topComments = computed(() => projComments.value.filter(c => !c.parent_id))
+function repliesOf(cid: number) { return projComments.value.filter(c => c.parent_id === cid) }
+async function postComment() {
+  if (!commentText.value.trim()) return
+  commentPosting.value = true
+  try {
+    await api.post(`/projects/${projDetail.value.id}/comments`, {
+      content: commentText.value.trim(), parent_id: replyTo.value?.id || null
+    })
+    commentText.value = ''; replyTo.value = null
+    projComments.value = (await api.get(`/projects/${projDetail.value.id}/comments`)).data
+  } catch (e: any) { alert(e.response?.data?.detail || '评论失败') }
+  finally { commentPosting.value = false }
+}
+async function delComment(c: any) {
+  if (!confirm('删除这条评论？')) return
+  await api.delete(`/projects/${projDetail.value.id}/comments/${c.id}`)
+  projComments.value = (await api.get(`/projects/${projDetail.value.id}/comments`)).data
+}
+
+// ==================== 我的贡献：跳转数据集 ====================
+function gotoContrib(e: any) {
+  if (e.dataset_slug) router.push(`/datasets/${e.dataset_slug}`)
+}
+
 // ==================== 项目工作台 ====================
-const showWsCreate = ref(false)
+const showWsCreate = ref(false); const wsSaving = ref(false)
 const wsForm = ref<any>({ title: '', overleaf_url: '' })
 const wsInvited = ref<any[]>([])          // 已选邀请成员 {id,name}
 const wsModal = ref<any>(null)
 const entryCat = ref('all')
 const entryForm = ref<any>({ category: 'progress', title: '', body: '' })
-const entryFile = ref<File | null>(null)
+const entryFile = ref<File | null>(null); const entrySaving = ref(false)
 
 const CATS: Record<string, string> = {
   progress: '进展', data: '数据', figure: '图表', literature: '文献',
   result: '结果', discussion: '讨论', other: '其他'
 }
 
-// 成员检索（按姓名/ID）
+// 新建时的成员检索（按姓名/ID）
 const memberQ = ref(''); const memberResults = ref<any[]>([])
 async function searchMembers() {
   const q = memberQ.value.trim()
@@ -198,6 +299,7 @@ function openWsCreate() {
 }
 async function createWs() {
   if (!wsForm.value.title.trim()) { alert('请填写工作台标题'); return }
+  wsSaving.value = true
   try {
     await api.post('/workspaces', {
       title: wsForm.value.title.trim(),
@@ -206,8 +308,12 @@ async function createWs() {
     })
     showWsCreate.value = false; reloadWs()
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+  finally { wsSaving.value = false }
 }
-async function openWs(id: number) { wsModal.value = (await api.get(`/workspaces/${id}`)).data; entryCat.value = 'all' }
+async function openWs(id: number) {
+  wsModal.value = (await api.get(`/workspaces/${id}`)).data; entryCat.value = 'all'
+  wsMemberQ.value = ''; wsMemberResults.value = []
+}
 async function delWs(id: number) {
   if (!confirm('确定删除该工作台？')) return
   await api.delete(`/workspaces/${id}`); reloadWs()
@@ -225,19 +331,46 @@ async function addEntry() {
   if (!entryForm.value.body.trim() && !entryForm.value.title.trim() && !entryFile.value) {
     alert('请至少填写文字或选择文件'); return
   }
-  const fd = new FormData()
-  fd.append('category', entryForm.value.category)
-  fd.append('title', entryForm.value.title)
-  fd.append('body', entryForm.value.body)
-  if (entryFile.value) fd.append('file', entryFile.value)
-  await api.post(`/workspaces/${wsModal.value.id}/entries`, fd)
-  entryForm.value = { category: entryForm.value.category, title: '', body: '' }
-  entryFile.value = null
-  openWs(wsModal.value.id)
+  entrySaving.value = true
+  try {
+    const fd = new FormData()
+    fd.append('category', entryForm.value.category)
+    fd.append('title', entryForm.value.title)
+    fd.append('body', entryForm.value.body)
+    if (entryFile.value) fd.append('file', await compressImage(entryFile.value))
+    await api.post(`/workspaces/${wsModal.value.id}/entries`, fd)
+    entryForm.value = { category: entryForm.value.category, title: '', body: '' }
+    entryFile.value = null
+    openWs(wsModal.value.id)
+  } catch (e: any) { alert(e.response?.data?.detail || '添加失败') }
+  finally { entrySaving.value = false }
 }
 async function delEntry(eid: number) {
   if (!confirm('删除这条记录？')) return
   await api.delete(`/workspaces/${wsModal.value.id}/entries/${eid}`); openWs(wsModal.value.id)
+}
+
+// —— 工作台成员管理（创建者拉人/踢人）——
+const wsMemberQ = ref(''); const wsMemberResults = ref<any[]>([])
+async function searchWsMembers() {
+  const q = wsMemberQ.value.trim()
+  const existing = new Set((wsModal.value?.member_list || []).map((m: any) => m.id))
+  wsMemberResults.value = (await api.get('/users/search', { params: { q } })).data
+    .filter((u: any) => !existing.has(u.id))
+}
+async function addWsMember(u: any) {
+  try {
+    await api.post(`/workspaces/${wsModal.value.id}/members/${u.id}`)
+    wsMemberResults.value = wsMemberResults.value.filter(x => x.id !== u.id)
+    openWs(wsModal.value.id)
+  } catch (e: any) { alert(e.response?.data?.detail || '添加失败') }
+}
+async function removeWsMember(m: any) {
+  if (!confirm(`将「${m.name}」移出工作台？`)) return
+  try {
+    await api.delete(`/workspaces/${wsModal.value.id}/members/${m.id}`)
+    openWs(wsModal.value.id)
+  } catch (e: any) { alert(e.response?.data?.detail || '移除失败') }
 }
 </script>
 <template>
@@ -254,6 +387,9 @@ async function delEntry(eid: number) {
             <span class="text-white/50 text-sm font-sans">ID {{ profile.id }}</span></h1>
           <p v-if="profile.research_direction" class="text-white/85 text-sm mt-0.5">
             研究方向：{{ profile.research_direction }}</p>
+          <p v-if="profile.email" class="text-white/85 text-sm mt-0.5 flex items-center gap-1">
+            <Icon name="mail" class="ico" style="width:13px;height:13px" />
+            <a :href="`mailto:${profile.email}`" class="hover:underline">{{ profile.email }}</a></p>
           <div v-if="keywordList.length" class="flex flex-wrap gap-1 mt-1.5">
             <span v-for="k in keywordList" :key="k" class="text-[11px] bg-white/15 rounded px-2 py-0.5">{{ k }}</span>
           </div>
@@ -282,7 +418,8 @@ async function delEntry(eid: number) {
       <div v-if="tab==='projects'">
         <div v-if="isMe" class="mb-3"><button class="btn-primary" @click="openProjCreate">＋创建项目</button></div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div v-for="p in projects" :key="p.id" class="card overflow-hidden p-0">
+          <div v-for="p in projects" :key="p.id" class="card overflow-hidden p-0 cursor-pointer hover:shadow-md transition"
+            @click="openProject(p.id)">
             <img v-if="p.image_url" :src="p.image_url" class="w-full h-40 object-cover" />
             <div class="p-4">
               <div class="flex items-center gap-2">
@@ -290,9 +427,10 @@ async function delEntry(eid: number) {
                 <h3 class="flex-1">{{ p.title }} <span class="tag ml-1">{{ p.status }}</span>
                   <span v-if="p.scope && p.scope!=='public'" class="tag ml-1">{{ p.scope_label }}</span></h3>
                 <button v-if="isMe" class="text-xs" :class="p.pinned?'text-accent2':'text-accent'"
-                  @click="togglePin(p)">{{ p.pinned ? '取消置顶' : '置顶' }}</button>
+                  @click.stop="togglePin(p)">{{ p.pinned ? '取消置顶' : '置顶' }}</button>
               </div>
-              <p class="text-sm text-gray-500 mt-1 whitespace-pre-line">{{ p.body_zh }}</p>
+              <p class="text-sm text-gray-500 mt-1 whitespace-pre-line line-clamp-3">{{ p.body_zh }}</p>
+              <div class="text-xs text-accent mt-2">点击查看详情与评论 →</div>
             </div>
           </div>
           <p v-if="!projects.length" class="text-gray-400 text-sm">暂无项目。</p>
@@ -304,10 +442,20 @@ async function delEntry(eid: number) {
         <div class="card">
           <div class="label-cap">总贡献度 {{ contrib.total }}</div>
           <table class="w-full text-sm mt-2">
-            <tr v-for="(e,i) in contrib.events" :key="i" class="border-t border-line">
-              <td class="py-1"><span class="tag">{{ e.type }}</span></td>
-              <td>{{ e.ref_type }} #{{ e.ref_id }}</td>
-              <td class="text-right font-mono">+{{ e.weight }}</td>
+            <tr v-for="(e,i) in contrib.events" :key="i" class="border-t border-line"
+              :class="e.dataset_slug ? 'hover:bg-paper cursor-pointer' : ''" @click="gotoContrib(e)">
+              <td class="py-1.5"><span class="tag">{{ e.type }}</span></td>
+              <td>
+                <span v-if="e.dataset_name" class="text-accent inline-flex items-center gap-1">
+                  <Icon name="chart" class="ico" style="width:13px;height:13px" />{{ e.dataset_name }}
+                  <span class="text-gray-400 text-xs">· {{ e.ref_type }} #{{ e.ref_id }}</span>
+                </span>
+                <span v-else class="text-gray-500">{{ e.ref_type }} #{{ e.ref_id }}</span>
+              </td>
+              <td class="text-right whitespace-nowrap">
+                <span v-if="e.dataset_slug" class="text-accent text-xs mr-2">跳转 →</span>
+                <span class="font-mono">+{{ e.weight }}</span>
+              </td>
             </tr>
           </table>
           <p v-if="!contrib.events.length" class="text-gray-400 text-sm mt-2">暂无贡献记录。</p>
@@ -318,9 +466,13 @@ async function delEntry(eid: number) {
       <div v-else-if="tab==='resume'">
         <div v-if="isMe" class="mb-3"><button class="btn-ghost" @click="openResumeEdit">编辑简历</button></div>
         <div v-for="b in resume.blocks" :key="b.id" class="mb-1.5">
-          <component :is="b.type==='h'?'h2':b.type==='h2'?'h3':'p'"
-            :class="b.type==='li'?'pl-4 list-item text-sm':b.type==='h'?'text-lg font-serif':b.type==='h2'?'font-medium':'text-sm text-gray-600'">
-            {{ b.text_zh }}</component>
+          <h2 v-if="b.type==='h'" class="text-lg font-serif">{{ b.text_zh }}</h2>
+          <h3 v-else-if="b.type==='h2'" class="font-medium">{{ b.text_zh }}</h3>
+          <div v-else-if="b.type==='li'" class="flex gap-2 text-sm pl-4">
+            <span class="mt-[7px] w-1 h-1 rounded-full bg-accent shrink-0"></span>
+            <span class="text-gray-700">{{ b.text_zh }}</span>
+          </div>
+          <p v-else class="text-sm text-gray-600">{{ b.text_zh }}</p>
         </div>
         <p v-if="!resume.blocks.length" class="text-gray-400 text-sm">{{ isMe ? '还没有简历，点「编辑简历」开始填写。' : '暂无简历。' }}</p>
       </div>
@@ -361,7 +513,9 @@ async function delEntry(eid: number) {
         <label class="label-cap">研究方向</label>
         <input v-model="editForm.research_direction" class="input mb-2" placeholder="如：产业组织 / 发展经济学" />
         <label class="label-cap">关键词（逗号分隔）</label>
-        <input v-model="editForm.keywords" class="input mb-4" placeholder="如：反垄断, 平台经济, 因果推断" />
+        <input v-model="editForm.keywords" class="input mb-2" placeholder="如：反垄断, 平台经济, 因果推断" />
+        <label class="label-cap">公开联系邮箱（选填，将展示在主页卡片）</label>
+        <input v-model="editForm.email" type="email" class="input mb-4" placeholder="如：name@school.edu.cn" />
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="closeEdit">取消</button>
           <button class="btn-primary" :disabled="saving" @click="saveEdit">{{ saving ? '保存中…' : '保存' }}</button>
@@ -376,24 +530,30 @@ async function delEntry(eid: number) {
           <h3 class="text-lg">编辑简历</h3>
           <span v-if="resumeDirty" class="text-[11px] text-amber-600">● 有未保存修改</span>
         </div>
-        <p class="text-xs text-gray-500 mb-2">一个文本框搞定整份简历：<b># 大标题</b>，<b>## 小标题</b>，<b>- 分点</b>，其余为正文。每行一条，保存即生效。</p>
+        <p class="text-xs text-gray-500 mb-2">一个文本框搞定整份简历：<b># 大标题</b>，<b>## 小标题</b>，<b>- 分点</b>，其余为正文。每行一条，保存即生效。也可先随意粘贴，再用「AI 一键排版」自动归类。</p>
         <textarea v-model="resumeText" rows="14" class="input font-mono text-sm"
           placeholder="# 教育经历&#10;## 北京大学 · 经济学博士&#10;- 2020–2025&#10;主要研究产业组织与平台经济。"></textarea>
-        <div class="flex justify-end gap-2 mt-3">
-          <button class="btn-ghost" @click="closeResumeEdit">取消</button>
-          <button class="btn-primary" @click="saveResume">保存</button>
+        <div class="flex justify-between items-center gap-2 mt-3">
+          <button class="btn-ghost text-sm inline-flex items-center gap-1" :disabled="aiFormatting" @click="aiFormatResume">
+            <Icon name="sparkle" class="ico" style="width:14px;height:14px" />
+            {{ aiFormatting ? 'AI 排版中…' : 'AI 一键排版' }}</button>
+          <div class="flex gap-2">
+            <button class="btn-ghost" @click="closeResumeEdit">取消</button>
+            <button class="btn-primary" :disabled="resumeSaving" @click="saveResume">{{ resumeSaving ? '保存中…' : '保存' }}</button>
+          </div>
         </div>
       </div>
     </div>
 
     <!-- ============ 创建项目弹窗 ============ -->
     <div v-if="showProjCreate" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showProjCreate=false">
-      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
+      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-3">创建项目 <span class="text-xs text-gray-400">标题·图片·文字均必填</span></h3>
         <input v-model="projForm.title" class="input mb-2" placeholder="项目标题 *" />
-        <label class="btn-ghost text-xs cursor-pointer inline-block mb-2">选择封面图片 *
+        <label class="btn-ghost text-xs cursor-pointer inline-block mb-1">选择封面图片 *
           <input type="file" accept="image/*" class="hidden" @change="pickProjImage" />
         </label>
+        <p class="text-[11px] text-gray-400 mb-2">建议使用横版图片（约 16:9），卡片按封面等比裁剪展示；过大图片会自动压缩后上传。</p>
         <img v-if="projImgPreview" :src="projImgPreview" class="w-full h-40 object-cover rounded mb-2" />
         <textarea v-model="projForm.body_zh" rows="4" class="input mb-2" placeholder="项目介绍文字 *"></textarea>
         <div class="mb-2"><ScopeSelector v-model="projScope" /></div>
@@ -402,7 +562,83 @@ async function delEntry(eid: number) {
         </label>
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showProjCreate=false">取消</button>
-          <button class="btn-primary" @click="createProject">创建</button>
+          <button class="btn-primary" :disabled="projSaving" @click="createProject">{{ projSaving ? '创建中…' : '创建' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 项目详情 / 编辑 / 评论 ============ -->
+    <div v-if="projDetail" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="projDetail=null">
+      <div class="bg-white rounded-lg max-w-2xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h3 class="text-xl font-serif">{{ projDetail.title }}
+              <span v-if="projDetail.pinned" class="tag ml-1" style="background:#fef3c7;color:#92400e">置顶</span></h3>
+            <div class="text-xs text-gray-400 mt-1">
+              {{ projDetail.author_name }} · {{ projDetail.status }}
+              <span v-if="projDetail.scope && projDetail.scope!=='public'"> · {{ projDetail.scope_label }}</span>
+            </div>
+          </div>
+          <button @click="projDetail=null" class="text-gray-400 shrink-0"><Icon name="close" class="ico" style="width:18px;height:18px" /></button>
+        </div>
+
+        <img v-if="projDetail.image_url" :src="projDetail.image_url" class="w-full max-h-72 object-cover rounded mt-3" />
+
+        <!-- 正文 / 编辑 -->
+        <div v-if="!projEdit" class="mt-3">
+          <p class="text-sm text-gray-700 whitespace-pre-line">{{ projDetail.body_zh }}</p>
+        </div>
+        <div v-else class="mt-3">
+          <input v-model="projEditForm.title" class="input mb-2" placeholder="项目标题" />
+          <textarea v-model="projEditForm.body_zh" rows="5" class="input" placeholder="项目介绍文字"></textarea>
+          <div class="flex justify-end gap-2 mt-2">
+            <button class="btn-ghost text-sm" @click="projEdit=false">取消</button>
+            <button class="btn-primary text-sm" @click="saveProjEdit">保存修改</button>
+          </div>
+        </div>
+
+        <!-- 作者操作 -->
+        <div v-if="projDetail.can_edit && !projEdit" class="flex items-center gap-3 mt-3 text-sm">
+          <button class="text-accent" @click="startProjEdit">编辑</button>
+          <button class="text-accent" @click="togglePin(projDetail)">{{ projDetail.pinned ? '取消置顶' : '置顶' }}</button>
+          <button v-if="projDetail.can_manage" class="text-accent2 ml-auto" @click="deleteProject">删除项目</button>
+        </div>
+
+        <!-- 评论 -->
+        <div class="border-t border-line mt-5 pt-4">
+          <div class="label-cap mb-2">交流讨论（{{ projComments.length }}）</div>
+          <div v-if="projDetail.open_for_discussion || projDetail.can_edit" class="flex gap-2 mb-3">
+            <input v-model="commentText" class="input"
+              :placeholder="replyTo ? `回复 @${replyTo.user_name}…` : '写下你的评论 / 交流…'" @keyup.enter="postComment" />
+            <button v-if="replyTo" class="btn-ghost text-xs" @click="replyTo=null">取消回复</button>
+            <button class="btn-primary text-sm" :disabled="commentPosting" @click="postComment">发送</button>
+          </div>
+          <p v-else class="text-xs text-gray-400 mb-3">该项目未开放讨论。</p>
+
+          <div v-for="c in topComments" :key="c.id" class="mb-3">
+            <div class="flex items-start gap-2">
+              <div class="flex-1">
+                <div class="text-sm"><b>{{ c.user_name }}</b>
+                  <span class="text-gray-400 text-xs ml-2">{{ c.created_at }}</span></div>
+                <p class="text-sm text-gray-700 whitespace-pre-line">{{ c.content }}</p>
+                <div class="text-xs mt-0.5 flex gap-3">
+                  <button class="text-accent" @click="replyTo=c">回复</button>
+                  <button v-if="c.can_delete" class="text-accent2" @click="delComment(c)">删除</button>
+                </div>
+              </div>
+            </div>
+            <!-- 回复 -->
+            <div v-for="r in repliesOf(c.id)" :key="r.id" class="ml-6 mt-2 pl-3 border-l border-line">
+              <div class="text-sm"><b>{{ r.user_name }}</b>
+                <span class="text-gray-400 text-xs ml-2">{{ r.created_at }}</span></div>
+              <p class="text-sm text-gray-700 whitespace-pre-line">{{ r.content }}</p>
+              <div class="text-xs mt-0.5 flex gap-3">
+                <button class="text-accent" @click="replyTo=c">回复</button>
+                <button v-if="r.can_delete" class="text-accent2" @click="delComment(r)">删除</button>
+              </div>
+            </div>
+          </div>
+          <p v-if="!projComments.length" class="text-gray-400 text-sm">还没有评论，来说两句。</p>
         </div>
       </div>
     </div>
@@ -432,12 +668,12 @@ async function delEntry(eid: number) {
         </div>
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showWsCreate=false">取消</button>
-          <button class="btn-primary" @click="createWs">创建</button>
+          <button class="btn-primary" :disabled="wsSaving" @click="createWs">{{ wsSaving ? '创建中…' : '创建' }}</button>
         </div>
       </div>
     </div>
 
-    <!-- ============ 工作台详情（时间轴相册 + 分类）============ -->
+    <!-- ============ 工作台详情（时间轴相册 + 分类 + 成员管理）============ -->
     <div v-if="wsModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="wsModal=null">
       <div class="bg-white rounded-lg max-w-3xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
         <div class="flex items-center justify-between">
@@ -448,6 +684,28 @@ async function delEntry(eid: number) {
           <button @click="wsModal=null" class="text-gray-400"><Icon name="close" class="ico" style="width:18px;height:18px" /></button>
         </div>
         <a v-if="wsModal.overleaf_url" :href="wsModal.overleaf_url" target="_blank" class="text-accent text-xs">Overleaf ↗</a>
+
+        <!-- 成员管理（仅创建者）-->
+        <div v-if="wsModal.is_owner" class="card mt-3">
+          <div class="label-cap mb-2">成员管理（拉人 / 踢人）</div>
+          <div class="flex flex-wrap gap-1.5 mb-2">
+            <span v-for="m in wsModal.member_list" :key="m.id" class="tag flex items-center gap-1">
+              {{ m.name }}<span v-if="m.is_owner" class="text-gray-400">· owner</span>
+              <button v-if="!m.is_owner" class="text-accent2" @click="removeWsMember(m)">×</button>
+            </span>
+          </div>
+          <div class="flex gap-2">
+            <input v-model="wsMemberQ" class="input" placeholder="按姓名或 ID 检索成员" @keyup.enter="searchWsMembers" />
+            <button class="btn-ghost text-xs" @click="searchWsMembers">检索</button>
+          </div>
+          <div v-if="wsMemberResults.length" class="border border-line rounded mt-2 max-h-40 overflow-y-auto">
+            <button v-for="u in wsMemberResults" :key="u.id" class="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-paper"
+              @click="addWsMember(u)">
+              <span>{{ u.display_name }} <span class="text-gray-400 text-xs">ID {{ u.id }} · {{ u.username }}</span></span>
+              <span class="text-accent text-xs">＋拉入</span>
+            </button>
+          </div>
+        </div>
 
         <!-- 新增条目 -->
         <div class="card mt-4">
@@ -460,7 +718,7 @@ async function delEntry(eid: number) {
           <textarea v-model="entryForm.body" rows="2" class="input mb-2" placeholder="记录一条进展 / 结果 / 讨论…"></textarea>
           <div class="flex items-center justify-between">
             <input type="file" class="text-xs" @change="(e)=>entryFile=e.target.files[0]" />
-            <button class="btn-primary text-sm" @click="addEntry">＋添加到时间轴</button>
+            <button class="btn-primary text-sm" :disabled="entrySaving" @click="addEntry">{{ entrySaving ? '添加中…' : '＋添加到时间轴' }}</button>
           </div>
         </div>
 
@@ -481,7 +739,7 @@ async function delEntry(eid: number) {
             <div class="flex items-center gap-2 text-xs text-gray-400">
               <span class="tag">{{ CATS[e.category] || '其他' }}</span>
               <span>{{ e.author_name }}</span>
-              <span>{{ (e.created_at||'').slice(0,16).replace('T',' ') }}</span>
+              <span>{{ e.created_at }}</span>
               <button class="ml-auto text-accent2" @click="delEntry(e.id)">删除</button>
             </div>
             <div class="font-medium text-sm mt-1" v-if="e.title">{{ e.title }}</div>

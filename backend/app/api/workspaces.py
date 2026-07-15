@@ -12,6 +12,14 @@ from ..schemas.models import WorkspaceIn, WsUpdateIn, WsTodoIn, WsTodoPatch, WsN
 router = APIRouter(tags=["workspaces"])
 
 
+def _bj(dt) -> str | None:
+    """把存库的 naive UTC 时间转成北京时间（+8）字符串，供前端直接展示。"""
+    if not dt:
+        return None
+    from datetime import timedelta
+    return (dt + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+
+
 def _can_access(db, ws_id, user) -> bool:
     ws = db.get(Workspace, ws_id)
     if not ws:
@@ -85,12 +93,13 @@ def get_ws(wid: int, db: Session = Depends(get_db), user: User = Depends(get_cur
             "has_file": bool(e.file_path),
             "is_image": bool(e.mime and e.mime.startswith("image/")),
             "file_url": f"/api/workspaces/{wid}/entries/{e.id}/file" if e.file_path else None,
-            "created_at": str(e.created_at) if e.created_at else None})
+            "created_at": _bj(e.created_at)})
 
     return {"id": w.id, "title": w.title, "overleaf_url": w.overleaf_url,
-            "is_owner": w.owner_id == user.id,
+            "is_owner": w.owner_id == user.id, "owner_id": w.owner_id,
             "members": [m.user_id for m in members],
-            "member_list": [uinfo(m.user_id) for m in members],
+            "member_list": [{**uinfo(m.user_id), "is_owner": m.user_id == w.owner_id}
+                            for m in members],
             "entries": entry_out,
             "updates": [{"id": u.id, "author_id": u.author_id, "body": u.body} for u in ups],
             "todos": [{"id": t.id, "text": t.text, "done": t.done,
@@ -163,6 +172,34 @@ def edit_ws(wid: int, body: WorkspaceIn, db: Session = Depends(get_db),
     for uid in body.member_ids:
         if uid != user.id:
             db.add(WorkspaceMember(workspace_id=wid, user_id=uid))
+    db.commit()
+    return {"ok": True}
+
+
+# ---- 成员管理（创建后拉人 / 踢人，仅创建者）----
+@router.post("/workspaces/{wid}/members/{uid}")
+def add_member(wid: int, uid: int, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    w = db.get(Workspace, wid)
+    if not w or w.owner_id != user.id:
+        raise HTTPException(403, "仅创建者可管理成员")
+    if not db.get(User, uid):
+        raise HTTPException(404, "用户不存在")
+    exists = db.query(WorkspaceMember).filter_by(workspace_id=wid, user_id=uid).first()
+    if not exists:
+        db.add(WorkspaceMember(workspace_id=wid, user_id=uid)); db.commit()
+    return {"ok": True}
+
+
+@router.delete("/workspaces/{wid}/members/{uid}")
+def remove_member(wid: int, uid: int, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    w = db.get(Workspace, wid)
+    if not w or w.owner_id != user.id:
+        raise HTTPException(403, "仅创建者可管理成员")
+    if uid == w.owner_id:
+        raise HTTPException(400, "不能移除创建者本人")
+    db.query(WorkspaceMember).filter_by(workspace_id=wid, user_id=uid).delete()
     db.commit()
     return {"ok": True}
 
