@@ -523,21 +523,25 @@ def del_project(pid: int, db: Session = Depends(get_db), user: User = Depends(ge
     from ..models.community import ProjectComment, ProjectAttachment, ProjectTag
     from ..models.extras import ProjectMeta, ContentScope
     from ..core.storage import storage
-    # 连带清理所有引用 projects.id 的子表，否则 Postgres 外键会阻断删除（删除失败）
-    db.query(ProjectComment).filter_by(project_id=pid).delete()
-    db.query(ProjectTag).filter_by(project_id=pid).delete()
-    for a in db.query(ProjectAttachment).filter_by(project_id=pid).all():
-        try: storage.delete(a.file_path)
-        except Exception: pass
-        db.delete(a)
+    # 先收集要删的文件路径（提交后再删存储，避免中途异常丢文件对不上账）
+    files = [a.file_path for a in db.query(ProjectAttachment).filter_by(project_id=pid).all()
+             if a.file_path]
     m = db.get(ProjectMeta, pid)
-    if m:
-        if m.image_path:
-            try: storage.delete(m.image_path)
-            except Exception: pass
-        db.delete(m)
-    db.query(ContentScope).filter_by(content_type="project", content_id=pid).delete()
-    db.delete(p); db.commit()
+    if m and m.image_path:
+        files.append(m.image_path)
+    # 全部用「立即执行的批量删除」，按「先子后父」显式顺序清理所有引用 projects.id 的行，
+    # 不依赖 ORM 的 flush 排序（本会话 autoflush=False，混用 db.delete 可能顺序不对导致外键报错）。
+    db.query(ProjectComment).filter_by(project_id=pid).delete(synchronize_session=False)
+    db.query(ProjectTag).filter_by(project_id=pid).delete(synchronize_session=False)
+    db.query(ProjectAttachment).filter_by(project_id=pid).delete(synchronize_session=False)
+    db.query(ProjectMeta).filter_by(project_id=pid).delete(synchronize_session=False)
+    db.query(ContentScope).filter_by(content_type="project", content_id=pid).delete(
+        synchronize_session=False)
+    db.query(Project).filter_by(id=pid).delete(synchronize_session=False)
+    db.commit()
+    for f in files:
+        try: storage.delete(f)
+        except Exception: pass
     return {"ok": True}
 
 

@@ -71,8 +71,19 @@ async function loadScopes() {
   } catch {}
 }
 
-onMounted(async () => { readUrl(); await Promise.all([load(), loadHot(), loadScopes()]) })
+// 定位单条帖子（从热榜/组内动态/消息点进来的 ?post=id）
+const focusPost = ref<any>(null)
+async function loadFocus() {
+  const id = route.query.post
+  if (!id) { focusPost.value = null; return }
+  try { focusPost.value = (await api.get(`/posts/${id}`)).data }
+  catch { focusPost.value = null }
+}
+function clearFocus() { focusPost.value = null; router.replace({ query: {} }); readUrl() }
+
+onMounted(async () => { readUrl(); await Promise.all([load(), loadHot(), loadScopes(), loadFocus()]) })
 watch(hotRange, loadHot)
+watch(() => route.query.post, loadFocus)
 
 // 右栏层级：选中课题组后，数据集只显示该组下的
 const datasetsForFilter = computed(() =>
@@ -147,6 +158,16 @@ function onDeleted(id: number) { posts.value = posts.value.filter(p => p.id !== 
             <button class="text-accent2" @click="removeChip(c.k)">×</button></span>
         </template>
         <button v-if="activeChips.length" class="text-xs text-gray-400 hover:text-accent2" @click="clearFilters">清除全部</button>
+      </div>
+
+      <!-- 定位到的单条帖子（从热榜/组内动态/消息跳来）-->
+      <div v-if="focusPost" class="mb-4">
+        <div class="flex items-center justify-between mb-1.5 text-xs text-gray-500">
+          <span>已定位到该讨论</span>
+          <button class="text-accent hover:underline" @click="clearFocus">← 返回全部讨论</button>
+        </div>
+        <PostCard :post="focusPost" :current-user-id="auth.user?.id"
+          @edit="onEdit" @deleted="() => { clearFocus() }" @changed="loadFocus" />
       </div>
 
       <p v-if="loading" class="text-gray-400 text-sm">加载中…</p>

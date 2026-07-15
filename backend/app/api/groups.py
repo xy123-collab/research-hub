@@ -296,9 +296,11 @@ def group_activity(slug: str, user: User = Depends(get_current_user),
         if p.visibility == "private":
             continue
         u = db.get(User, p.author_id)
+        _ptitle = (p.title or p.content_zh or "")[:80]
         items.append({"type": "post", "who": u.display_name if u else "",
-                      "title": (p.content_zh or "")[:80], "ref": p.id,
-                      "at": None, "sort": p.id})
+                      "title": _ptitle, "ref": p.id,
+                      "at": str(p.created_at) if getattr(p, "created_at", None) else None,
+                      "sort": p.id})
     for v in (db.query(DataVersion).filter(DataVersion.dataset_id.in_(ds_ids or [-1]))
               .order_by(DataVersion.id.desc()).limit(20).all()):
         u = db.get(User, v.created_by)
