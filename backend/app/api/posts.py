@@ -527,15 +527,24 @@ def project_image(pid: int, db: Session = Depends(get_db)):
 @router.patch("/projects/{pid}")
 def edit_project(pid: int, body: ProjectIn, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
+    from ..core.scopes import set_scope
     p = db.get(Project, pid)
     if not p or (p.author_id != user.id and not is_super_admin(user)):
         raise HTTPException(403, "无权编辑")
     data = body.model_dump(exclude_none=True)
-    labels = data.pop("labels", None)     # 标签单独处理，不是 Project 的列
+    labels = data.pop("labels", None)          # 标签单独处理，不是 Project 的列
+    scope = data.pop("scope", None)            # 可见范围单独处理，写 ContentScope
+    scope_ref_ids = data.pop("scope_ref_ids", None)
     for k, v in data.items():
         setattr(p, k, v)
     if labels is not None:
         _set_project_labels(db, pid, labels)
+    if scope:
+        try:
+            set_scope(db, "project", pid, scope, scope_ref_ids or [], user)
+            p.visibility = {"public": "platform", "self": "private"}.get(scope, "group")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     db.commit()
     return {"ok": True}
 
@@ -582,13 +591,15 @@ def get_project(pid: int, db: Session = Depends(get_db), user: User = Depends(ge
     m = db.get(ProjectMeta, pid)
     au = db.get(User, p.author_id)
     _sum = scope_summary(db, "project", p.id)
+    from ..core.scopes import get_scopes
+    ref_ids = [r.scope_ref_id for r in get_scopes(db, "project", p.id) if r.scope_ref_id]
     return {"id": p.id, "title": p.title, "body_zh": p.body_zh, "status": p.status,
             "author_id": p.author_id, "author_name": au.display_name if au else "",
             "open_for_discussion": p.open_for_discussion,
             "pinned": bool(m and m.pinned), "labels": _project_labels(db, p.id),
             "can_edit": p.author_id == user.id,
             "can_manage": p.author_id == user.id or is_super_admin(user),
-            "scope": _sum["scope"], "scope_label": _sum["label"],
+            "scope": _sum["scope"], "scope_label": _sum["label"], "scope_ref_ids": ref_ids,
             "image_url": f"/api/projects/{p.id}/image" if (m and m.image_path) else None}
 
 

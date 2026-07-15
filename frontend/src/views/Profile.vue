@@ -255,6 +255,7 @@ async function togglePin(p: any) {
 const projDetail = ref<any>(null)
 const projComments = ref<any[]>([])
 const projEdit = ref(false); const projEditForm = ref<any>({ title: '', body_zh: '' })
+const projEditScope = ref<{ scope: string; scope_ref_ids: number[] }>({ scope: 'public', scope_ref_ids: [] })
 const commentText = ref(''); const replyTo = ref<any>(null); const commentPosting = ref(false)
 async function openProject(id: number) {
   projEdit.value = false; commentText.value = ''; replyTo.value = null
@@ -268,19 +269,27 @@ function startProjEdit() {
     title: projDetail.value.title, body_zh: projDetail.value.body_zh || '',
     labels: [...(projDetail.value.labels || [])]
   }
+  projEditScope.value = {
+    scope: projDetail.value.scope || 'public',
+    scope_ref_ids: [...(projDetail.value.scope_ref_ids || [])]
+  }
   editLabelInput.value = ''
   projEdit.value = true
 }
 async function saveProjEdit() {
   if (!projEditForm.value.title.trim()) { alert('标题不能为空'); return }
+  const sc = projEditScope.value
+  if ((sc.scope === 'group' || sc.scope === 'dataset') && !sc.scope_ref_ids.length) {
+    alert('请勾选至少一个课题组/数据集'); return
+  }
   try {
     await api.patch(`/projects/${projDetail.value.id}`, {
       title: projEditForm.value.title.trim(), body_zh: projEditForm.value.body_zh,
-      labels: projEditForm.value.labels
+      labels: projEditForm.value.labels,
+      scope: sc.scope, scope_ref_ids: sc.scope_ref_ids
     })
-    projDetail.value.title = projEditForm.value.title.trim()
-    projDetail.value.body_zh = projEditForm.value.body_zh
-    projDetail.value.labels = [...projEditForm.value.labels]
+    // 重新拉详情，拿到最新 scope_label / scope_ref_ids
+    projDetail.value = (await api.get(`/projects/${projDetail.value.id}`)).data
     projEdit.value = false
     projects.value = (await api.get('/projects', { params: { author_id: uid.value } })).data
   } catch (e: any) { alert(e.response?.data?.detail || '保存失败') }
@@ -717,6 +726,7 @@ async function removeWsMember(m: any) {
               @keyup.enter="addCustomLabel(projEditForm.labels, editLabelInput, () => editLabelInput='')" />
             <button type="button" class="btn-ghost text-xs" @click="addCustomLabel(projEditForm.labels, editLabelInput, () => editLabelInput='')">添加</button>
           </div>
+          <div class="mt-2"><ScopeSelector v-model="projEditScope" /></div>
           <div class="flex justify-end gap-2 mt-3">
             <button class="btn-ghost text-sm" @click="projEdit=false">取消</button>
             <button class="btn-primary text-sm" @click="saveProjEdit">保存修改</button>

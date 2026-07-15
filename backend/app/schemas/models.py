@@ -112,6 +112,8 @@ class ProjectIn(BaseModel):
     dataset_id: int | None = None; status: str | None = None
     open_for_discussion: bool = True; visibility: str = "platform"
     labels: list[str] | None = None    # 项目标签（欢迎讨论/欢迎合作/…，可自定义）
+    scope: str | None = None           # 可见范围：public|group|dataset|self
+    scope_ref_ids: list[int] | None = None   # group/dataset 时选中的组/集 id
 
 
 # -------- workspace --------
