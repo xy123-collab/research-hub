@@ -25,22 +25,34 @@ log = logging.getLogger("email_service")
 
 
 def _deliver_smtp(to_email: str, subject: str, body: str) -> None:
-    """真实 SMTP 投递。仅当 EMAIL_BACKEND=smtp 且配置齐全时调用。"""
+    """真实 SMTP 投递。仅当 EMAIL_BACKEND=smtp 且配置齐全时调用。
+
+    三种连接方式（按端口/开关自动选择）：
+    - 隐式 SSL（465）：SMTP_SSL 直连，或 SMTP_PORT==465 时自动启用。
+    - STARTTLS（587）：先明文连接再升级 TLS（SMTP_TLS=True）。
+    - 明文：不加密（仅内网自建时用）。
+    """
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = Header(subject, "utf-8")
     msg["From"] = formataddr((str(Header(settings.EMAIL_FROM_NAME, "utf-8")), settings.EMAIL_FROM))
     msg["To"] = to_email
-    if settings.SMTP_TLS:
-        server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15)
-        server.starttls()
+
+    use_ssl = getattr(settings, "SMTP_SSL", False) or settings.SMTP_PORT == 465
+    if use_ssl:
+        import ssl
+        server = smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT,
+                                  timeout=20, context=ssl.create_default_context())
     else:
-        server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15)
+        server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=20)
+        if settings.SMTP_TLS:
+            server.starttls()
     try:
         if settings.SMTP_USER:
             server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
         server.sendmail(settings.EMAIL_FROM, [to_email], msg.as_string())
     finally:
-        server.quit()
+        try: server.quit()
+        except Exception: pass
 
 
 def send_email(db: Session, *, user_id: int | None, to_email: str | None,

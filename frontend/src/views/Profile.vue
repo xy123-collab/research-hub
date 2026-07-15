@@ -82,8 +82,9 @@ const saving = ref(false)
 const dirty = computed(() => JSON.stringify(editForm.value) !== editSnapshot.value || !!avatarFile.value
   || accountEmail.value !== accountEmailSnapshot.value)
 
-const accountEmail = ref(''); const accountEmailSnapshot = ref(''); const testingEmail = ref('')
-function openEdit() {
+const accountEmail = ref(''); const accountEmailSnapshot = ref('')
+const emailOptIn = ref(true); const emailPrefBusy = ref(false); const emailPrefMsg = ref('')
+async function openEdit() {
   editForm.value = {
     display_name: profile.value.display_name || '',
     research_direction: profile.value.research_direction || '',
@@ -93,28 +94,32 @@ function openEdit() {
   }
   accountEmail.value = auth.user?.email || ''
   accountEmailSnapshot.value = accountEmail.value
-  testingEmail.value = ''
+  emailPrefMsg.value = ''
   editSnapshot.value = JSON.stringify(editForm.value)
   avatarFile.value = null; avatarPreview.value = ''
   showEdit.value = true
+  try { emailOptIn.value = (await api.get('/me/email-pref')).data.opt_in } catch {}
 }
-async function sendTestEmail() {
-  testingEmail.value = '发送中…'
+// 开启/关闭邮件提醒（两个方向都发一封确认信）
+async function toggleEmailPref() {
+  const next = !emailOptIn.value
+  emailPrefBusy.value = true; emailPrefMsg.value = ''
   try {
-    // 若注册邮箱有改动，先保存再发，测试信才发到新地址
+    // 若注册邮箱刚改过还没存，先存，确认信才发到新地址
     if (accountEmail.value.trim() && accountEmail.value.trim() !== accountEmailSnapshot.value) {
       await api.put('/me/account-email', { email: accountEmail.value.trim() })
       accountEmailSnapshot.value = accountEmail.value.trim(); await auth.fetchMe()
     }
-    const r = (await api.post('/me/test-email')).data
-    const msg: Record<string, string> = {
-      sent: `已发送到 ${r.to}，请查收（含垃圾箱）`,
-      mock: `当前为 mock 模式（EMAIL_BACKEND=mock），只记录未真正发送。请把 EMAIL_BACKEND 设为 smtp。`,
-      failed: `发送失败：${r.error || '未知错误'}`,
-      skipped: `已跳过（后端为 none 或无收件邮箱）`
-    }
-    testingEmail.value = msg[r.status] || `状态：${r.status}`
-  } catch (e: any) { testingEmail.value = '失败：' + (e.response?.data?.detail || '请稍后重试') }
+    const r = (await api.put('/me/email-pref', { opt_in: next })).data
+    emailOptIn.value = r.opt_in
+    const sent = r.email_status === 'sent'
+    const base = next ? '已开启邮件提醒' : '已关闭邮件提醒'
+    emailPrefMsg.value = base + (
+      r.email_status === 'sent' ? '，确认邮件已发送，请查收' :
+      r.email_status === 'mock' ? '（当前 mock 模式，确认信未真正发出）' :
+      r.email_status === 'failed' ? `（确认邮件发送失败：${r.email_error || '见下方说明'}）` : '')
+  } catch (e: any) { emailPrefMsg.value = '操作失败：' + (e.response?.data?.detail || '请稍后重试') }
+  finally { emailPrefBusy.value = false }
 }
 function pickAvatar(e: any) {
   const f = e.target.files?.[0]; if (!f) return
@@ -649,10 +654,20 @@ async function removeWsMember(m: any) {
         <div class="border-t border-line pt-3 mb-4">
           <label class="label-cap">注册邮箱（账号邮箱，用于找回密码与系统通知，仅你可见）</label>
           <input v-model="accountEmail" type="email" class="input" placeholder="如：name@mail.school.edu.cn" />
-          <div class="flex items-center gap-2 mt-2">
-            <button class="btn-ghost text-xs" @click="sendTestEmail">发送测试邮件到此邮箱</button>
-            <span v-if="testingEmail" class="text-xs text-gray-500">{{ testingEmail }}</span>
+          <p class="text-[11px] text-gray-400 mt-1">直接在此修改并「保存」即完成注册邮箱更换（需唯一、格式正确）。</p>
+
+          <!-- 邮件提醒开关 -->
+          <div class="flex items-center justify-between mt-3">
+            <div>
+              <div class="text-sm">邮件提醒</div>
+              <div class="text-[11px] text-gray-400">开启后接收每日消息摘要等提醒（注册后默认开启）。</div>
+            </div>
+            <button type="button" :disabled="emailPrefBusy" @click="toggleEmailPref"
+              :class="['relative w-11 h-6 rounded-full transition', emailOptIn ? 'bg-accent' : 'bg-gray-300']">
+              <span :class="['absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform', emailOptIn ? 'translate-x-5' : '']"></span>
+            </button>
           </div>
+          <p v-if="emailPrefMsg" class="text-[11px] text-gray-500 mt-1">{{ emailPrefMsg }}</p>
         </div>
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="closeEdit">取消</button>

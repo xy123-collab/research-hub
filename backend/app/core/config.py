@@ -49,7 +49,8 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
-    SMTP_TLS: bool = True
+    SMTP_TLS: bool = True                # 587 STARTTLS 时为 True
+    SMTP_SSL: bool = False               # 465 隐式 SSL 时设 True（端口=465 时也会自动启用）
     # 站点地址，用于邮件里的找回密码/跳转链接（部署后按实际域名/校内地址改）
     SITE_URL: str = "https://research-hub-pmow.onrender.com"
     # 每日消息摘要

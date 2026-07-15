@@ -17,6 +17,7 @@ class UserProfile(Base):
     research_direction = Column(Text)   # 研究方向
     keywords = Column(Text)             # 关键词，逗号分隔
     email = Column(String(200))         # 公开联系邮箱（选填，展示在主页卡片）
+    email_opt_in = Column(Boolean, default=True)   # 邮件提醒开关（注册后默认开启；None 视为开启）
 
 
 # ---------- 在做项目：置顶 + 封面图 ----------

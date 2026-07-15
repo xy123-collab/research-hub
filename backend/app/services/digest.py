@@ -48,9 +48,15 @@ def run_digest_once() -> dict:
     sent = 0; skipped = 0; scanned = 0
     try:
         users = db.query(User).filter(User.status != "left").all()
+        from ..models.extras import UserProfile
         for u in users:
             scanned += 1
             if not u.email:
+                skipped += 1
+                continue
+            # 尊重"邮件提醒开关"：关闭的用户不发每日摘要（None 视为开启）
+            prof = db.get(UserProfile, u.id)
+            if prof is not None and prof.email_opt_in is False:
                 skipped += 1
                 continue
             data = build_notifications(db, u)

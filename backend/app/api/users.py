@@ -151,6 +151,52 @@ def send_test_email(user: User = Depends(get_current_user), db: Session = Depend
             "backend": settings.EMAIL_BACKEND}
 
 
+# -------- 邮件提醒开关（注册后默认开启；开/关都发一封确认信）--------
+class EmailPrefIn(BaseModel):
+    opt_in: bool
+
+
+def _email_opt_in(db: Session, uid: int) -> bool:
+    p = db.get(UserProfile, uid)
+    # 未设置（None）视为开启，符合"注册后默认开启"
+    return True if (not p or p.email_opt_in is None) else bool(p.email_opt_in)
+
+
+@router.get("/me/email-pref")
+def get_email_pref(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return {"opt_in": _email_opt_in(db, user.id), "email": user.email or ""}
+
+
+@router.put("/me/email-pref")
+def set_email_pref(body: EmailPrefIn, user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """开启/关闭邮件提醒。两个方向都发一封确认邮件（关闭时这封是最后一封）。"""
+    from ..core.email_service import send_email
+    from ..core.config import settings
+    p = _profile_extra(db, user.id)
+    p.email_opt_in = bool(body.opt_in)
+    db.commit()
+    # 发确认信（无邮箱或投递失败都不阻断开关本身）
+    email_status = "skipped"; email_error = None
+    if (user.email or "").strip():
+        if body.opt_in:
+            subject = "【科研数据共享平台】邮件提醒已开启"
+            text = ("你已开启邮件提醒。此后密码找回、每日消息摘要等邮件会正常发送到此邮箱。\n"
+                    "如需关闭，可在个人主页「编辑资料」里再次切换。")
+        else:
+            subject = "【科研数据共享平台】邮件提醒已关闭"
+            text = ("你已关闭邮件提醒，这是最后一封提醒邮件。此后平台不再向此邮箱发送每日摘要等提醒。\n"
+                    "（出于账号安全，密码找回等必要邮件仍会发送。）\n"
+                    "如需重新开启，可在个人主页「编辑资料」里再次切换。")
+        ev = send_email(db, user_id=user.id, to_email=user.email, subject=subject,
+                        body=f"{user.display_name or user.username} 你好：\n\n{text}\n\n——科研数据共享平台",
+                        kind="system", meta={"kind": "email_pref", "opt_in": body.opt_in})
+        email_status = ev.status; email_error = ev.error
+    return {"ok": True, "opt_in": body.opt_in,
+            "email_status": email_status, "email_error": email_error,
+            "backend": settings.EMAIL_BACKEND}
+
+
 @router.post("/me/avatar")
 def upload_avatar(file: UploadFile = File(...), user: User = Depends(get_current_user),
                   db: Session = Depends(get_db)):
