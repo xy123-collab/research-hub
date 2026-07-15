@@ -2,12 +2,15 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useAuth } from '../stores/auth'
 import api from '../api'
 import { downloadFile } from '../utils/download'
 import CharterModal from '../components/CharterModal.vue'
 import Icon from '../components/Icon.vue'
+import PostCard from '../components/PostCard.vue'
+import PostComposer from '../components/PostComposer.vue'
 
-const route = useRoute(); const { t } = useI18n()
+const route = useRoute(); const { t } = useI18n(); const auth = useAuth()
 const slug = route.params.slug as string
 const d = ref<any>(null); const tab = ref('overview')
 const versions = ref<any[]>([]); const bugs = ref<any[]>([]); const vars = ref<any[]>([])
@@ -362,12 +365,11 @@ async function setActFilter(k: string) {
   actFilter.value = k
   acts.value = (await api.get(`/datasets/${slug}/activity`, { params: { kind: k } })).data
 }
-async function submitPost() {
-  if (!postForm.value.content_zh.trim()) return
-  await api.post('/posts', { content_zh: postForm.value.content_zh, dataset_id: d.value.id,
-                             visibility: 'platform', tags: [d.value.slug] })
-  postForm.value.content_zh = ''; loadTab('feed')
-}
+const dsComposerOpen = ref(false); const dsEditing = ref<any>(null)
+function openDsCompose() { dsEditing.value = null; dsComposerOpen.value = true }
+function onDsPostEdit(post: any) { dsEditing.value = post; dsComposerOpen.value = true }
+function onDsPostSaved() { loadTab('feed') }
+function onDsPostDeleted(id: number) { posts.value = posts.value.filter((p: any) => p.id !== id) }
 const actColor = (x: string) => x === 'version' ? '#2d4a7c' : x === 'code' ? '#4b5563' : '#7c2d3a'
 const actLabel = (x: string) => x === 'version' ? '版本' : x === 'code' ? '代码' : '勘误'
 
@@ -1162,19 +1164,14 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
       </div>
 
-      <!-- feed 研究广场（该数据集相关讨论） -->
+      <!-- feed 研究讨论区（与研究广场同一套帖子系统，默认关联本数据集）-->
       <div v-else-if="tab==='feed'">
-        <div v-if="d.is_member" class="card mb-4">
-          <textarea v-model="postForm.content_zh" class="input" :placeholder="t('ds.postHere')"></textarea>
-          <div class="flex justify-end mt-2"><button class="btn-primary text-sm" @click="submitPost">{{ t('feed.post') }}</button></div>
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-xs text-gray-400">与研究广场同一套讨论系统，这里默认展示并关联本数据集的讨论。</p>
+          <button v-if="d.is_member" class="btn-primary text-sm" @click="openDsCompose">＋发布讨论</button>
         </div>
-        <div v-for="p in posts" :key="p.id" class="card mb-2">
-          <div class="flex items-center gap-2 text-sm">
-            <router-link :to="`/users/${p.author_id}`" class="text-accent hover:underline">{{ p.author_name }}</router-link>
-          </div>
-          <p class="mt-1 text-sm">{{ p.content_zh }}</p>
-          <div class="mt-2 flex gap-1"><span v-for="tg in p.tags" :key="tg" class="tag">{{ tg }}</span></div>
-        </div>
+        <PostCard v-for="p in posts" :key="p.id" :post="p" :current-user-id="auth.user?.id"
+          @edit="onDsPostEdit" @deleted="onDsPostDeleted" @changed="loadTab('feed')" />
         <p v-if="!posts.length" class="text-gray-400 text-sm">{{ t('ds.noPosts') }}</p>
       </div>
 
@@ -1752,6 +1749,11 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
       </div>
     </div>
+
+    <!-- 发布/编辑讨论（默认关联本数据集）-->
+    <PostComposer v-if="dsComposerOpen" :edit="dsEditing"
+      :context="{ datasetId: d.id, datasetName: d.name_zh }"
+      @close="dsComposerOpen=false" @saved="onDsPostSaved" />
   </div>
 </template>
 

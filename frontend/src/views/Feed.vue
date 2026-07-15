@@ -1,146 +1,190 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+// 研究广场 = 统一讨论系统。三栏：左热榜 / 中信息流 / 右分类筛选。
+import { ref, onMounted, computed, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuth } from '../stores/auth'
 import api from '../api'
 import Icon from '../components/Icon.vue'
-import ScopeSelector from '../components/ScopeSelector.vue'
+import PostCard from '../components/PostCard.vue'
+import PostComposer from '../components/PostComposer.vue'
 
 const { t } = useI18n(); const auth = useAuth()
-const posts = ref<any[]>([])
-const form = ref({ content_zh: '', tags: '' })
-const scope = ref<{ scope: string; scope_ref_ids: number[] }>({ scope: 'public', scope_ref_ids: [] })
-// 关联数据集（可选）：输入关键词自动匹配
-const dsQuery = ref(''); const dsResults = ref<any[]>([]); const dsLinked = ref<any>(null)
-let dsTimer: any = null
-function onDsInput() {
-  dsLinked.value = null
-  clearTimeout(dsTimer)
-  dsTimer = setTimeout(async () => {
-    const q = dsQuery.value.trim()
-    if (!q) { dsResults.value = []; return }
-    try { dsResults.value = (await api.get('/datasets/search', { params: { q } })).data } catch { dsResults.value = [] }
-  }, 250)
-}
-function pickDs(d: any) { dsLinked.value = d; dsQuery.value = d.name; dsResults.value = [] }
-function clearDs() { dsLinked.value = null; dsQuery.value = ''; dsResults.value = [] }
+const route = useRoute(); const router = useRouter()
 
-// 评论区状态：postId -> {open, list, input, replyTo}
-const cstate = ref<Record<number, any>>({})
+const posts = ref<any[]>([]); const loading = ref(false)
+const hot = ref<any[]>([]); const hotRange = ref('7d')
+const myGroups = ref<any[]>([]); const myDatasets = ref<any[]>([])
 
-onMounted(load)
-async function load() { posts.value = (await api.get('/posts')).data }
-async function submit() {
-  if (!form.value.content_zh) return
-  if ((scope.value.scope === 'group' || scope.value.scope === 'dataset') && !scope.value.scope_ref_ids.length) {
-    alert('请勾选至少一个课题组/数据集'); return
+const TYPES = [
+  { v: 'question', label: '研究问题' }, { v: 'data', label: '数据问题' },
+  { v: 'method', label: '方法讨论' }, { v: 'collab', label: '合作招募' },
+  { v: 'discussion', label: '自由讨论' },
+]
+
+// 筛选状态（与 URL 同步，便于分享/返回）
+const f = ref<any>({ group: null, dataset: null, type: null, status: null, sort: 'new' })
+function readUrl() {
+  f.value = {
+    group: route.query.group ? +route.query.group : null,
+    dataset: route.query.dataset ? +route.query.dataset : null,
+    type: (route.query.type as string) || null,
+    status: (route.query.status as string) || null,
+    sort: (route.query.sort as string) || 'new',
   }
-  try {
-    await api.post('/posts', { content_zh: form.value.content_zh,
-      scope: scope.value.scope, scope_ref_ids: scope.value.scope_ref_ids,
-      dataset_id: dsLinked.value?.id || null,
-      tags: form.value.tags ? form.value.tags.split(',').map(s=>s.trim()) : [] })
-    form.value = { content_zh: '', tags: '' }; scope.value = { scope: 'public', scope_ref_ids: [] }
-    clearDs(); load()
-  } catch (e: any) { alert(e.response?.data?.detail || '发布失败') }
 }
-async function like(p: any) { await api.post(`/posts/${p.id}/react`, null, { params: { type: 'like' } }); load() }
+function writeUrl() {
+  const q: any = {}
+  if (f.value.group) q.group = f.value.group
+  if (f.value.dataset) q.dataset = f.value.dataset
+  if (f.value.type) q.type = f.value.type
+  if (f.value.status) q.status = f.value.status
+  if (f.value.sort !== 'new') q.sort = f.value.sort
+  router.replace({ query: q })
+}
 
-async function toggleComments(p: any) {
-  if (cstate.value[p.id]?.open) { cstate.value[p.id].open = false; return }
-  cstate.value[p.id] = { open: true, list: [], input: '', replyTo: null }
-  await loadComments(p.id)
+const composerOpen = ref(false); const editing = ref<any>(null)
+function openCompose() { editing.value = null; composerOpen.value = true }
+function onEdit(post: any) { editing.value = post; composerOpen.value = true }
+
+async function load() {
+  loading.value = true
+  try {
+    const params: any = { sort: f.value.sort }
+    if (f.value.group) params.group_id = f.value.group
+    if (f.value.dataset) params.dataset_id = f.value.dataset
+    if (f.value.type) params.post_type = f.value.type
+    if (f.value.status) params.status = f.value.status
+    posts.value = (await api.get('/posts', { params })).data
+  } finally { loading.value = false }
 }
-async function loadComments(pid: number) {
-  cstate.value[pid].list = (await api.get(`/posts/${pid}/comments`)).data
+async function loadHot() { hot.value = (await api.get('/posts/hot', { params: { range: hotRange.value } })).data }
+async function loadScopes() {
+  try {
+    const r = (await api.get('/me/collab-scopes')).data
+    myGroups.value = r.groups || []; myDatasets.value = r.datasets || []
+  } catch {}
 }
-function topComments(pid: number) { return (cstate.value[pid]?.list || []).filter((c: any) => !c.parent_id) }
-function replies(pid: number, id: number) { return (cstate.value[pid]?.list || []).filter((c: any) => c.parent_id === id) }
-async function sendComment(pid: number) {
-  const s = cstate.value[pid]
-  if (!s.input.trim()) return
-  await api.post(`/posts/${pid}/comments`, { content: s.input.trim(), parent_id: s.replyTo?.id || null })
-  s.input = ''; s.replyTo = null; loadComments(pid)
+
+onMounted(async () => { readUrl(); await Promise.all([load(), loadHot(), loadScopes()]) })
+watch(hotRange, loadHot)
+
+// 右栏层级：选中课题组后，数据集只显示该组下的
+const datasetsForFilter = computed(() =>
+  f.value.group ? myDatasets.value.filter(d => d.group_id === f.value.group) : myDatasets.value)
+
+function setGroup(id: number | null) { f.value.group = id; f.value.dataset = null; apply() }
+function setDataset(id: number | null) {
+  f.value.dataset = id
+  if (id) { const d = myDatasets.value.find(x => x.id === id); if (d?.group_id) f.value.group = d.group_id }
+  apply()
 }
-async function delComment(pid: number, c: any) {
-  if (!confirm('删除该评论？')) return
-  await api.delete(`/comments/${c.id}`); loadComments(pid)
-}
+function setType(v: string | null) { f.value.type = f.value.type === v ? null : v; apply() }
+function setStatus(v: string | null) { f.value.status = f.value.status === v ? null : v; apply() }
+function setSort(v: string) { f.value.sort = v; apply() }
+function clearFilters() { f.value = { group: null, dataset: null, type: null, status: null, sort: f.value.sort }; apply() }
+function apply() { writeUrl(); load() }
+
+const activeChips = computed(() => {
+  const chips: any[] = []
+  if (f.value.group) chips.push({ k: 'group', label: '课题组：' + (myGroups.value.find(g => g.id === f.value.group)?.name || f.value.group) })
+  if (f.value.dataset) chips.push({ k: 'dataset', label: '数据集：' + (myDatasets.value.find(d => d.id === f.value.dataset)?.name || f.value.dataset) })
+  if (f.value.type) chips.push({ k: 'type', label: TYPES.find(x => x.v === f.value.type)?.label })
+  if (f.value.status) chips.push({ k: 'status', label: f.value.status === 'open' ? '仅未解决' : f.value.status })
+  return chips
+})
+function removeChip(k: string) { (f.value as any)[k] = null; if (k === 'group') f.value.dataset = null; apply() }
+
+function onSaved() { load(); loadHot() }
+function onDeleted(id: number) { posts.value = posts.value.filter(p => p.id !== id); loadHot() }
 </script>
 <template>
-  <h1 class="text-2xl mb-4">{{ t('nav.feed') }}</h1>
-  <div class="card mb-6">
-    <textarea v-model="form.content_zh" class="input" placeholder="分享一个研究想法 / 发起一段讨论…"></textarea>
-    <div class="grid md:grid-cols-2 gap-2 mt-2">
-      <ScopeSelector v-model="scope" />
-      <div>
-        <label class="label-cap">标签</label>
-        <input v-model="form.tags" class="input" placeholder="标签（逗号分隔，如 COD）" />
-        <!-- 关联数据集（可选，自动匹配）-->
-        <label class="label-cap mt-2">关联数据集（可选）</label>
-        <div class="relative">
-          <div v-if="dsLinked" class="flex items-center gap-2 text-sm">
-            <span class="tag border-accent text-accent">🔗 {{ dsLinked.name }}（ID {{ dsLinked.id }}）</span>
-            <button class="text-accent2 text-xs" @click="clearDs">取消关联</button>
-          </div>
-          <template v-else>
-            <input v-model="dsQuery" class="input" placeholder="输入关键词自动匹配数据集" @input="onDsInput" />
-            <div v-if="dsResults.length" class="absolute z-10 left-0 right-0 bg-white border border-line rounded mt-1 max-h-40 overflow-y-auto shadow">
-              <button v-for="d in dsResults" :key="d.id" class="w-full text-left px-3 py-1.5 text-sm hover:bg-paper"
-                @click="pickDs(d)">{{ d.name }} <span class="text-gray-400 text-xs">ID {{ d.id }}</span></button>
-            </div>
-          </template>
-        </div>
-      </div>
-    </div>
-    <div class="flex justify-end mt-2"><button class="btn-primary" @click="submit">{{ t('feed.post') }}</button></div>
+  <div class="flex items-center justify-between mb-4">
+    <h1 class="text-2xl">{{ t('nav.feed') }}</h1>
+    <button class="btn-primary" @click="openCompose">＋发布讨论</button>
   </div>
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-    <div v-for="p in posts" :key="p.id" class="card">
-      <div class="flex items-center gap-2 text-sm">
-        <Icon name="bulb" class="ico text-accent" />
-        <router-link :to="`/users/${p.author_id}`" class="text-accent hover:underline">{{ p.author_name }}</router-link>
-        <span class="tag ml-auto">{{ p.scope_label || p.visibility }}</span>
+
+  <div class="grid grid-cols-1 lg:grid-cols-[220px_1fr_220px] gap-5 items-start">
+    <!-- 左：研究热榜 -->
+    <aside class="hidden lg:block lg:sticky lg:top-4">
+      <div class="card p-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="font-medium text-sm">🔥 研究热榜</span>
+        </div>
+        <div class="flex gap-1 mb-2 text-xs">
+          <button v-for="r in [['24h','24小时'],['7d','7天'],['all','全部']]" :key="r[0]"
+            :class="['px-2 py-0.5 rounded', hotRange===r[0] ? 'bg-accent text-white' : 'bg-paper text-gray-500']"
+            @click="hotRange=r[0]">{{ r[1] }}</button>
+        </div>
+        <ol class="space-y-2">
+          <li v-for="(h,i) in hot" :key="h.id" class="text-sm flex gap-2">
+            <span :class="['font-mono w-4 shrink-0', i<3 ? 'text-accent2 font-bold' : 'text-gray-400']">{{ i+1 }}</span>
+            <router-link :to="`/feed?post=${h.id}`" class="hover:text-accent line-clamp-2 leading-snug">{{ h.title }}
+              <span class="block text-[11px] text-gray-400">♥{{ h.likes }} · 💬{{ h.comment_count }}</span>
+            </router-link>
+          </li>
+        </ol>
+        <p v-if="!hot.length" class="text-xs text-gray-400">暂无热门讨论。</p>
       </div>
-      <p class="mt-2 text-sm">{{ p.content_zh }}</p>
-      <router-link v-if="p.dataset_slug" :to="`/datasets/${p.dataset_slug}`"
-        class="inline-flex items-center gap-1 mt-2 text-xs text-accent hover:underline">
-        🔗 关联数据集：{{ p.dataset_name }} ↗
-      </router-link>
-      <div class="mt-2 flex items-center gap-2">
-        <span v-for="tag in p.tags" :key="tag" class="tag">{{ tag }}</span>
-        <button class="text-xs text-gray-500 ml-auto hover:text-accent" @click="toggleComments(p)">
-          评论{{ cstate[p.id]?.open ? ' ▲' : ' ▼' }}</button>
-        <button class="text-xs text-gray-500 hover:text-accent" @click="like(p)">♥ {{ p.likes }}</button>
+    </aside>
+
+    <!-- 中：信息流 -->
+    <main>
+      <!-- 排序 + 已选筛选 chip -->
+      <div class="flex items-center gap-2 mb-3 flex-wrap">
+        <div class="flex gap-1 text-sm">
+          <button :class="['px-3 py-1 rounded-full', f.sort==='new' ? 'bg-accent text-white' : 'bg-paper text-gray-600']" @click="setSort('new')">最新</button>
+          <button :class="['px-3 py-1 rounded-full', f.sort==='hot' ? 'bg-accent text-white' : 'bg-paper text-gray-600']" @click="setSort('hot')">最热</button>
+        </div>
+        <template v-for="c in activeChips" :key="c.k">
+          <span class="tag flex items-center gap-1">{{ c.label }}
+            <button class="text-accent2" @click="removeChip(c.k)">×</button></span>
+        </template>
+        <button v-if="activeChips.length" class="text-xs text-gray-400 hover:text-accent2" @click="clearFilters">清除全部</button>
       </div>
 
-      <!-- 评论区（含评论的评论）-->
-      <div v-if="cstate[p.id]?.open" class="mt-3 border-t border-line pt-3">
-        <div v-for="c in topComments(p.id)" :key="c.id" class="mb-2.5">
-          <div class="text-sm"><span class="text-accent">{{ c.user_name }}</span>
-            <span class="text-gray-400 text-xs ml-2">{{ (c.created_at||'').slice(0,16).replace('T',' ') }}</span></div>
-          <p class="text-sm text-gray-700">{{ c.content }}</p>
-          <div class="flex gap-2 text-xs mt-0.5">
-            <button class="text-gray-500 hover:text-accent" @click="cstate[p.id].replyTo=c">回复</button>
-            <button v-if="c.user_id===auth.user?.id" class="text-gray-400 hover:text-accent2" @click="delComment(p.id,c)">删除</button>
-          </div>
-          <!-- 回复列表 -->
-          <div v-for="r in replies(p.id, c.id)" :key="r.id" class="ml-4 mt-1.5 pl-3 border-l-2 border-line">
-            <div class="text-sm"><span class="text-accent">{{ r.user_name }}</span>
-              <span class="text-gray-400 text-xs ml-2">{{ (r.created_at||'').slice(0,16).replace('T',' ') }}</span></div>
-            <p class="text-sm text-gray-700">{{ r.content }}</p>
-            <button v-if="r.user_id===auth.user?.id" class="text-gray-400 hover:text-accent2 text-xs" @click="delComment(p.id,r)">删除</button>
-          </div>
-        </div>
-        <p v-if="!topComments(p.id).length" class="text-gray-400 text-xs mb-2">还没有评论，来说两句。</p>
+      <p v-if="loading" class="text-gray-400 text-sm">加载中…</p>
+      <PostCard v-for="p in posts" :key="p.id" :post="p" :current-user-id="auth.user?.id"
+        @edit="onEdit" @deleted="onDeleted" @changed="load" />
+      <p v-if="!loading && !posts.length" class="text-gray-400 text-sm">还没有符合条件的讨论。换个筛选，或发布第一条。</p>
+    </main>
 
-        <div v-if="cstate[p.id].replyTo" class="text-xs text-gray-500 mb-1">回复 @{{ cstate[p.id].replyTo.user_name }}
-          <button class="text-accent2 ml-1" @click="cstate[p.id].replyTo=null">取消</button></div>
-        <div class="flex gap-2">
-          <input v-model="cstate[p.id].input" class="input text-sm" placeholder="写评论…" @keyup.enter="sendComment(p.id)" />
-          <button class="btn-primary text-sm" @click="sendComment(p.id)">发送</button>
+    <!-- 右：分类筛选 -->
+    <aside class="hidden lg:block lg:sticky lg:top-4">
+      <div class="card p-3">
+        <div class="label-cap mb-1.5">按类型</div>
+        <div class="flex flex-wrap gap-1 mb-3">
+          <button v-for="tp in TYPES" :key="tp.v"
+            :class="['text-xs px-2 py-0.5 rounded-full border', f.type===tp.v ? 'bg-accent text-white border-accent' : 'border-line text-gray-600']"
+            @click="setType(tp.v)">{{ tp.label }}</button>
         </div>
+
+        <div class="label-cap mb-1.5">按课题组</div>
+        <div class="space-y-0.5 mb-3">
+          <button :class="['block w-full text-left text-sm px-2 py-1 rounded', !f.group ? 'bg-paper text-accent' : 'hover:bg-paper']" @click="setGroup(null)">全部课题组</button>
+          <button v-for="g in myGroups" :key="g.id"
+            :class="['block w-full text-left text-sm px-2 py-1 rounded truncate', f.group===g.id ? 'bg-paper text-accent' : 'hover:bg-paper']"
+            @click="setGroup(g.id)">{{ g.name }}</button>
+          <p v-if="!myGroups.length" class="text-xs text-gray-400 px-2">暂无课题组</p>
+        </div>
+
+        <div class="label-cap mb-1.5">按数据集<span v-if="f.group" class="text-gray-400">（该组下）</span></div>
+        <div class="space-y-0.5 mb-3">
+          <button :class="['block w-full text-left text-sm px-2 py-1 rounded', !f.dataset ? 'bg-paper text-accent' : 'hover:bg-paper']" @click="setDataset(null)">全部数据集</button>
+          <button v-for="d in datasetsForFilter" :key="d.id"
+            :class="['block w-full text-left text-sm px-2 py-1 rounded truncate', f.dataset===d.id ? 'bg-paper text-accent' : 'hover:bg-paper']"
+            @click="setDataset(d.id)">{{ d.name }}</button>
+          <p v-if="!datasetsForFilter.length" class="text-xs text-gray-400 px-2">暂无数据集</p>
+        </div>
+
+        <div class="label-cap mb-1.5">其他</div>
+        <button :class="['text-xs px-2 py-0.5 rounded-full border', f.status==='open' ? 'bg-accent text-white border-accent' : 'border-line text-gray-600']"
+          @click="setStatus('open')">仅看未解决</button>
+        <button :class="['text-xs px-2 py-0.5 rounded-full border ml-1', f.type==='collab' ? 'bg-accent text-white border-accent' : 'border-line text-gray-600']"
+          @click="setType('collab')">仅看合作招募</button>
       </div>
-    </div>
+    </aside>
   </div>
+
+  <PostComposer v-if="composerOpen" :edit="editing" @close="composerOpen=false" @saved="onSaved" />
 </template>

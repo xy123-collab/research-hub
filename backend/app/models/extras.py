@@ -158,6 +158,16 @@ class AppliedFix(Base):
     note = Column(Text)
 
 
+# ---------- 消息中心未读游标（已读到哪个时间点）----------
+class NotificationState(Base):
+    """每用户一行：last_read_at 之后产生的消息计为未读。
+    「全部已读」把 last_read_at 置为当前时间。跨设备/刷新一致（服务端存储）。"""
+    __tablename__ = "notification_state"
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    last_read_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ---------- 找回密码令牌 ----------
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"

@@ -16,6 +16,10 @@ branch_labels = None
 depends_on = None
 
 
+def _has_table(table: str) -> bool:
+    return table in sa.inspect(op.get_bind()).get_table_names()
+
+
 def _has_column(table: str, column: str) -> bool:
     bind = op.get_bind()
     insp = sa.inspect(bind)
@@ -27,7 +31,9 @@ def _has_column(table: str, column: str) -> bool:
 
 
 def upgrade():
-    if not _has_column("user_profiles", "email"):
+    # user_profiles 是 create_all 建的表；库全新时它此刻可能还不存在，
+    # 交给 create_all 建齐（模型已含 email 列），这里跳过即可。
+    if _has_table("user_profiles") and not _has_column("user_profiles", "email"):
         op.add_column("user_profiles", sa.Column("email", sa.String(length=200), nullable=True))
 
 

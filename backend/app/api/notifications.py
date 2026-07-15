@@ -10,6 +10,7 @@
 
 同一套 build_notifications 供「站内消息中心」与「每日邮件摘要」共用。
 """
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from ..core.db import get_db
@@ -19,13 +20,20 @@ from ..models.group import ResearchGroup, GroupMember, GroupJoinRequest
 from ..models.dataset import Dataset, DatasetMember, JoinRequest, DatasetGroupRequest
 from ..models.access import DownloadRequest
 from ..models.correction import Bug
-from ..models.community import Post, PostComment
+from ..models.community import Post, PostComment, PostReaction, PostFollow
 from ..models.code import CodeScript
 from ..models.curation import CodeComment, CodeVersion
 from ..models.version import DataVersion
 from ..models.workspace import Workspace, WorkspaceMember
+from ..models.extras import NotificationState
 
 router = APIRouter(tags=["notifications"])
+
+
+def _bj(dt):
+    if not dt:
+        return None
+    return (dt + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
 
 # 分类元信息：key -> (中文名, 圆点色)
 CATEGORY_META = {
@@ -45,7 +53,12 @@ def build_notifications(db: Session, user: User) -> dict:
         return u.display_name if u else f"用户#{uid}"
 
     def add(**kw):
+        # at_dt: 真实 datetime，用于未读比较；at: 展示用北京时间字符串
+        at_dt = kw.pop("at_dt", None)
+        if at_dt is not None:
+            kw["at"] = _bj(at_dt)
         kw.setdefault("at", None)
+        kw["_at_dt"] = at_dt
         items.append(kw)
 
     # 我管理的数据集 / 课题组
@@ -177,18 +190,61 @@ def build_notifications(db: Session, user: User) -> dict:
             subtitle=f"「{g.name_zh if g else ''}」",
             link=f"/groups/{g.slug}" if g else "/", sort=m.group_id)
 
-    # ===== interact：我的帖子/代码被评论 =====
-    my_post_ids = [p.id for p in db.query(Post).filter_by(author_id=user.id).all()]
+    # ===== interact：我的帖子被评论/回复/点赞/关注 =====
+    my_posts = db.query(Post).filter_by(author_id=user.id).all()
+    my_post_ids = [p.id for p in my_posts]
+    post_title = {p.id: (p.title or (p.content_zh or "")[:20]) for p in my_posts}
     if my_post_ids:
+        # 评论我的帖子
         for c in db.query(PostComment).filter(
                 PostComment.post_id.in_(my_post_ids),
+                PostComment.parent_id.is_(None),
                 PostComment.user_id != user.id).order_by(
-                PostComment.id.desc()).limit(10).all():
+                PostComment.id.desc()).limit(15).all():
             add(type="post_comment", level="info", category="interact",
                 title="你的帖子有新评论",
                 subtitle=f"{uname(c.user_id)}：{(c.content or '')[:30]}",
-                link="/feed",
-                at=str(c.created_at) if c.created_at else None, sort=c.id)
+                link=f"/feed?post={c.post_id}",
+                at_dt=c.created_at, sort=c.id)
+        # 点赞我的帖子（按帖子合并为一条，避免刷屏）
+        likes = db.query(PostReaction).filter(
+            PostReaction.post_id.in_(my_post_ids),
+            PostReaction.type == "like",
+            PostReaction.user_id != user.id).all()
+        by_post: dict = {}
+        for lk in likes:
+            by_post.setdefault(lk.post_id, []).append(lk)
+        for pid, lst in by_post.items():
+            lst.sort(key=lambda x: x.id, reverse=True)
+            latest = lst[0]; n = len(lst)
+            who = uname(latest.user_id) + (f" 等 {n} 人" if n > 1 else "")
+            add(type="post_like", level="info", category="interact",
+                title="有人赞了你的帖子",
+                subtitle=f"{who}赞了「{post_title.get(pid,'')}」",
+                link=f"/feed?post={pid}",
+                at_dt=getattr(latest, "created_at", None), sort=latest.id)
+        # 关注我的帖子
+        for f in db.query(PostFollow).filter(
+                PostFollow.post_id.in_(my_post_ids),
+                PostFollow.user_id != user.id).order_by(
+                PostFollow.id.desc()).limit(10).all():
+            add(type="post_follow", level="info", category="interact",
+                title="有人关注了你的帖子",
+                subtitle=f"{uname(f.user_id)} 关注了「{post_title.get(f.post_id,'')}」",
+                link=f"/feed?post={f.post_id}",
+                at_dt=f.created_at, sort=f.id)
+    # 回复我的评论
+    my_comment_ids = [c.id for c in db.query(PostComment).filter_by(user_id=user.id).all()]
+    if my_comment_ids:
+        for r in db.query(PostComment).filter(
+                PostComment.parent_id.in_(my_comment_ids),
+                PostComment.user_id != user.id).order_by(
+                PostComment.id.desc()).limit(15).all():
+            add(type="comment_reply", level="info", category="interact",
+                title="有人回复了你的评论",
+                subtitle=f"{uname(r.user_id)}：{(r.content or '')[:30]}",
+                link=f"/feed?post={r.post_id}",
+                at_dt=r.created_at, sort=r.id)
     my_script_ids = [s.id for s in db.query(CodeScript).filter_by(author_id=user.id).all()]
     if my_script_ids:
         for c in db.query(CodeComment).filter(
@@ -201,7 +257,7 @@ def build_notifications(db: Session, user: User) -> dict:
                 title="你的代码有新评论",
                 subtitle=f"{uname(c.user_id)}：{(c.content or '')[:30]}",
                 link=f"/datasets/{d.slug}?tab=code" if d else "/",
-                at=str(c.created_at) if c.created_at else None, sort=c.id)
+                at_dt=c.created_at, sort=c.id)
 
     # ===== collab：被拉入新的工作台 =====
     for m in db.query(WorkspaceMember).filter_by(user_id=user.id).all():
@@ -227,7 +283,7 @@ def build_notifications(db: Session, user: User) -> dict:
                 title="数据集发布了新版本",
                 subtitle=f"「{d.name_zh if d else ''}」{v.version_id}",
                 link=f"/datasets/{d.slug}?tab=versions" if d else "/",
-                at=str(v.release_date) if v.release_date else None, sort=v.id)
+                at_dt=v.release_date, sort=v.id)
         for cv in db.query(CodeVersion).join(
                 CodeScript, CodeScript.id == CodeVersion.script_id).filter(
                 CodeScript.dataset_id.in_(my_ds_ids),
@@ -239,7 +295,7 @@ def build_notifications(db: Session, user: User) -> dict:
                 title="处理代码有新版本",
                 subtitle=f"「{d.name_zh if d else ''}」{cv.version_label or ''}",
                 link=f"/datasets/{d.slug}?tab=code" if d else "/",
-                at=str(cv.created_at) if cv.created_at else None, sort=cv.id)
+                at_dt=cv.created_at, sort=cv.id)
     if my_grp_ids:
         for d in db.query(Dataset).filter(
                 Dataset.group_id.in_(my_grp_ids),
@@ -256,17 +312,45 @@ def build_notifications(db: Session, user: User) -> dict:
     infos.sort(key=lambda x: (x.get("at") or "", x["sort"]), reverse=True)
     ordered = actions + infos
 
+    # 未读：已读游标 last_read_at 之后产生的「互动/发布类」消息计为未读；
+    # 待办(action)始终计入需处理数。徽标 = 待办数 + 未读互动数。
+    st = db.get(NotificationState, user.id)
+    last_read = st.last_read_at if st else None
+    unread_interactions = 0
+    for i in ordered:
+        dt = i.get("_at_dt")
+        i["unread"] = bool(dt and (last_read is None or dt > last_read))
+        if i["level"] == "info" and i["unread"]:
+            unread_interactions += 1
+        i.pop("_at_dt", None)
+
     # 按分类分组（保持 CATEGORY_META 顺序）
     groups = []
     for key, meta in CATEGORY_META.items():
         g_items = [i for i in ordered if i.get("category") == key]
         if g_items:
             groups.append({"key": key, "name": meta["name"], "color": meta["color"],
-                           "count": len(g_items), "items": g_items})
-    return {"action_count": len(actions), "items": ordered, "groups": groups,
+                           "count": len(g_items),
+                           "unread": sum(1 for x in g_items if x.get("unread")),
+                           "items": g_items})
+    badge = len(actions) + unread_interactions
+    return {"action_count": len(actions), "unread_count": unread_interactions,
+            "badge_count": badge, "items": ordered, "groups": groups,
             "category_meta": CATEGORY_META}
 
 
 @router.get("/notifications")
 def notifications(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return build_notifications(db, user)
+
+
+@router.post("/notifications/mark-read")
+def mark_read(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """全部已读：把已读游标推进到当前时间，互动类未读清零（待办仍保留直至处理）。"""
+    st = db.get(NotificationState, user.id)
+    if not st:
+        st = NotificationState(user_id=user.id); db.add(st)
+    st.last_read_at = datetime.utcnow()
+    st.updated_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True}

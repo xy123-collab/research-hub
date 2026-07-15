@@ -10,15 +10,20 @@ import Icon from './Icon.vue'
 const router = useRouter()
 const open = ref(false)
 const groups = ref<any[]>([])
-const actionCount = ref(0)
+const badgeCount = ref(0)
+
 let timer: any = null
 
 async function load() {
   try {
     const r = (await api.get('/notifications')).data
     groups.value = r.groups || []
-    actionCount.value = r.action_count || 0
+    badgeCount.value = r.badge_count || 0
   } catch { /* 未登录时静默 */ }
+}
+
+async function markAllRead() {
+  try { await api.post('/notifications/mark-read'); await load() } catch {}
 }
 
 function go(it: any) {
@@ -26,7 +31,7 @@ function go(it: any) {
   if (it.link) router.push(it.link)
 }
 
-const badge = computed(() => actionCount.value > 99 ? '99+' : String(actionCount.value))
+const badge = computed(() => badgeCount.value > 99 ? '99+' : String(badgeCount.value))
 const hasAny = computed(() => groups.value.some(g => g.items?.length))
 
 onMounted(() => {
@@ -39,10 +44,10 @@ defineExpose({ load })
 
 <template>
   <div>
-    <!-- 悬浮铃铛 -->
-    <button class="notif-fab" @click="open = !open" :title="'消息 (' + actionCount + ')'">
+    <!-- 悬浮铃铛（未读用红色圆形数字角标）-->
+    <button class="notif-fab" @click="open = !open" :title="'消息 (' + badgeCount + ')'">
       <Icon name="bell" class="ico" style="width:22px;height:22px" />
-      <span v-if="actionCount > 0" class="notif-badge">{{ badge }}</span>
+      <span v-if="badgeCount > 0" class="notif-badge">{{ badge }}</span>
     </button>
 
     <!-- 面板 -->
@@ -51,6 +56,7 @@ defineExpose({ load })
         <div class="notif-head">
           <span class="font-medium">消息中心</span>
           <div class="flex items-center gap-2">
+            <button class="text-xs text-gray-500 hover:text-accent" @click="markAllRead">全部已读</button>
             <button class="text-xs text-gray-500 hover:text-accent" @click="load">刷新</button>
             <button class="text-gray-400" @click="open = false">
               <Icon name="close" class="ico" style="width:16px;height:16px" />
@@ -66,11 +72,15 @@ defineExpose({ load })
           <template v-for="g in groups" :key="g.key">
             <div class="notif-section" :style="{ color: g.color }">
               {{ g.name }}（{{ g.count }}）
+              <span v-if="g.unread" class="notif-unread-pill">{{ g.unread > 99 ? '99+' : g.unread }} 未读</span>
             </div>
-            <button v-for="(it, i) in g.items" :key="g.key + i" class="notif-item" @click="go(it)">
+            <button v-for="(it, i) in g.items" :key="g.key + i" class="notif-item"
+              :class="{ 'notif-item-unread': it.unread }" @click="go(it)">
               <span class="dot mt-1.5" :style="{ background: g.color }"></span>
               <span class="min-w-0 flex-1 text-left">
-                <span class="block text-sm text-gray-800">{{ it.title }}</span>
+                <span class="block text-sm text-gray-800">{{ it.title }}
+                  <span v-if="it.unread" class="notif-new">新</span>
+                  <span v-if="it.at" class="text-[11px] text-gray-400 font-normal ml-1">{{ it.at }}</span></span>
                 <span class="block text-xs text-gray-500 truncate">{{ it.subtitle }}</span>
               </span>
               <span v-if="it.level === 'action'" class="notif-cta">去处理</span>
@@ -121,5 +131,15 @@ defineExpose({ load })
 .notif-cta {
   font-size: 11px; color: var(--accent); border: 1px solid var(--accent);
   border-radius: 6px; padding: 2px 6px; white-space: nowrap; align-self: center;
+}
+.notif-item-unread { background: #f5f8ff; }
+.notif-item-unread:hover { background: #eef3fe; }
+.notif-unread-pill {
+  float: right; background: #c0392b; color: #fff; border-radius: 9999px;
+  font-size: 10px; padding: 0 6px; line-height: 16px;
+}
+.notif-new {
+  display: inline-block; background: #c0392b; color: #fff; font-size: 10px;
+  border-radius: 4px; padding: 0 4px; margin-left: 4px; vertical-align: middle;
 }
 </style>

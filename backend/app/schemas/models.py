@@ -91,6 +91,9 @@ class CodeBugIn(BaseModel):
 # -------- post / project --------
 class PostIn(BaseModel):
     content_zh: str; content_en: str | None = None
+    title: str | None = None
+    post_type: str = "discussion"         # question|data|method|collab|discussion
+    status: str | None = None             # open|resolved|closed
     dataset_id: int | None = None; group_id: int | None = None
     visibility: str = "platform"; cover_icon: str | None = None
     tags: list[str] = []

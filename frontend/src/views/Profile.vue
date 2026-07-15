@@ -6,13 +6,18 @@ import { useAuth } from '../stores/auth'
 import api from '../api'
 import Icon from '../components/Icon.vue'
 import ScopeSelector from '../components/ScopeSelector.vue'
+import PostCard from '../components/PostCard.vue'
+import PostComposer from '../components/PostComposer.vue'
 
 const route = useRoute(); const router = useRouter(); const { t } = useI18n(); const auth = useAuth()
 const uid = ref<number>(0)
 const profile = ref<any>(null); const tab = ref('projects')
-const projects = ref<any[]>([]); const contrib = ref<any>({ total: 0, events: [] })
+const projects = ref<any[]>([]); const contrib = ref<any>({ total: 0, breakdown: [], events: [], hidden_count: 0 })
 const resume = ref<any>({ blocks: [] }); const workspaces = ref<any[]>([])
 const isMe = ref(false)
+// 我的讨论
+const myPosts = ref<any[]>([]); const postFilter = ref<any>({ scope: '', status: '' })
+const discussComposerOpen = ref(false); const discussEditing = ref<any>(null)
 
 onMounted(load)
 watch(() => route.params.id, load)
@@ -25,11 +30,27 @@ async function load() {
   projects.value = (await api.get('/projects', { params: { author_id: uid.value } })).data
   resume.value = (await api.get(`/users/${uid.value}/resume`)).data
   if (route.query.tab) tab.value = String(route.query.tab)
+  // 贡献度：本人看完整明细，他人看公开汇总 + 有权限的明细
+  contrib.value = (await api.get(`/users/${uid.value}/contributions`)).data
+  await loadMyPosts()
   if (isMe.value) {
-    contrib.value = (await api.get('/me/contributions')).data
     workspaces.value = (await api.get('/workspaces')).data
   }
 }
+
+async function loadMyPosts() {
+  const params: any = { author_id: uid.value }
+  if (postFilter.value.scope) params.scope = postFilter.value.scope
+  if (postFilter.value.status) params.status = postFilter.value.status
+  myPosts.value = (await api.get('/posts', { params })).data
+}
+function setPostFilter(key: string, val: string) {
+  postFilter.value[key] = postFilter.value[key] === val ? '' : val
+  loadMyPosts()
+}
+function openDiscussCompose() { discussEditing.value = null; discussComposerOpen.value = true }
+function onDiscussEdit(post: any) { discussEditing.value = post; discussComposerOpen.value = true }
+function onDiscussDeleted(id: number) { myPosts.value = myPosts.value.filter(p => p.id !== id) }
 
 // ==================== 图片压缩（上传前，显著提速）====================
 // 大照片在浏览器端先等比缩小 + 转 JPEG，再上传，减少体积、提升丝滑度。
@@ -407,7 +428,7 @@ async function removeWsMember(m: any) {
     </div>
 
     <div class="flex gap-1 border-b border-line mt-5 text-sm">
-      <button v-for="[k,l] in [['projects','在做的项目'],['contrib','我的贡献'],['resume','个人简历'],['ws','项目工作台']]"
+      <button v-for="[k,l] in [['projects','在做的项目'],['discuss','我的讨论'],['contrib','我的贡献'],['resume','个人简历'],['ws','项目工作台']]"
         :key="k" @click="tab=k as string" :class="['px-3 py-2', tab===k?'border-b-2 border-accent text-accent':'text-gray-500']">
         {{ l }}
       </button>
@@ -437,14 +458,21 @@ async function removeWsMember(m: any) {
         </div>
       </div>
 
-      <!-- 我的贡献 -->
+      <!-- 我的贡献（本人看完整明细；他人看公开汇总 + 有权限的明细）-->
       <div v-else-if="tab==='contrib'">
         <div class="card">
-          <div class="label-cap">总贡献度 {{ contrib.total }}</div>
-          <table class="w-full text-sm mt-2">
+          <div class="flex items-baseline gap-3 flex-wrap">
+            <div><span class="label-cap">总贡献度</span>
+              <span class="text-2xl font-serif ml-1">{{ contrib.total }}</span></div>
+            <div class="flex flex-wrap gap-2">
+              <span v-for="b in contrib.breakdown" :key="b.label" class="tag" style="background:#eef2f8;color:#2d4a7c">
+                {{ b.label }} {{ b.count }} 次</span>
+            </div>
+          </div>
+          <table class="w-full text-sm mt-3">
             <tr v-for="(e,i) in contrib.events" :key="i" class="border-t border-line"
               :class="e.dataset_slug ? 'hover:bg-paper cursor-pointer' : ''" @click="gotoContrib(e)">
-              <td class="py-1.5"><span class="tag">{{ e.type }}</span></td>
+              <td class="py-1.5"><span class="tag">{{ e.category || e.type }}</span></td>
               <td>
                 <span v-if="e.dataset_name" class="text-accent inline-flex items-center gap-1">
                   <Icon name="chart" class="ico" style="width:13px;height:13px" />{{ e.dataset_name }}
@@ -458,8 +486,26 @@ async function removeWsMember(m: any) {
               </td>
             </tr>
           </table>
-          <p v-if="!contrib.events.length" class="text-gray-400 text-sm mt-2">暂无贡献记录。</p>
+          <p v-if="contrib.hidden_count" class="text-gray-400 text-sm mt-2">另有 {{ contrib.hidden_count }} 项非公开贡献（来自你无权访问的数据集/内部内容）。</p>
+          <p v-if="!contrib.events.length && !contrib.hidden_count" class="text-gray-400 text-sm mt-2">暂无贡献记录。</p>
         </div>
+      </div>
+
+      <!-- 我的讨论（与研究广场同一套帖子，改动即时同步）-->
+      <div v-else-if="tab==='discuss'">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex flex-wrap gap-1 text-xs">
+            <button v-for="s in [['','全部'],['public','公开'],['group','课题组可见'],['dataset','数据集可见']]" :key="s[0]"
+              :class="['px-2.5 py-1 rounded-full border', postFilter.scope===s[0] ? 'bg-accent text-white border-accent' : 'border-line text-gray-600']"
+              @click="postFilter.scope!==s[0] ? (postFilter.scope=s[0], loadMyPosts()) : null">{{ s[1] }}</button>
+            <button :class="['px-2.5 py-1 rounded-full border', postFilter.status==='resolved' ? 'bg-accent text-white border-accent' : 'border-line text-gray-600']"
+              @click="setPostFilter('status','resolved')">已解决</button>
+          </div>
+          <button v-if="isMe" class="btn-primary text-sm" @click="openDiscussCompose">＋发布讨论</button>
+        </div>
+        <PostCard v-for="p in myPosts" :key="p.id" :post="p" :current-user-id="auth.user?.id"
+          @edit="onDiscussEdit" @deleted="onDiscussDeleted" @changed="loadMyPosts" />
+        <p v-if="!myPosts.length" class="text-gray-400 text-sm">{{ isMe ? '你还没有发布讨论，点「发布讨论」开始。' : '该用户暂无公开讨论。' }}</p>
       </div>
 
       <!-- 个人简历 -->
@@ -753,5 +799,9 @@ async function removeWsMember(m: any) {
         </div>
       </div>
     </div>
+
+    <!-- ============ 发布/编辑讨论 ============ -->
+    <PostComposer v-if="discussComposerOpen" :edit="discussEditing"
+      @close="discussComposerOpen=false" @saved="loadMyPosts" />
   </div>
 </template>

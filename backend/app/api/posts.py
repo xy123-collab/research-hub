@@ -7,61 +7,179 @@ from ..core.audit import record_contribution
 from ..models.user import User
 from ..models.group import GroupMember
 from ..models.community import (Post, PostTag, PostReaction, PostComment, PostAdminFlag,
-                                Project, ProjectTag)
+                                PostAttachment, PostFollow, Project, ProjectTag)
 from ..schemas.models import PostIn, CommentIn, ProjectIn
 
 router = APIRouter(tags=["community"])
 
+# 讨论类型：key -> 中文名
+POST_TYPES = {
+    "question": "研究问题", "data": "数据问题", "method": "方法讨论",
+    "collab": "合作招募", "discussion": "自由讨论",
+}
+
+
+def _bj(dt):
+    if not dt:
+        return None
+    from datetime import timedelta
+    return (dt + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+
+
+def _comment_count(db: Session, pid: int) -> int:
+    """帖子评论数：一级评论 + 回复总数（删除的评论已物理删除，不计入）。"""
+    return db.query(PostComment).filter_by(post_id=pid).count()
+
+
+def _hot_score(likes: int, comments: int, commenters: int, created_at) -> float:
+    """热度 = 点赞 + 3×评论 + 2×独立参与人数，再乘时间衰减（半衰期约3天）。"""
+    import math
+    from datetime import datetime
+    base = likes + 3 * comments + 2 * commenters
+    age_h = 0.0
+    if created_at:
+        age_h = max(0.0, (datetime.utcnow() - created_at).total_seconds() / 3600.0)
+    decay = math.pow(0.5, age_h / 72.0)   # 72h 半衰期
+    return base * decay
+
+
+def _post_visible(db, p, user, my_groups) -> bool:
+    from ..core.scopes import scope_visible, get_scopes
+    sc = get_scopes(db, "post", p.id)
+    if sc:
+        return scope_visible(db, "post", p.id, p.author_id, user)
+    if p.visibility == "private" and p.author_id != user.id and not is_super_admin(user):
+        return False
+    if p.visibility == "group" and p.group_id not in my_groups \
+            and p.author_id != user.id and not is_super_admin(user):
+        return False
+    return True
+
+
+def _serialize_post(db, p, user, *, detail=False, likes=None, comments=None,
+                    commenters=None):
+    from ..core.scopes import scope_summary
+    from ..models.dataset import Dataset
+    from ..models.group import ResearchGroup
+    _sum = scope_summary(db, "post", p.id)
+    ds_slug = ds_name = None
+    if p.dataset_id:
+        dsx = db.get(Dataset, p.dataset_id)
+        if dsx:
+            ds_slug = dsx.slug; ds_name = dsx.name_zh
+    grp_slug = grp_name = None
+    if p.group_id:
+        g = db.get(ResearchGroup, p.group_id)
+        if g:
+            grp_slug = g.slug; grp_name = g.name_zh
+    tags = [t.tag for t in db.query(PostTag).filter_by(post_id=p.id).all()]
+    if likes is None:
+        likes = db.query(PostReaction).filter_by(post_id=p.id, type="like").count()
+    if comments is None:
+        comments = _comment_count(db, p.id)
+    liked = db.query(PostReaction).filter_by(
+        post_id=p.id, user_id=user.id, type="like").first() is not None
+    followed = db.query(PostFollow).filter_by(
+        post_id=p.id, user_id=user.id).first() is not None
+    author = db.get(User, p.author_id)
+    body = p.content_zh or ""
+    summary = body if (detail or len(body) <= 140) else body[:140] + "…"
+    return {
+        "id": p.id, "author_id": p.author_id,
+        "author_name": author.display_name if author else "",
+        "author_avatar": author.avatar if author else None,
+        "title": p.title, "post_type": p.post_type or "discussion",
+        "post_type_label": POST_TYPES.get(p.post_type or "discussion", "讨论"),
+        "status": p.status or "open",
+        "content_zh": summary, "full_content": body if detail else None,
+        "truncated": (not detail) and len(body) > 140,
+        "visibility": p.visibility,
+        "dataset_id": p.dataset_id, "dataset_slug": ds_slug, "dataset_name": ds_name,
+        "group_id": p.group_id, "group_slug": grp_slug, "group_name": grp_name,
+        "cover_icon": p.cover_icon,
+        "scope": _sum["scope"], "scope_label": _sum["label"],
+        "tags": tags, "likes": likes, "liked": liked,
+        "comment_count": comments, "followed": followed,
+        "created_at": _bj(p.created_at),
+        "can_edit": p.author_id == user.id,
+        "can_delete": p.author_id == user.id or is_super_admin(user),
+    }
+
 
 @router.get("/posts")
-def feed(dataset_id: int | None = None, db: Session = Depends(get_db),
-         user: User = Depends(get_current_user)):
-    from ..core.scopes import scope_visible, get_scopes, scope_summary
+def feed(dataset_id: int | None = None, group_id: int | None = None,
+         author_id: int | None = None, post_type: str | None = None,
+         status: str | None = None, scope: str | None = None,
+         sort: str = "new", range: str = "all", limit: int = 100,
+         db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """统一帖子流。研究广场/数据集讨论区/课题组/个人主页共享同一份数据，
+    只是默认筛选不同。支持按 组/集/类型/状态/作者 筛选，按 new|hot 排序。"""
+    from datetime import datetime, timedelta
     my_groups = {m.group_id for m in db.query(GroupMember)
                  .filter_by(user_id=user.id, status="active").all()}
     q = db.query(Post)
     if dataset_id:
         q = q.filter_by(dataset_id=dataset_id)
+    if group_id:
+        q = q.filter_by(group_id=group_id)
+    if author_id:
+        q = q.filter_by(author_id=author_id)
+    if post_type:
+        q = q.filter_by(post_type=post_type)
+    if status:
+        q = q.filter_by(status=status)
+    since = None
+    if range == "24h":
+        since = datetime.utcnow() - timedelta(hours=24)
+    elif range == "7d":
+        since = datetime.utcnow() - timedelta(days=7)
+    rows = q.order_by(Post.id.desc()).limit(600).all()
     out = []
-    for p in q.order_by(Post.id.desc()).limit(200).all():
-        # 优先用统一可见范围 ContentScope；无记录时回退旧 visibility 三级
-        sc = get_scopes(db, "post", p.id)
-        if sc:
-            if not scope_visible(db, "post", p.id, p.author_id, user):
-                continue
-        else:
-            if p.visibility == "private" and p.author_id != user.id and not is_super_admin(user):
-                continue
-            if p.visibility == "group" and p.group_id not in my_groups \
-                    and p.author_id != user.id and not is_super_admin(user):
-                continue
-        _sum = scope_summary(db, "post", p.id)
-        ds_slug = ds_name = None
-        if p.dataset_id:
-            from ..models.dataset import Dataset
-            dsx = db.get(Dataset, p.dataset_id)
-            if dsx:
-                ds_slug = dsx.slug; ds_name = dsx.name_zh
-        tags = [t.tag for t in db.query(PostTag).filter_by(post_id=p.id).all()]
+    for p in rows:
+        if since and p.created_at and p.created_at < since:
+            continue
+        if not _post_visible(db, p, user, my_groups):
+            continue
         likes = db.query(PostReaction).filter_by(post_id=p.id, type="like").count()
-        author = db.get(User, p.author_id)
-        out.append({"id": p.id, "author_id": p.author_id,
-                    "author_name": author.display_name if author else "",
-                    "content_zh": p.content_zh, "visibility": p.visibility,
-                    "dataset_id": p.dataset_id, "cover_icon": p.cover_icon,
-                    "scope": _sum["scope"], "scope_label": _sum["label"],
-                    "dataset_slug": ds_slug, "dataset_name": ds_name,
-                    "tags": tags, "likes": likes})
+        comments = _comment_count(db, p.id)
+        commenters = db.query(PostComment.user_id).filter_by(
+            post_id=p.id).distinct().count()
+        item = _serialize_post(db, p, user, likes=likes, comments=comments)
+        if scope and item["scope"] != scope:
+            continue
+        item["_hot"] = _hot_score(likes, comments, commenters, p.created_at)
+        out.append(item)
+    if sort == "hot":
+        out.sort(key=lambda x: x["_hot"], reverse=True)
+    else:
+        out.sort(key=lambda x: x["id"], reverse=True)
+    out = out[:min(limit, 300)]
+    for it in out:
+        it.pop("_hot", None)
     return out
+
+
+@router.get("/posts/hot")
+def hot_posts(range: str = "7d", limit: int = 10, db: Session = Depends(get_db),
+              user: User = Depends(get_current_user)):
+    """研究热榜：综合点赞/评论/参与人数 + 时间衰减，返回精简条目。"""
+    items = feed(sort="hot", range=range, limit=limit, db=db, user=user)
+    return [{"id": i["id"], "title": i["title"] or (i["content_zh"] or "")[:40],
+             "author_name": i["author_name"], "likes": i["likes"],
+             "comment_count": i["comment_count"], "post_type_label": i["post_type_label"]}
+            for i in items]
 
 
 @router.post("/posts")
 def create_post(body: PostIn, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
     from ..core.scopes import set_scope
-    # 兼容旧字段：由统一 scope 推导 legacy visibility
+    if not (body.content_zh or "").strip() and not (body.title or "").strip():
+        raise HTTPException(400, "标题或正文至少填一项")
     legacy = {"public": "platform", "self": "private"}.get(body.scope, "group")
     p = Post(author_id=user.id, content_zh=body.content_zh, content_en=body.content_en,
+             title=(body.title or None), post_type=body.post_type or "discussion",
+             status=body.status or "open",
              dataset_id=body.dataset_id, group_id=body.group_id,
              visibility=legacy, cover_icon=body.cover_icon)
     db.add(p); db.flush()
@@ -70,22 +188,59 @@ def create_post(body: PostIn, db: Session = Depends(get_db),
         set_scope(db, "post", p.id, body.scope, refs, user)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    for t in body.tags:
-        db.add(PostTag(post_id=p.id, tag=t))
+    for tg in body.tags:
+        if (tg or "").strip():
+            db.add(PostTag(post_id=p.id, tag=tg.strip()))
     record_contribution(db, user.id, "post", "post", p.id, body.dataset_id, weight=1)
     db.commit()
     return {"id": p.id}
 
 
-@router.patch("/posts/{pid}")
-def edit_post(pid: int, body: PostIn, db: Session = Depends(get_db),
-              user: User = Depends(get_current_user)):
+@router.get("/posts/{pid}")
+def get_post(pid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     p = db.get(Post, pid)
     if not p:
         raise HTTPException(404, "帖子不存在")
-    if p.author_id != user.id:
+    my_groups = {m.group_id for m in db.query(GroupMember)
+                 .filter_by(user_id=user.id, status="active").all()}
+    if not _post_visible(db, p, user, my_groups):
+        raise HTTPException(403, "无权查看该讨论")
+    item = _serialize_post(db, p, user, detail=True)
+    item["attachments"] = [
+        {"id": a.id, "file_name": a.file_name, "size": a.size,
+         "url": f"/api/posts/{pid}/attachments/{a.id}/download"}
+        for a in db.query(PostAttachment).filter_by(post_id=pid).all()]
+    return item
+
+
+@router.patch("/posts/{pid}")
+def edit_post(pid: int, body: PostIn, db: Session = Depends(get_db),
+              user: User = Depends(get_current_user)):
+    from ..core.scopes import set_scope
+    p = db.get(Post, pid)
+    if not p:
+        raise HTTPException(404, "帖子不存在")
+    if p.author_id != user.id and not is_super_admin(user):
         raise HTTPException(403, "只能编辑本人帖子")
-    p.content_zh = body.content_zh; p.visibility = body.visibility
+    p.content_zh = body.content_zh
+    if body.title is not None:
+        p.title = body.title or None
+    if body.post_type:
+        p.post_type = body.post_type
+    if body.status:
+        p.status = body.status
+    # 更新标签
+    db.query(PostTag).filter_by(post_id=pid).delete()
+    for tg in body.tags:
+        if (tg or "").strip():
+            db.add(PostTag(post_id=pid, tag=tg.strip()))
+    # 更新可见范围
+    refs = body.scope_ref_ids or ([body.scope_ref_id] if body.scope_ref_id else [])
+    try:
+        set_scope(db, "post", pid, body.scope, refs, user)
+        p.visibility = {"public": "platform", "self": "private"}.get(body.scope, "group")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     db.commit()
     return {"ok": True}
 
@@ -97,6 +252,16 @@ def del_post(pid: int, db: Session = Depends(get_db), user: User = Depends(get_c
         raise HTTPException(404, "帖子不存在")
     if p.author_id != user.id and not is_super_admin(user):
         raise HTTPException(403, "无权删除")
+    # 连带清理评论/点赞/标签/附件/关注（附件文件也删）
+    db.query(PostComment).filter_by(post_id=pid).delete()
+    db.query(PostReaction).filter_by(post_id=pid).delete()
+    db.query(PostTag).filter_by(post_id=pid).delete()
+    db.query(PostFollow).filter_by(post_id=pid).delete()
+    for a in db.query(PostAttachment).filter_by(post_id=pid).all():
+        from ..core.storage import storage
+        try: storage.delete(a.file_path)
+        except Exception: pass
+        db.delete(a)
     db.delete(p); db.commit()
     return {"ok": True}
 
@@ -111,16 +276,32 @@ def react(pid: int, type: str = "like", db: Session = Depends(get_db),
     return {"toggled": "on"}
 
 
+@router.post("/posts/{pid}/follow")
+def follow_post(pid: int, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    p = db.get(Post, pid)
+    if not p:
+        raise HTTPException(404, "帖子不存在")
+    ex = db.query(PostFollow).filter_by(post_id=pid, user_id=user.id).first()
+    if ex:
+        db.delete(ex); db.commit(); return {"followed": False}
+    db.add(PostFollow(post_id=pid, user_id=user.id)); db.commit()
+    return {"followed": True}
+
+
 @router.get("/posts/{pid}/comments")
 def get_comments(pid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     cs = db.query(PostComment).filter_by(post_id=pid).order_by(PostComment.id).all()
+    p = db.get(Post, pid)
     out = []
     for c in cs:
         u = db.get(User, c.user_id)
         out.append({"id": c.id, "user_id": c.user_id,
                     "user_name": u.display_name if u else f"用户#{c.user_id}",
                     "content": c.content, "parent_id": c.parent_id,
-                    "created_at": str(c.created_at) if c.created_at else None})
+                    "created_at": _bj(c.created_at),
+                    "can_delete": c.user_id == user.id
+                    or (p and p.author_id == user.id) or is_super_admin(user)})
     return out
 
 
@@ -133,7 +314,10 @@ def add_comment(pid: int, body: CommentIn, db: Session = Depends(get_db),
         parent = db.get(PostComment, parent_id)
         if not parent or parent.post_id != pid:
             raise HTTPException(400, "父评论不存在")
-    c = PostComment(post_id=pid, user_id=user.id, content=body.content, parent_id=parent_id)
+    if not (body.content or "").strip():
+        raise HTTPException(400, "评论内容不能为空")
+    c = PostComment(post_id=pid, user_id=user.id, content=body.content.strip(),
+                    parent_id=parent_id)
     db.add(c); db.commit()
     return {"id": c.id}
 
@@ -143,10 +327,30 @@ def del_comment(cid: int, db: Session = Depends(get_db), user: User = Depends(ge
     c = db.get(PostComment, cid)
     if not c:
         raise HTTPException(404, "评论不存在")
-    if c.user_id != user.id and not is_super_admin(user):
+    p = db.get(Post, c.post_id)
+    if c.user_id != user.id and (not p or p.author_id != user.id) and not is_super_admin(user):
         raise HTTPException(403, "无权删除")
+    # 删除一条评论时，其下的回复一并删除
+    db.query(PostComment).filter_by(parent_id=cid).delete()
     db.delete(c); db.commit()
     return {"ok": True}
+
+
+@router.get("/posts/{pid}/attachments/{aid}/download")
+def download_post_attachment(pid: int, aid: int, db: Session = Depends(get_db),
+                             user: User = Depends(get_current_user)):
+    from ..core.storage import storage
+    my_groups = {m.group_id for m in db.query(GroupMember)
+                 .filter_by(user_id=user.id, status="active").all()}
+    p = db.get(Post, pid)
+    if not p or not _post_visible(db, p, user, my_groups):
+        raise HTTPException(403, "无权下载")
+    a = db.get(PostAttachment, aid)
+    if not a or a.post_id != pid:
+        raise HTTPException(404, "附件不存在")
+    return StreamingResponse(storage.open(a.file_path),
+                             media_type=a.mime or "application/octet-stream",
+                             headers={"Content-Disposition": f'attachment; filename="{a.file_name}"'})
 
 
 @router.post("/posts/{pid}/flag")

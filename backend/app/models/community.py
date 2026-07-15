@@ -9,9 +9,22 @@ class Post(Base):
     author_id = Column(Integer, ForeignKey("users.id"))
     dataset_id = Column(Integer, ForeignKey("datasets.id"))   # 可空
     group_id = Column(Integer, ForeignKey("research_groups.id"))  # visibility=group 时
+    title = Column(String(300))                            # 帖子标题（可选）
+    post_type = Column(String(30), default="discussion")   # 讨论类型：question/data/method/collab/discussion
     content_zh = Column(Text); content_en = Column(Text)
     cover_icon = Column(String(80))
     visibility = Column(String(20), default="platform")   # platform|group|private
+    status = Column(String(20), default="open")           # open|resolved|closed
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PostFollow(Base):
+    """关注帖子：有人关注我的帖子会产生通知；也用于「我关注的讨论」。"""
+    __tablename__ = "post_follows"
+    id = Column(Integer, primary_key=True)
+    post_id = Column(Integer, ForeignKey("posts.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class PostAttachment(Base):
@@ -41,6 +54,7 @@ class PostReaction(Base):
     post_id = Column(Integer, ForeignKey("posts.id"))
     user_id = Column(Integer, ForeignKey("users.id"))
     type = Column(String(20))   # like | favorite
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class PostComment(Base):

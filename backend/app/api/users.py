@@ -60,8 +60,9 @@ def my_collab_scopes(db: Session = Depends(get_db), user: User = Depends(get_cur
     dids = [m.dataset_id for m in db.query(DatasetMember).filter_by(user_id=user.id).all()]
     groups = db.query(ResearchGroup).filter(ResearchGroup.id.in_(gids or [-1])).all()
     datasets = db.query(Dataset).filter(Dataset.id.in_(dids or [-1])).all()
-    return {"groups": [{"id": g.id, "name": g.name_zh} for g in groups],
-            "datasets": [{"id": d.id, "name": d.name_zh} for d in datasets]}
+    return {"groups": [{"id": g.id, "name": g.name_zh, "slug": g.slug} for g in groups],
+            "datasets": [{"id": d.id, "name": d.name_zh, "slug": d.slug,
+                          "group_id": d.group_id} for d in datasets]}
 
 
 @router.get("/users/{uid}")
@@ -72,9 +73,11 @@ def get_user(uid: int, db: Session = Depends(get_db)):
     posts = db.query(Post).filter_by(author_id=uid, visibility="platform").count()
     projects = db.query(Project).filter_by(author_id=uid).count()
     ex = db.get(UserProfile, uid)
+    summary = _contrib_summary(db, uid)
     return {"id": u.id, "username": u.username, "display_name": u.display_name,
             "bio_zh": u.bio_zh, "bio_en": u.bio_en, "avatar": u.avatar,
-            "contact": u.contact, "contribution": user_total(db, uid),
+            "contact": u.contact, "contribution": summary["total"],
+            "contribution_breakdown": summary["breakdown"],
             "research_direction": ex.research_direction if ex else None,
             "keywords": ex.keywords if ex else None,
             "email": ex.email if ex else None,
@@ -202,6 +205,75 @@ def del_block(bid: int, user: User = Depends(get_current_user),
         raise HTTPException(403, "只能编辑本人简历")
     db.delete(b); db.commit()
     return {"ok": True}
+
+
+# ---- 贡献度：公开汇总 + 按权限过滤的明细 ----
+CONTRIB_CATEGORIES = {
+    "bug_accepted": "数据勘误", "correction": "数据勘误",
+    "review_adopted": "核验", "verify": "核验",
+    "code_bug_accepted": "代码勘误", "code_add": "代码贡献",
+    "data_upload": "数据发布", "dataset_founder": "数据发布",
+    "post": "讨论发帖", "skill_create": "Skill 贡献", "skill_improve": "Skill 贡献",
+}
+
+
+def _contrib_summary(db: Session, uid: int) -> dict:
+    """公开的贡献汇总：总分 + 按类别的次数。仅聚合数字，不含具体内容，任何人可见。"""
+    from ..models.governance import ContributionEvent
+    rows = db.query(ContributionEvent).filter_by(user_id=uid).all()
+    breakdown: dict[str, int] = {}
+    for e in rows:
+        label = CONTRIB_CATEGORIES.get(e.event_type, "其他")
+        breakdown[label] = breakdown.get(label, 0) + 1
+    return {"total": user_total(db, uid),
+            "breakdown": [{"label": k, "count": v} for k, v in breakdown.items()]}
+
+
+def _contrib_event_visible(db: Session, ev, viewer: User) -> bool:
+    """明细是否对访问者可见：本人/管理员全可见；无数据集(帖子/skill)公开；
+    公开数据集或访问者为其成员可见；否则计入「非公开」。"""
+    from ..models.dataset import Dataset, DatasetMember
+    if viewer and (ev.user_id == viewer.id):
+        return True
+    if not ev.dataset_id:
+        return True
+    d = db.get(Dataset, ev.dataset_id)
+    if d and d.is_public:
+        return True
+    if viewer and db.query(DatasetMember).filter_by(
+            dataset_id=ev.dataset_id, user_id=viewer.id).first():
+        return True
+    return False
+
+
+@router.get("/users/{uid}/contributions")
+def user_contributions(uid: int, viewer: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
+    """他人可查看的贡献明细：只返回访问者有权看到的记录；
+    不可公开的记录不逐条展示，但用「另有 N 项非公开贡献」告知，汇总分不消失。"""
+    from ..models.governance import ContributionEvent
+    from ..models.dataset import Dataset
+    rows = db.query(ContributionEvent).filter_by(user_id=uid).all()
+    ds_ids = {e.dataset_id for e in rows if e.dataset_id}
+    ds_map = {d.id: d for d in db.query(Dataset).filter(
+        Dataset.id.in_(ds_ids or [-1])).all()}
+    events = []; hidden = 0
+    for e in rows:
+        if not _contrib_event_visible(db, e, viewer):
+            hidden += 1
+            continue
+        d = ds_map.get(e.dataset_id)
+        events.append({"type": e.event_type,
+                       "category": CONTRIB_CATEGORIES.get(e.event_type, "其他"),
+                       "ref_type": e.ref_type, "ref_id": e.ref_id,
+                       "dataset_id": e.dataset_id,
+                       "dataset_slug": d.slug if d else None,
+                       "dataset_name": d.name_zh if d else None,
+                       "weight": e.weight})
+    summary = _contrib_summary(db, uid)
+    return {"total": summary["total"], "breakdown": summary["breakdown"],
+            "events": events, "hidden_count": hidden,
+            "is_me": viewer and viewer.id == uid}
 
 
 @router.get("/me/contributions")
