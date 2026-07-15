@@ -62,6 +62,10 @@ async function delComment(c: any) {
   if (!confirm('删除该评论？')) return
   await api.delete(`/comments/${c.id}`); await loadComments()
 }
+async function likeComment(c: any) {
+  await api.post(`/comments/${c.id}/react`, null, { params: { type: 'like' } })
+  c.liked = !c.liked; c.likes = (c.likes || 0) + (c.liked ? 1 : -1)
+}
 async function delPost() {
   if (!confirm('确定删除这条讨论？评论、点赞、附件都会一并删除。')) return
   await api.delete(`/posts/${p.value.id}`); emit('deleted', p.value.id)
@@ -132,17 +136,23 @@ const isMine = () => props.currentUserId && p.value.author_id === props.currentU
     <div v-if="commentsOpen" class="mt-3 border-t border-line pt-3">
       <div v-for="c in topComments()" :key="c.id" class="mb-2.5">
         <div class="text-sm"><span class="text-accent">{{ c.user_name }}</span>
+          <span v-if="c.is_mine" class="tag ml-1" style="background:#eef2f8;color:#2d4a7c">我</span>
           <span class="text-gray-400 text-xs ml-2">{{ c.created_at }}</span></div>
         <p class="text-sm text-gray-700 whitespace-pre-line">{{ c.content }}</p>
         <div class="flex gap-3 text-xs mt-0.5">
+          <button class="hover:text-accent2" :class="c.liked ? 'text-accent2' : 'text-gray-500'" @click="likeComment(c)">
+            {{ c.liked ? '♥' : '♡' }} {{ c.likes || 0 }}</button>
           <button class="text-gray-500 hover:text-accent" @click="replyTo=c">回复</button>
           <button v-if="c.can_delete" class="text-gray-400 hover:text-accent2" @click="delComment(c)">删除</button>
         </div>
         <div v-for="r in repliesOf(c.id)" :key="r.id" class="ml-5 mt-1.5 pl-3 border-l-2 border-line">
           <div class="text-sm"><span class="text-accent">{{ r.user_name }}</span>
+            <span v-if="r.is_mine" class="tag ml-1" style="background:#eef2f8;color:#2d4a7c">我</span>
             <span class="text-gray-400 text-xs ml-2">{{ r.created_at }}</span></div>
           <p class="text-sm text-gray-700 whitespace-pre-line">{{ r.content }}</p>
           <div class="flex gap-3 text-xs mt-0.5">
+            <button class="hover:text-accent2" :class="r.liked ? 'text-accent2' : 'text-gray-500'" @click="likeComment(r)">
+              {{ r.liked ? '♥' : '♡' }} {{ r.likes || 0 }}</button>
             <button class="text-gray-500 hover:text-accent" @click="replyTo=c">回复</button>
             <button v-if="r.can_delete" class="text-gray-400 hover:text-accent2" @click="delComment(r)">删除</button>
           </div>

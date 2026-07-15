@@ -23,13 +23,14 @@ const TYPES = [
 ]
 
 // 筛选状态（与 URL 同步，便于分享/返回）
-const f = ref<any>({ group: null, dataset: null, type: null, status: null, sort: 'new' })
+const f = ref<any>({ group: null, dataset: null, type: null, status: null, mine: null, sort: 'new' })
 function readUrl() {
   f.value = {
     group: route.query.group ? +route.query.group : null,
     dataset: route.query.dataset ? +route.query.dataset : null,
     type: (route.query.type as string) || null,
     status: (route.query.status as string) || null,
+    mine: (route.query.mine as string) || null,
     sort: (route.query.sort as string) || 'new',
   }
 }
@@ -39,9 +40,12 @@ function writeUrl() {
   if (f.value.dataset) q.dataset = f.value.dataset
   if (f.value.type) q.type = f.value.type
   if (f.value.status) q.status = f.value.status
+  if (f.value.mine) q.mine = f.value.mine
   if (f.value.sort !== 'new') q.sort = f.value.sort
   router.replace({ query: q })
 }
+const MINE = [['authored', '我的帖子'], ['liked', '我的点赞'], ['followed', '我的关注'], ['commented', '我的评论']]
+function setMine(v: string) { f.value.mine = f.value.mine === v ? null : v; apply() }
 
 const composerOpen = ref(false); const editing = ref<any>(null)
 function openCompose() { editing.value = null; composerOpen.value = true }
@@ -55,6 +59,7 @@ async function load() {
     if (f.value.dataset) params.dataset_id = f.value.dataset
     if (f.value.type) params.post_type = f.value.type
     if (f.value.status) params.status = f.value.status
+    if (f.value.mine) params.mine = f.value.mine
     posts.value = (await api.get('/posts', { params })).data
   } finally { loading.value = false }
 }
@@ -82,7 +87,7 @@ function setDataset(id: number | null) {
 function setType(v: string | null) { f.value.type = f.value.type === v ? null : v; apply() }
 function setStatus(v: string | null) { f.value.status = f.value.status === v ? null : v; apply() }
 function setSort(v: string) { f.value.sort = v; apply() }
-function clearFilters() { f.value = { group: null, dataset: null, type: null, status: null, sort: f.value.sort }; apply() }
+function clearFilters() { f.value = { group: null, dataset: null, type: null, status: null, mine: null, sort: f.value.sort }; apply() }
 function apply() { writeUrl(); load() }
 
 const activeChips = computed(() => {
@@ -91,6 +96,7 @@ const activeChips = computed(() => {
   if (f.value.dataset) chips.push({ k: 'dataset', label: '数据集：' + (myDatasets.value.find(d => d.id === f.value.dataset)?.name || f.value.dataset) })
   if (f.value.type) chips.push({ k: 'type', label: TYPES.find(x => x.v === f.value.type)?.label })
   if (f.value.status) chips.push({ k: 'status', label: f.value.status === 'open' ? '仅未解决' : f.value.status })
+  if (f.value.mine) chips.push({ k: 'mine', label: (MINE.find(x => x[0] === f.value.mine) || [])[1] })
   return chips
 })
 function removeChip(k: string) { (f.value as any)[k] = null; if (k === 'group') f.value.dataset = null; apply() }
@@ -182,6 +188,13 @@ function onDeleted(id: number) { posts.value = posts.value.filter(p => p.id !== 
           @click="setStatus('open')">仅看未解决</button>
         <button :class="['text-xs px-2 py-0.5 rounded-full border ml-1', f.type==='collab' ? 'bg-accent text-white border-accent' : 'border-line text-gray-600']"
           @click="setType('collab')">仅看合作招募</button>
+
+        <div class="label-cap mt-3 mb-1.5">按我参与</div>
+        <div class="flex flex-col gap-1">
+          <button v-for="m in MINE" :key="m[0]"
+            :class="['text-left text-sm px-2 py-1 rounded', f.mine===m[0] ? 'bg-paper text-accent' : 'hover:bg-paper text-gray-600']"
+            @click="setMine(m[0])">{{ m[1] }}</button>
+        </div>
       </div>
     </aside>
   </div>

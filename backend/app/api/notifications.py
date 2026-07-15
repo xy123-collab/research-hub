@@ -20,7 +20,7 @@ from ..models.group import ResearchGroup, GroupMember, GroupJoinRequest
 from ..models.dataset import Dataset, DatasetMember, JoinRequest, DatasetGroupRequest
 from ..models.access import DownloadRequest
 from ..models.correction import Bug
-from ..models.community import Post, PostComment, PostReaction, PostFollow
+from ..models.community import Post, PostComment, PostReaction, PostFollow, PostCommentReaction
 from ..models.code import CodeScript
 from ..models.curation import CodeComment, CodeVersion
 from ..models.version import DataVersion
@@ -233,8 +233,11 @@ def build_notifications(db: Session, user: User) -> dict:
                 subtitle=f"{uname(f.user_id)} 关注了「{post_title.get(f.post_id,'')}」",
                 link=f"/feed?post={f.post_id}",
                 at_dt=f.created_at, sort=f.id)
-    # 回复我的评论
-    my_comment_ids = [c.id for c in db.query(PostComment).filter_by(user_id=user.id).all()]
+    # 回复我的评论 + 点赞我的评论
+    my_comments = db.query(PostComment).filter_by(user_id=user.id).all()
+    my_comment_ids = [c.id for c in my_comments]
+    cmt_snip = {c.id: (c.content or "")[:20] for c in my_comments}
+    cmt_post = {c.id: c.post_id for c in my_comments}
     if my_comment_ids:
         for r in db.query(PostComment).filter(
                 PostComment.parent_id.in_(my_comment_ids),
@@ -245,6 +248,23 @@ def build_notifications(db: Session, user: User) -> dict:
                 subtitle=f"{uname(r.user_id)}：{(r.content or '')[:30]}",
                 link=f"/feed?post={r.post_id}",
                 at_dt=r.created_at, sort=r.id)
+        # 点赞我的评论（按评论合并）
+        clikes = db.query(PostCommentReaction).filter(
+            PostCommentReaction.comment_id.in_(my_comment_ids),
+            PostCommentReaction.type == "like",
+            PostCommentReaction.user_id != user.id).all()
+        by_cmt: dict = {}
+        for lk in clikes:
+            by_cmt.setdefault(lk.comment_id, []).append(lk)
+        for cid, lst in by_cmt.items():
+            lst.sort(key=lambda x: x.id, reverse=True)
+            latest = lst[0]; n = len(lst)
+            who = uname(latest.user_id) + (f" 等 {n} 人" if n > 1 else "")
+            add(type="comment_like", level="info", category="interact",
+                title="有人赞了你的评论",
+                subtitle=f"{who}赞了你的评论「{cmt_snip.get(cid,'')}」",
+                link=f"/feed?post={cmt_post.get(cid,'')}",
+                at_dt=latest.created_at, sort=latest.id)
     my_script_ids = [s.id for s in db.query(CodeScript).filter_by(author_id=user.id).all()]
     if my_script_ids:
         for c in db.query(CodeComment).filter(

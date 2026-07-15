@@ -214,6 +214,7 @@ CONTRIB_CATEGORIES = {
     "code_bug_accepted": "代码勘误", "code_add": "代码贡献",
     "data_upload": "数据发布", "dataset_founder": "数据发布",
     "post": "讨论发帖", "skill_create": "Skill 贡献", "skill_improve": "Skill 贡献",
+    "lit_upload": "文献上传",
 }
 
 

@@ -67,6 +67,16 @@ class PostComment(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class PostCommentReaction(Base):
+    """评论点赞：所有入口的帖子评论共用（一份数据）。"""
+    __tablename__ = "post_comment_reactions"
+    id = Column(Integer, primary_key=True)
+    comment_id = Column(Integer, ForeignKey("post_comments.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    type = Column(String(20), default="like")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class PostAdminFlag(Base):
     __tablename__ = "post_admin_flags"
     post_id = Column(Integer, ForeignKey("posts.id"), primary_key=True)

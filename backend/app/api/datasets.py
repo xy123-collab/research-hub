@@ -1374,7 +1374,10 @@ def add_ref(slug: str, body: LitRefIn, db: Session = Depends(get_db),
                 "detail": "AI 判定该文献可疑，请核对后勾选「确认真实文献」再提交"}
     data = body.model_dump(exclude={"confirm_real"})
     r = LitRef(dataset_id=d.id, added_by=user.id, **data)
-    db.add(r); db.commit()
+    db.add(r); db.flush()
+    # 文献上传计贡献：按「上传动作次数」，单条上传 = 1 次
+    record_contribution(db, user.id, "lit_upload", "literature", r.id, d.id, weight=2)
+    db.commit()
     return {"ok": True, "id": r.id, "verdict": verdict}
 
 
@@ -1641,6 +1644,10 @@ def batch_commit_lit(slug: str, body: LitBatchIn, db: Session = Depends(get_db),
                       authors=r.get("authors"), venue=r.get("venue"), year=r.get("year"),
                       doi=r.get("doi"), url=r.get("url")))
         created += 1
+    # 文献上传计贡献：整批只记「1 次」，不按篇数（避免批量上传凑贡献）
+    if created:
+        record_contribution(db, user.id, "lit_upload", "literature", f"batch:{d.id}",
+                            d.id, weight=2)
     db.commit()
     return {"ok": True, "created": created, "skipped_duplicates": skipped_dupes}
 

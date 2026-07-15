@@ -7,7 +7,8 @@ from ..core.audit import record_contribution
 from ..models.user import User
 from ..models.group import GroupMember
 from ..models.community import (Post, PostTag, PostReaction, PostComment, PostAdminFlag,
-                                PostAttachment, PostFollow, Project, ProjectTag)
+                                PostAttachment, PostFollow, PostCommentReaction,
+                                Project, ProjectTag)
 from ..schemas.models import PostIn, CommentIn, ProjectIn
 
 router = APIRouter(tags=["community"])
@@ -110,10 +111,12 @@ def _serialize_post(db, p, user, *, detail=False, likes=None, comments=None,
 def feed(dataset_id: int | None = None, group_id: int | None = None,
          author_id: int | None = None, post_type: str | None = None,
          status: str | None = None, scope: str | None = None,
+         mine: str | None = None,
          sort: str = "new", range: str = "all", limit: int = 100,
          db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """统一帖子流。研究广场/数据集讨论区/课题组/个人主页共享同一份数据，
-    只是默认筛选不同。支持按 组/集/类型/状态/作者 筛选，按 new|hot 排序。"""
+    只是默认筛选不同。支持按 组/集/类型/状态/作者 筛选，按 new|hot 排序。
+    mine=authored|liked|followed|commented：按「我参与」的方式筛选。"""
     from datetime import datetime, timedelta
     my_groups = {m.group_id for m in db.query(GroupMember)
                  .filter_by(user_id=user.id, status="active").all()}
@@ -128,6 +131,20 @@ def feed(dataset_id: int | None = None, group_id: int | None = None,
         q = q.filter_by(post_type=post_type)
     if status:
         q = q.filter_by(status=status)
+    if mine == "authored":
+        q = q.filter(Post.author_id == user.id)
+    elif mine == "liked":
+        ids = [r.post_id for r in db.query(PostReaction.post_id).filter_by(
+            user_id=user.id, type="like").all()]
+        q = q.filter(Post.id.in_(ids or [-1]))
+    elif mine == "followed":
+        ids = [r.post_id for r in db.query(PostFollow.post_id).filter_by(
+            user_id=user.id).all()]
+        q = q.filter(Post.id.in_(ids or [-1]))
+    elif mine == "commented":
+        ids = [r.post_id for r in db.query(PostComment.post_id).filter_by(
+            user_id=user.id).distinct().all()]
+        q = q.filter(Post.id.in_(ids or [-1]))
     since = None
     if range == "24h":
         since = datetime.utcnow() - timedelta(hours=24)
@@ -252,7 +269,11 @@ def del_post(pid: int, db: Session = Depends(get_db), user: User = Depends(get_c
         raise HTTPException(404, "帖子不存在")
     if p.author_id != user.id and not is_super_admin(user):
         raise HTTPException(403, "无权删除")
-    # 连带清理评论/点赞/标签/附件/关注（附件文件也删）
+    # 连带清理评论/评论点赞/点赞/标签/附件/关注（附件文件也删）
+    cids = [c.id for c in db.query(PostComment.id).filter_by(post_id=pid).all()]
+    if cids:
+        db.query(PostCommentReaction).filter(
+            PostCommentReaction.comment_id.in_(cids)).delete(synchronize_session=False)
     db.query(PostComment).filter_by(post_id=pid).delete()
     db.query(PostReaction).filter_by(post_id=pid).delete()
     db.query(PostTag).filter_by(post_id=pid).delete()
@@ -293,16 +314,44 @@ def follow_post(pid: int, db: Session = Depends(get_db),
 def get_comments(pid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     cs = db.query(PostComment).filter_by(post_id=pid).order_by(PostComment.id).all()
     p = db.get(Post, pid)
-    out = []
-    for c in cs:
+
+    def mk(c):
         u = db.get(User, c.user_id)
-        out.append({"id": c.id, "user_id": c.user_id,
-                    "user_name": u.display_name if u else f"用户#{c.user_id}",
-                    "content": c.content, "parent_id": c.parent_id,
-                    "created_at": _bj(c.created_at),
-                    "can_delete": c.user_id == user.id
-                    or (p and p.author_id == user.id) or is_super_admin(user)})
-    return out
+        likes = db.query(PostCommentReaction).filter_by(
+            comment_id=c.id, type="like").count()
+        liked = db.query(PostCommentReaction).filter_by(
+            comment_id=c.id, user_id=user.id, type="like").first() is not None
+        return {"id": c.id, "user_id": c.user_id,
+                "user_name": u.display_name if u else f"用户#{c.user_id}",
+                "content": c.content, "parent_id": c.parent_id,
+                "created_at": _bj(c.created_at),
+                "likes": likes, "liked": liked,
+                "is_mine": c.user_id == user.id,
+                "can_delete": c.user_id == user.id
+                or (p and p.author_id == user.id) or is_super_admin(user)}
+
+    tops = [c for c in cs if not c.parent_id]
+    replies = [c for c in cs if c.parent_id]
+    # 「在每个用户的视角，他的评论排在最上方」：一级评论把当前用户的置顶，其余按时间
+    tops.sort(key=lambda c: (0 if c.user_id == user.id else 1, c.id))
+    # 一级评论在前、回复在后（前端按 parent_id 分组，各自保持此顺序）
+    return [mk(c) for c in tops] + [mk(c) for c in replies]
+
+
+@router.post("/comments/{cid}/react")
+def react_comment(cid: int, type: str = "like", db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """给帖子评论点赞（所有入口共用同一份评论数据）。"""
+    c = db.get(PostComment, cid)
+    if not c:
+        raise HTTPException(404, "评论不存在")
+    ex = db.query(PostCommentReaction).filter_by(
+        comment_id=cid, user_id=user.id, type=type).first()
+    if ex:
+        db.delete(ex); db.commit(); return {"toggled": "off"}
+    db.add(PostCommentReaction(comment_id=cid, user_id=user.id, type=type))
+    db.commit()
+    return {"toggled": "on"}
 
 
 @router.post("/posts/{pid}/comments")
@@ -330,7 +379,11 @@ def del_comment(cid: int, db: Session = Depends(get_db), user: User = Depends(ge
     p = db.get(Post, c.post_id)
     if c.user_id != user.id and (not p or p.author_id != user.id) and not is_super_admin(user):
         raise HTTPException(403, "无权删除")
-    # 删除一条评论时，其下的回复一并删除
+    # 删除一条评论时，其下的回复一并删除；连带清理评论点赞
+    reply_ids = [r.id for r in db.query(PostComment.id).filter_by(parent_id=cid).all()]
+    all_ids = reply_ids + [cid]
+    db.query(PostCommentReaction).filter(
+        PostCommentReaction.comment_id.in_(all_ids)).delete(synchronize_session=False)
     db.query(PostComment).filter_by(parent_id=cid).delete()
     db.delete(c); db.commit()
     return {"ok": True}
@@ -467,8 +520,23 @@ def del_project(pid: int, db: Session = Depends(get_db), user: User = Depends(ge
     p = db.get(Project, pid)
     if not p or (p.author_id != user.id and not is_super_admin(user)):
         raise HTTPException(403, "无权删除")
-    from ..models.community import ProjectComment
+    from ..models.community import ProjectComment, ProjectAttachment, ProjectTag
+    from ..models.extras import ProjectMeta, ContentScope
+    from ..core.storage import storage
+    # 连带清理所有引用 projects.id 的子表，否则 Postgres 外键会阻断删除（删除失败）
     db.query(ProjectComment).filter_by(project_id=pid).delete()
+    db.query(ProjectTag).filter_by(project_id=pid).delete()
+    for a in db.query(ProjectAttachment).filter_by(project_id=pid).all():
+        try: storage.delete(a.file_path)
+        except Exception: pass
+        db.delete(a)
+    m = db.get(ProjectMeta, pid)
+    if m:
+        if m.image_path:
+            try: storage.delete(m.image_path)
+            except Exception: pass
+        db.delete(m)
+    db.query(ContentScope).filter_by(content_type="project", content_id=pid).delete()
     db.delete(p); db.commit()
     return {"ok": True}
 
