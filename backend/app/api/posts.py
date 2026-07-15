@@ -426,7 +426,8 @@ from fastapi import Form
 
 
 @router.get("/projects")
-def list_projects(author_id: int | None = None, db: Session = Depends(get_db),
+def list_projects(author_id: int | None = None, label: str | None = None,
+                  db: Session = Depends(get_db),
                   user: User = Depends(get_current_user)):
     from ..core.scopes import scope_visible, scope_summary
     q = db.query(Project)
@@ -438,12 +439,15 @@ def list_projects(author_id: int | None = None, db: Session = Depends(get_db),
         # 可见范围过滤（本人/管理员始终可见）
         if not scope_visible(db, "project", p.id, p.author_id, user):
             continue
+        labels = _project_labels(db, p.id)
+        if label and label not in labels:
+            continue
         m = db.get(ProjectMeta, p.id)
         _sum = scope_summary(db, "project", p.id)
         out.append({"id": p.id, "title": p.title, "status": p.status,
                     "author_id": p.author_id, "open_for_discussion": p.open_for_discussion,
                     "body_zh": p.body_zh, "pinned": bool(m and m.pinned),
-                    "has_image": bool(m and m.image_path),
+                    "has_image": bool(m and m.image_path), "labels": labels,
                     "scope": _sum["scope"], "scope_label": _sum["label"],
                     "image_url": f"/api/projects/{p.id}/image" if (m and m.image_path) else None})
     # 置顶优先，其余按新→旧
@@ -451,13 +455,29 @@ def list_projects(author_id: int | None = None, db: Session = Depends(get_db),
     return out
 
 
+def _set_project_labels(db, pid: int, labels):
+    """替换项目标签（去空、去重、限制长度）。"""
+    db.query(ProjectTag).filter_by(project_id=pid).delete(synchronize_session=False)
+    seen = set()
+    for lb in (labels or []):
+        s = (lb or "").strip()[:20]
+        if s and s not in seen:
+            seen.add(s)
+            db.add(ProjectTag(project_id=pid, tag=s))
+
+
+def _project_labels(db, pid: int) -> list[str]:
+    return [t.tag for t in db.query(ProjectTag).filter_by(project_id=pid).all()]
+
+
 @router.post("/projects")
 def create_project(title: str = Form(...), body_zh: str = Form(...),
                    pinned: bool = Form(False), status: str | None = Form(None),
                    scope: str = Form("public"), scope_ref_ids: str = Form(""),
+                   labels: str = Form(""),
                    image: UploadFile = File(...), db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
-    """创建在做项目：标题、图片、文字均必填（图片作为封面）。可选择是否置顶与可见范围（多选）。"""
+    """创建在做项目：标题、图片、文字均必填（图片作为封面）。可选择是否置顶、可见范围（多选）、标签。"""
     from ..services.uploads import save_upload, IMG_EXT
     from ..core.scopes import set_scope
     if not (title or "").strip() or not (body_zh or "").strip():
@@ -468,6 +488,7 @@ def create_project(title: str = Form(...), body_zh: str = Form(...),
     db.add(p); db.flush()
     db.add(ProjectMeta(project_id=p.id, pinned=bool(pinned), image_path=meta["file_path"],
                        image_name=meta["file_name"], image_mime=meta["mime"]))
+    _set_project_labels(db, p.id, [s for s in (labels or "").split(",")])
     try:
         set_scope(db, "project", p.id, scope, scope_ref_ids, user)
     except ValueError as e:
@@ -507,10 +528,14 @@ def project_image(pid: int, db: Session = Depends(get_db)):
 def edit_project(pid: int, body: ProjectIn, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
     p = db.get(Project, pid)
-    if not p or p.author_id != user.id:
+    if not p or (p.author_id != user.id and not is_super_admin(user)):
         raise HTTPException(403, "无权编辑")
-    for k, v in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    labels = data.pop("labels", None)     # 标签单独处理，不是 Project 的列
+    for k, v in data.items():
         setattr(p, k, v)
+    if labels is not None:
+        _set_project_labels(db, pid, labels)
     db.commit()
     return {"ok": True}
 
@@ -560,7 +585,7 @@ def get_project(pid: int, db: Session = Depends(get_db), user: User = Depends(ge
     return {"id": p.id, "title": p.title, "body_zh": p.body_zh, "status": p.status,
             "author_id": p.author_id, "author_name": au.display_name if au else "",
             "open_for_discussion": p.open_for_discussion,
-            "pinned": bool(m and m.pinned),
+            "pinned": bool(m and m.pinned), "labels": _project_labels(db, p.id),
             "can_edit": p.author_id == user.id,
             "can_manage": p.author_id == user.id or is_super_admin(user),
             "scope": _sum["scope"], "scope_label": _sum["label"],

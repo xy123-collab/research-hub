@@ -111,6 +111,7 @@ class ProjectIn(BaseModel):
     title: str; body_zh: str | None = None; body_en: str | None = None
     dataset_id: int | None = None; status: str | None = None
     open_for_discussion: bool = True; visibility: str = "platform"
+    labels: list[str] | None = None    # 项目标签（欢迎讨论/欢迎合作/…，可自定义）
 
 
 # -------- workspace --------

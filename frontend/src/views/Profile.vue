@@ -181,8 +181,32 @@ async function saveResume() {
 }
 
 // ==================== 在做项目：创建 + 置顶 + 详情/编辑/删除/评论 ====================
+// 预设标签（可多选，也可自定义）
+const PROJECT_LABELS = ['欢迎讨论', '欢迎合作', '招募成员', '寻找数据', '寻求建议', '找合作者', '已完成']
+const projLabelFilter = ref('')   // 项目列表按标签筛选（''=全部）
 const showProjCreate = ref(false); const projSaving = ref(false)
-const projForm = ref<any>({ title: '', body_zh: '', pinned: false })
+const projForm = ref<any>({ title: '', body_zh: '', pinned: false, labels: [] as string[] })
+const projLabelInput = ref('')     // 自定义标签输入（创建）
+const editLabelInput = ref('')     // 自定义标签输入（编辑）
+function toggleLabel(list: string[], lb: string) {
+  const i = list.indexOf(lb)
+  if (i >= 0) list.splice(i, 1); else list.push(lb)
+}
+function addCustomLabel(list: string[], val: string, clear: () => void) {
+  const s = (val || '').trim().slice(0, 20)
+  if (s && !list.includes(s)) list.push(s)
+  clear()
+}
+// 当前用户项目里出现过的标签（用于筛选栏）
+const projectLabelsInUse = computed(() => {
+  const s = new Set<string>()
+  for (const p of projects.value) for (const l of (p.labels || [])) s.add(l)
+  return Array.from(s)
+})
+const filteredProjects = computed(() =>
+  projLabelFilter.value
+    ? projects.value.filter(p => (p.labels || []).includes(projLabelFilter.value))
+    : projects.value)
 const projScope = ref<{ scope: string; scope_ref_ids: number[] }>({ scope: 'public', scope_ref_ids: [] })
 const projImage = ref<File | null>(null); const projImgPreview = ref('')
 function pickProjImage(e: any) {
@@ -190,7 +214,8 @@ function pickProjImage(e: any) {
   projImage.value = f; projImgPreview.value = URL.createObjectURL(f)
 }
 function openProjCreate() {
-  projForm.value = { title: '', body_zh: '', pinned: false }
+  projForm.value = { title: '', body_zh: '', pinned: false, labels: [] }
+  projLabelInput.value = ''
   projScope.value = { scope: 'public', scope_ref_ids: [] }
   projImage.value = null; projImgPreview.value = ''; showProjCreate.value = true
 }
@@ -209,6 +234,7 @@ async function createProject() {
     fd.append('pinned', String(projForm.value.pinned))
     fd.append('scope', projScope.value.scope)
     if (projScope.value.scope_ref_ids.length) fd.append('scope_ref_ids', projScope.value.scope_ref_ids.join(','))
+    if (projForm.value.labels.length) fd.append('labels', projForm.value.labels.join(','))
     fd.append('image', await compressImage(projImage.value))
     await api.post('/projects', fd)
     showProjCreate.value = false
@@ -238,17 +264,23 @@ async function openProject(id: number) {
   } catch (e: any) { alert(e.response?.data?.detail || '打开失败') }
 }
 function startProjEdit() {
-  projEditForm.value = { title: projDetail.value.title, body_zh: projDetail.value.body_zh || '' }
+  projEditForm.value = {
+    title: projDetail.value.title, body_zh: projDetail.value.body_zh || '',
+    labels: [...(projDetail.value.labels || [])]
+  }
+  editLabelInput.value = ''
   projEdit.value = true
 }
 async function saveProjEdit() {
   if (!projEditForm.value.title.trim()) { alert('标题不能为空'); return }
   try {
     await api.patch(`/projects/${projDetail.value.id}`, {
-      title: projEditForm.value.title.trim(), body_zh: projEditForm.value.body_zh
+      title: projEditForm.value.title.trim(), body_zh: projEditForm.value.body_zh,
+      labels: projEditForm.value.labels
     })
     projDetail.value.title = projEditForm.value.title.trim()
     projDetail.value.body_zh = projEditForm.value.body_zh
+    projDetail.value.labels = [...projEditForm.value.labels]
     projEdit.value = false
     projects.value = (await api.get('/projects', { params: { author_id: uid.value } })).data
   } catch (e: any) { alert(e.response?.data?.detail || '保存失败') }
@@ -437,9 +469,19 @@ async function removeWsMember(m: any) {
     <div class="py-5">
       <!-- 在做的项目 -->
       <div v-if="tab==='projects'">
-        <div v-if="isMe" class="mb-3"><button class="btn-primary" @click="openProjCreate">＋创建项目</button></div>
+        <!-- 创建按钮 + 按标签分类检索 -->
+        <div class="flex items-center gap-2 flex-wrap mb-3">
+          <button v-if="isMe" class="btn-primary" @click="openProjCreate">＋创建项目</button>
+          <div class="flex items-center gap-1 flex-wrap text-xs">
+            <button :class="['px-2.5 py-1 rounded-full border', !projLabelFilter ? 'bg-accent text-white border-accent' : 'border-line text-gray-600']"
+              @click="projLabelFilter=''">全部</button>
+            <button v-for="lb in projectLabelsInUse" :key="lb"
+              :class="['px-2.5 py-1 rounded-full border', projLabelFilter===lb ? 'bg-accent text-white border-accent' : 'border-line text-gray-600']"
+              @click="projLabelFilter = projLabelFilter===lb ? '' : lb">{{ lb }}</button>
+          </div>
+        </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div v-for="p in projects" :key="p.id" class="card overflow-hidden p-0 cursor-pointer hover:shadow-md transition"
+          <div v-for="p in filteredProjects" :key="p.id" class="card overflow-hidden p-0 cursor-pointer hover:shadow-md transition"
             @click="openProject(p.id)">
             <img v-if="p.image_url" :src="p.image_url" class="w-full h-40 object-cover" />
             <div class="p-4">
@@ -450,11 +492,14 @@ async function removeWsMember(m: any) {
                 <button v-if="isMe" class="text-xs" :class="p.pinned?'text-accent2':'text-accent'"
                   @click.stop="togglePin(p)">{{ p.pinned ? '取消置顶' : '置顶' }}</button>
               </div>
+              <div v-if="p.labels && p.labels.length" class="flex flex-wrap gap-1 mt-1.5">
+                <span v-for="lb in p.labels" :key="lb" class="tag" style="background:#eef2f8;color:#2d4a7c">{{ lb }}</span>
+              </div>
               <p class="text-sm text-gray-500 mt-1 whitespace-pre-line line-clamp-3">{{ p.body_zh }}</p>
               <div class="text-xs text-accent mt-2">点击查看详情与评论 →</div>
             </div>
           </div>
-          <p v-if="!projects.length" class="text-gray-400 text-sm">暂无项目。</p>
+          <p v-if="!filteredProjects.length" class="text-gray-400 text-sm">{{ projLabelFilter ? '该标签下暂无项目。' : '暂无项目。' }}</p>
         </div>
       </div>
 
@@ -602,6 +647,22 @@ async function removeWsMember(m: any) {
         <p class="text-[11px] text-gray-400 mb-2">建议使用横版图片（约 16:9），卡片按封面等比裁剪展示；过大图片会自动压缩后上传。</p>
         <img v-if="projImgPreview" :src="projImgPreview" class="w-full h-40 object-cover rounded mb-2" />
         <textarea v-model="projForm.body_zh" rows="4" class="input mb-2" placeholder="项目介绍文字 *"></textarea>
+
+        <label class="label-cap">标签（可多选，会展示在项目上，也支持自定义）</label>
+        <div class="flex flex-wrap gap-1 mb-1.5">
+          <button v-for="lb in PROJECT_LABELS" :key="lb" type="button"
+            :class="['text-xs px-2.5 py-1 rounded-full border', projForm.labels.includes(lb) ? 'bg-accent text-white border-accent' : 'border-line text-gray-600']"
+            @click="toggleLabel(projForm.labels, lb)">{{ lb }}</button>
+        </div>
+        <div class="flex flex-wrap gap-1 items-center mb-2">
+          <span v-for="lb in projForm.labels.filter(x => !PROJECT_LABELS.includes(x))" :key="lb"
+            class="tag flex items-center gap-1" style="background:#eef2f8;color:#2d4a7c">
+            {{ lb }} <button type="button" class="text-accent2" @click="toggleLabel(projForm.labels, lb)">×</button></span>
+          <input v-model="projLabelInput" class="input text-xs" style="width:130px" placeholder="自定义标签"
+            @keyup.enter="addCustomLabel(projForm.labels, projLabelInput, () => projLabelInput='')" />
+          <button type="button" class="btn-ghost text-xs" @click="addCustomLabel(projForm.labels, projLabelInput, () => projLabelInput='')">添加</button>
+        </div>
+
         <div class="mb-2"><ScopeSelector v-model="projScope" /></div>
         <label class="flex items-center gap-2 text-sm mb-3">
           <input type="checkbox" v-model="projForm.pinned" /> 创建后置顶展示
@@ -624,6 +685,9 @@ async function removeWsMember(m: any) {
               {{ projDetail.author_name }} · {{ projDetail.status }}
               <span v-if="projDetail.scope && projDetail.scope!=='public'"> · {{ projDetail.scope_label }}</span>
             </div>
+            <div v-if="!projEdit && projDetail.labels && projDetail.labels.length" class="flex flex-wrap gap-1 mt-1.5">
+              <span v-for="lb in projDetail.labels" :key="lb" class="tag" style="background:#eef2f8;color:#2d4a7c">{{ lb }}</span>
+            </div>
           </div>
           <button @click="projDetail=null" class="text-gray-400 shrink-0"><Icon name="close" class="ico" style="width:18px;height:18px" /></button>
         </div>
@@ -635,9 +699,25 @@ async function removeWsMember(m: any) {
           <p class="text-sm text-gray-700 whitespace-pre-line">{{ projDetail.body_zh }}</p>
         </div>
         <div v-else class="mt-3">
+          <label class="label-cap">标题</label>
           <input v-model="projEditForm.title" class="input mb-2" placeholder="项目标题" />
-          <textarea v-model="projEditForm.body_zh" rows="5" class="input" placeholder="项目介绍文字"></textarea>
-          <div class="flex justify-end gap-2 mt-2">
+          <label class="label-cap">正文</label>
+          <textarea v-model="projEditForm.body_zh" rows="5" class="input mb-2" placeholder="项目介绍文字"></textarea>
+          <label class="label-cap">标签</label>
+          <div class="flex flex-wrap gap-1 mb-1.5">
+            <button v-for="lb in PROJECT_LABELS" :key="lb" type="button"
+              :class="['text-xs px-2.5 py-1 rounded-full border', projEditForm.labels.includes(lb) ? 'bg-accent text-white border-accent' : 'border-line text-gray-600']"
+              @click="toggleLabel(projEditForm.labels, lb)">{{ lb }}</button>
+          </div>
+          <div class="flex flex-wrap gap-1 items-center">
+            <span v-for="lb in projEditForm.labels.filter(x => !PROJECT_LABELS.includes(x))" :key="lb"
+              class="tag flex items-center gap-1" style="background:#eef2f8;color:#2d4a7c">
+              {{ lb }} <button type="button" class="text-accent2" @click="toggleLabel(projEditForm.labels, lb)">×</button></span>
+            <input v-model="editLabelInput" class="input text-xs" style="width:130px" placeholder="自定义标签"
+              @keyup.enter="addCustomLabel(projEditForm.labels, editLabelInput, () => editLabelInput='')" />
+            <button type="button" class="btn-ghost text-xs" @click="addCustomLabel(projEditForm.labels, editLabelInput, () => editLabelInput='')">添加</button>
+          </div>
+          <div class="flex justify-end gap-2 mt-3">
             <button class="btn-ghost text-sm" @click="projEdit=false">取消</button>
             <button class="btn-primary text-sm" @click="saveProjEdit">保存修改</button>
           </div>
