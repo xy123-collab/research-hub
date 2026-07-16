@@ -310,10 +310,22 @@ def follow_post(pid: int, db: Session = Depends(get_db),
     return {"followed": True}
 
 
+def _guard_post_visible(db, pid, user):
+    """确保当前用户能看到该帖，否则 403（评论/回复也受帖子可见范围约束）。"""
+    p = db.get(Post, pid)
+    if not p:
+        raise HTTPException(404, "帖子不存在")
+    my_groups = {m.group_id for m in db.query(GroupMember)
+                 .filter_by(user_id=user.id, status="active").all()}
+    if not _post_visible(db, p, user, my_groups):
+        raise HTTPException(403, "无权查看该讨论")
+    return p
+
+
 @router.get("/posts/{pid}/comments")
 def get_comments(pid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    p = _guard_post_visible(db, pid, user)
     cs = db.query(PostComment).filter_by(post_id=pid).order_by(PostComment.id).all()
-    p = db.get(Post, pid)
 
     def mk(c):
         u = db.get(User, c.user_id)
@@ -345,6 +357,7 @@ def react_comment(cid: int, type: str = "like", db: Session = Depends(get_db),
     c = db.get(PostComment, cid)
     if not c:
         raise HTTPException(404, "评论不存在")
+    _guard_post_visible(db, c.post_id, user)   # 看不到的帖子的评论不能点赞
     ex = db.query(PostCommentReaction).filter_by(
         comment_id=cid, user_id=user.id, type=type).first()
     if ex:
@@ -357,6 +370,7 @@ def react_comment(cid: int, type: str = "like", db: Session = Depends(get_db),
 @router.post("/posts/{pid}/comments")
 def add_comment(pid: int, body: CommentIn, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
+    _guard_post_visible(db, pid, user)   # 看不到的帖子不能评论
     # 支持「评论的评论」：body.parent_id 指向同帖的某条评论
     parent_id = getattr(body, "parent_id", None)
     if parent_id:

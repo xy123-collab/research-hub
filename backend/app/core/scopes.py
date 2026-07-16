@@ -67,8 +67,13 @@ def get_scopes(db: Session, content_type: str, content_id: int) -> list[ContentS
 
 def scope_visible(db: Session, content_type: str, content_id: int,
                   owner_id: int, user: User) -> bool:
-    """当前用户能否看到该内容。无记录时默认公开（兼容历史数据）。"""
-    if owner_id == user.id or is_super_admin(user):
+    """当前用户能否看到该内容。无记录时默认公开（兼容历史数据）。
+
+    注意：按「原则一」，平台总管理员**不**自动获得内容可见权。可见性只看：
+    本人 / 全平台公开 / 所属课题组或数据集的成员。总管理员要看非公开内容须按普通
+    流程加入。否则「仅自己可见」对管理员也会失效（曾出现过的 bug）。
+    """
+    if owner_id == user.id:
         return True
     rows = get_scopes(db, content_type, content_id)
     if not rows:
