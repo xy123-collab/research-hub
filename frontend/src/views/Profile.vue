@@ -8,6 +8,8 @@ import Icon from '../components/Icon.vue'
 import ScopeSelector from '../components/ScopeSelector.vue'
 import PostCard from '../components/PostCard.vue'
 import PostComposer from '../components/PostComposer.vue'
+import MentionInput from '../components/MentionInput.vue'
+import DownloadHistoryModal from '../components/DownloadHistoryModal.vue'
 
 const route = useRoute(); const router = useRouter(); const { t } = useI18n(); const auth = useAuth()
 const uid = ref<number>(0)
@@ -84,6 +86,48 @@ const dirty = computed(() => JSON.stringify(editForm.value) !== editSnapshot.val
 
 const accountEmail = ref(''); const accountEmailSnapshot = ref('')
 const emailOptIn = ref(true); const emailPrefBusy = ref(false); const emailPrefMsg = ref('')
+
+// ==================== 历史下载 ====================
+const showDownloads = ref(false)
+
+// ==================== 通知设置（细分订阅 / 频率 / 语言 / 周报范围）====================
+const showNotify = ref(false); const notifySaving = ref(false); const notifyMsg = ref('')
+const FREQ_LABEL: any = { immediate: '立即', daily: '每日8:00汇总', weekly: '每周一8:00汇总' }
+const notify = ref<any>({
+  email_enabled: true, version_email_enabled: true, version_email_frequency: 'immediate',
+  code_email_enabled: true, code_email_frequency: 'immediate', message_email_enabled: true,
+  weekly_digest_enabled: true, weekly_digest_scope: ['public', 'groups', 'datasets'],
+  email_language: 'zh-CN'
+})
+async function openNotifySettings() {
+  notifyMsg.value = ''
+  try { notify.value = { ...notify.value, ...(await api.get('/notification-preferences')).data } } catch {}
+  showNotify.value = true
+}
+function toggleDigestScope(s: string) {
+  const arr = notify.value.weekly_digest_scope || []
+  const i = arr.indexOf(s)
+  if (i >= 0) arr.splice(i, 1); else arr.push(s)
+  notify.value.weekly_digest_scope = [...arr]
+}
+async function saveNotify() {
+  notifySaving.value = true; notifyMsg.value = ''
+  try {
+    await api.put('/notification-preferences', {
+      email_enabled: notify.value.email_enabled,
+      version_email_enabled: notify.value.version_email_enabled,
+      version_email_frequency: notify.value.version_email_frequency,
+      code_email_enabled: notify.value.code_email_enabled,
+      code_email_frequency: notify.value.code_email_frequency,
+      message_email_enabled: notify.value.message_email_enabled,
+      weekly_digest_enabled: notify.value.weekly_digest_enabled,
+      weekly_digest_scope: notify.value.weekly_digest_scope,
+      email_language: notify.value.email_language
+    })
+    notifyMsg.value = '已保存'
+  } catch (e: any) { notifyMsg.value = '保存失败：' + (e.response?.data?.detail || '请重试') }
+  finally { notifySaving.value = false }
+}
 async function openEdit() {
   editForm.value = {
     display_name: profile.value.display_name || '',
@@ -290,6 +334,7 @@ const projComments = ref<any[]>([])
 const projEdit = ref(false); const projEditForm = ref<any>({ title: '', body_zh: '' })
 const projEditScope = ref<{ scope: string; scope_ref_ids: number[] }>({ scope: 'public', scope_ref_ids: [] })
 const commentText = ref(''); const replyTo = ref<any>(null); const commentPosting = ref(false)
+const commentMentions = ref<any[]>([])
 async function openProject(id: number) {
   projEdit.value = false; commentText.value = ''; replyTo.value = null
   try {
@@ -342,9 +387,10 @@ async function postComment() {
   commentPosting.value = true
   try {
     await api.post(`/projects/${projDetail.value.id}/comments`, {
-      content: commentText.value.trim(), parent_id: replyTo.value?.id || null
+      content: commentText.value.trim(), parent_id: replyTo.value?.id || null,
+      mentions: commentMentions.value.map(m => ({ target_type: m.target_type, target_id: m.target_id }))
     })
-    commentText.value = ''; replyTo.value = null
+    commentText.value = ''; commentMentions.value = []; replyTo.value = null
     projComments.value = (await api.get(`/projects/${projDetail.value.id}/comments`)).data
   } catch (e: any) { alert(e.response?.data?.detail || '评论失败') }
   finally { commentPosting.value = false }
@@ -491,8 +537,14 @@ async function removeWsMember(m: any) {
         </div>
         <!-- 右侧：编辑资料按钮在上，贡献度在下，纵向排列，互不重叠 -->
         <div class="flex flex-col items-end gap-2 shrink-0">
-          <button v-if="isMe" class="text-xs bg-white/15 hover:bg-white/25 rounded px-3 py-1.5"
-            @click="openEdit">编辑资料</button>
+          <div v-if="isMe" class="flex gap-2 flex-wrap justify-end">
+            <button class="text-xs bg-white/15 hover:bg-white/25 rounded px-3 py-1.5"
+              @click="openEdit">编辑资料</button>
+            <button class="text-xs bg-white/15 hover:bg-white/25 rounded px-3 py-1.5"
+              @click="showDownloads=true">历史下载</button>
+            <button class="text-xs bg-white/15 hover:bg-white/25 rounded px-3 py-1.5"
+              @click="openNotifySettings">通知设置</button>
+          </div>
           <div class="text-right">
             <div class="text-3xl font-serif leading-none">{{ profile.contribution }}</div>
             <div class="label-cap text-white/70 mt-1">{{ t('profile.contribution') }}</div>
@@ -798,8 +850,8 @@ async function removeWsMember(m: any) {
         <div class="border-t border-line mt-5 pt-4">
           <div class="label-cap mb-2">交流讨论（{{ projComments.length }}）</div>
           <div v-if="projDetail.open_for_discussion || projDetail.can_edit" class="flex gap-2 mb-3">
-            <input v-model="commentText" class="input"
-              :placeholder="replyTo ? `回复 @${replyTo.user_name}…` : '写下你的评论 / 交流…'" @keyup.enter="postComment" />
+            <div class="flex-1"><MentionInput v-model="commentText" v-model:mentions="commentMentions"
+              :placeholder="replyTo ? `回复 @${replyTo.user_name}…` : '写下你的评论 / 交流…（输入 @ 提及成员）'" @enter="postComment" /></div>
             <button v-if="replyTo" class="btn-ghost text-xs" @click="replyTo=null">取消回复</button>
             <button class="btn-primary text-sm" :disabled="commentPosting" @click="postComment">发送</button>
           </div>
@@ -947,5 +999,73 @@ async function removeWsMember(m: any) {
     <!-- ============ 发布/编辑讨论 ============ -->
     <PostComposer v-if="discussComposerOpen" :edit="discussEditing"
       @close="discussComposerOpen=false" @saved="loadMyPosts" />
+
+    <!-- ============ 历史下载 ============ -->
+    <DownloadHistoryModal :open="showDownloads" @close="showDownloads=false" />
+
+    <!-- ============ 通知设置 ============ -->
+    <div v-if="showNotify" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showNotify=false">
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[85vh] overflow-auto">
+        <div class="flex items-center px-5 py-3 border-b border-line">
+          <h3 class="text-base font-medium">通知设置</h3>
+          <button class="ml-auto text-gray-400 hover:text-accent2" @click="showNotify=false">✕</button>
+        </div>
+        <div class="p-5 space-y-4 text-sm">
+          <label class="flex items-center gap-2">
+            <input type="checkbox" v-model="notify.email_enabled" />
+            <span class="font-medium">开启邮件通知</span>
+            <span class="text-gray-400 text-xs">（总开关；找回密码邮件不受影响，始终发送）</span>
+          </label>
+          <div v-if="notify.email_enabled" class="pl-6 space-y-4 border-l-2 border-line">
+            <div>
+              <label class="flex items-center gap-2">
+                <input type="checkbox" v-model="notify.version_email_enabled" />
+                所在数据集<b>数据版本更新</b>邮件</label>
+              <div v-if="notify.version_email_enabled" class="mt-1 flex gap-3 text-xs pl-6">
+                <label v-for="f in ['immediate','daily','weekly']" :key="f" class="flex items-center gap-1">
+                  <input type="radio" :value="f" v-model="notify.version_email_frequency" /> {{ FREQ_LABEL[f] }}</label>
+              </div>
+            </div>
+            <div>
+              <label class="flex items-center gap-2">
+                <input type="checkbox" v-model="notify.code_email_enabled" />
+                所在数据集<b>处理代码更新</b>邮件</label>
+              <div v-if="notify.code_email_enabled" class="mt-1 flex gap-3 text-xs pl-6">
+                <label v-for="f in ['immediate','daily','weekly']" :key="f" class="flex items-center gap-1">
+                  <input type="radio" :value="f" v-model="notify.code_email_frequency" /> {{ FREQ_LABEL[f] }}</label>
+              </div>
+            </div>
+            <label class="flex items-start gap-2">
+              <input type="checkbox" v-model="notify.message_email_enabled" class="mt-0.5" />
+              <span><b>消息通知</b>（被回复、被@、权限申请、自己权限通过等）
+                <span class="text-gray-400 text-xs block">每日 8:00 与 18:00 检索是否有新消息，有则提醒；已提醒过的不再重复。</span></span>
+            </label>
+            <div>
+              <label class="flex items-center gap-2">
+                <input type="checkbox" v-model="notify.weekly_digest_enabled" />
+                <b>每周帖子周报</b>（每周一 8:00）</label>
+              <div v-if="notify.weekly_digest_enabled" class="mt-1 flex gap-3 text-xs pl-6">
+                <label class="flex items-center gap-1"><input type="checkbox"
+                  :checked="notify.weekly_digest_scope.includes('public')" @change="toggleDigestScope('public')" /> 全平台公开</label>
+                <label class="flex items-center gap-1"><input type="checkbox"
+                  :checked="notify.weekly_digest_scope.includes('groups')" @change="toggleDigestScope('groups')" /> 我的课题组</label>
+                <label class="flex items-center gap-1"><input type="checkbox"
+                  :checked="notify.weekly_digest_scope.includes('datasets')" @change="toggleDigestScope('datasets')" /> 我加入的数据集</label>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <span>邮件语言</span>
+              <select v-model="notify.email_language" class="input text-sm w-auto">
+                <option value="zh-CN">中文</option><option value="en">English</option></select>
+            </div>
+          </div>
+          <p v-if="notifyMsg" class="text-xs" :class="notifyMsg==='已保存' ? 'text-green-600' : 'text-accent2'">{{ notifyMsg }}</p>
+        </div>
+        <div class="px-5 py-3 border-t border-line flex justify-end gap-2">
+          <button class="text-sm text-gray-500" @click="showNotify=false">关闭</button>
+          <button class="btn-primary text-sm" :disabled="notifySaving" @click="saveNotify">保存</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>

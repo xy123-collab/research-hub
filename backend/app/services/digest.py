@@ -54,9 +54,10 @@ def run_digest_once() -> dict:
             if not u.email:
                 skipped += 1
                 continue
-            # 尊重"邮件提醒开关"：关闭的用户不发每日摘要（None 视为开启）
-            prof = db.get(UserProfile, u.id)
-            if prof is not None and prof.email_opt_in is False:
+            # 尊重通知偏好：总开关 + “消息通知”细分开关（被回复/被@/权限申请/权限通过等）
+            from .notify import get_pref
+            pref = get_pref(db, u.id)
+            if not (pref.email_enabled and pref.message_email_enabled):
                 skipped += 1
                 continue
             data = build_notifications(db, u)

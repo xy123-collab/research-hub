@@ -4,6 +4,7 @@ import { useAuth } from '../stores/auth'
 import api from '../api'
 import Icon from '../components/Icon.vue'
 import ScopeSelector from '../components/ScopeSelector.vue'
+import MentionInput from '../components/MentionInput.vue'
 import { downloadFile } from '../utils/download'
 
 const auth = useAuth()
@@ -78,7 +79,7 @@ function scopeLabel(v: string) { return SCOPE_LABELS[v] || v }
 // Skill 详情 + 评论（含评论的评论）
 const skillModal = ref<any>(null)
 const comments = ref<any[]>([])
-const cInput = ref(''); const replyTo = ref<any>(null)
+const cInput = ref(''); const replyTo = ref<any>(null); const cMentions = ref<any[]>([])
 async function openSkill(s: any) {
   skillModal.value = (await api.get(`/skills/${s.id}`)).data
   loadComments()
@@ -91,8 +92,9 @@ function repliesOf(id: number) { return comments.value.filter(c => c.parent_id =
 async function sendComment() {
   if (!cInput.value.trim()) return
   await api.post(`/skills/${skillModal.value.id}/comments`,
-    { content: cInput.value.trim(), parent_id: replyTo.value?.id || null })
-  cInput.value = ''; replyTo.value = null; loadComments()
+    { content: cInput.value.trim(), parent_id: replyTo.value?.id || null,
+      mentions: cMentions.value.map(m => ({ target_type: m.target_type, target_id: m.target_id })) })
+  cInput.value = ''; cMentions.value = []; replyTo.value = null; loadComments()
 }
 async function delComment(c: any) {
   if (!confirm('删除该评论？')) return
@@ -232,8 +234,8 @@ function downloadSkill(s: any) {
             <div v-if="replyTo" class="text-xs text-gray-500 mb-1">回复 @{{ replyTo.user_name }}
               <button class="text-accent2 ml-1" @click="replyTo=null">取消</button></div>
             <div class="flex gap-2">
-              <input v-model="cInput" class="input" placeholder="写下你的评论…" @keyup.enter="sendComment" />
-              <button class="btn-primary text-sm" @click="sendComment">发送</button>
+              <div class="flex-1"><MentionInput v-model="cInput" v-model:mentions="cMentions" placeholder="写下你的评论…（输入 @ 提及成员）" @enter="sendComment" /></div>
+              <button class="btn-primary text-sm shrink-0" @click="sendComment">发送</button>
             </div>
           </div>
         </div>

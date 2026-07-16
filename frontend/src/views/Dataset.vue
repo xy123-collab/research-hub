@@ -9,10 +9,22 @@ import CharterModal from '../components/CharterModal.vue'
 import Icon from '../components/Icon.vue'
 import PostCard from '../components/PostCard.vue'
 import PostComposer from '../components/PostComposer.vue'
+import MentionInput from '../components/MentionInput.vue'
+import DownloadHistoryModal from '../components/DownloadHistoryModal.vue'
 
 const route = useRoute(); const { t } = useI18n(); const auth = useAuth()
 const slug = route.params.slug as string
 const d = ref<any>(null); const tab = ref('overview')
+const showDownloads = ref(false); const following = ref(false)
+async function loadFollow() {
+  try { following.value = (await api.get(`/datasets/${slug}/follow`)).data.following } catch {}
+}
+async function toggleFollow() {
+  try {
+    if (following.value) { await api.delete(`/datasets/${slug}/follow`); following.value = false }
+    else { await api.post(`/datasets/${slug}/follow`); following.value = true }
+  } catch (e: any) { alert(e.response?.data?.detail || '操作失败') }
+}
 const versions = ref<any[]>([]); const bugs = ref<any[]>([]); const vars = ref<any[]>([])
 const codes = ref<any[]>([]); const flags = ref<any[]>([]); const dash = ref<any[]>([])
 const lit = ref<any>({ topics: [], refs: [] }); const acceptedBugs = ref<any[]>([])
@@ -86,6 +98,7 @@ const policyLabel: Record<string, string> = {
 onMounted(async () => {
   d.value = (await api.get(`/datasets/${slug}`)).data
   vars.value = (await api.get(`/datasets/${slug}/variables`)).data
+  loadFollow()
   if (d.value.is_admin) { try { await loadMembers() } catch {} }
   const q = route.query.tab as string
   loadTab(q && tabs.value.some(x => x[0] === q) ? q : 'overview')
@@ -331,6 +344,7 @@ async function aiReviewItem(iid: number) { await api.post(`/bug-items/${iid}/ai-
 // ---------- 代码库版本/权限/评论 ----------
 const codeVerForm = ref<any>({ version_label: '', changelog: '', source_code: '' }); const codeVerFile = ref<File | null>(null)
 const codeComments = ref<any[]>([]); const codeCommentForm = ref<any>({ content: '', is_correction: false })
+const codeCommentMentions = ref<any[]>([])
 const showCodeVer = ref(false); const showCodeGrant = ref(false); const codeGrantForm = ref<any>({ user_id: null, can_edit: false, can_publish: true })
 async function openCode(id: number) {
   codeModal.value = (await api.get(`/code/${id}`)).data
@@ -350,8 +364,10 @@ function downloadCode(vid?: number) { downloadFile(`/code/${codeModal.value.id}/
 async function addCodeComment() {
   if (!codeCommentForm.value.content.trim()) return
   const fd = new FormData(); fd.append('content', codeCommentForm.value.content); fd.append('is_correction', String(codeCommentForm.value.is_correction))
+  fd.append('mentions', JSON.stringify(codeCommentMentions.value.map(m => ({ target_type: m.target_type, target_id: m.target_id }))))
   await api.post(`/code/${codeModal.value.id}/comments`, fd)
-  codeCommentForm.value = { content: '', is_correction: false }; codeComments.value = (await api.get(`/code/${codeModal.value.id}/comments`)).data
+  codeCommentForm.value = { content: '', is_correction: false }; codeCommentMentions.value = []
+  codeComments.value = (await api.get(`/code/${codeModal.value.id}/comments`)).data
 }
 async function grantCode() {
   const fd = new FormData(); fd.append('user_id', codeGrantForm.value.user_id)
@@ -756,6 +772,15 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
       我的授权：<span v-if="(d.my_perms||[]).length"><span v-for="p in d.my_perms" :key="p" class="tag mr-1">{{ permLabel[p]||p }}</span></span><span v-else class="text-gray-400">暂无单独授权（加入数据集不等于获得下载权）</span>
       <button v-if="myLackPerms.length" class="text-accent ml-2 hover:underline" @click="openPermReq">申请其他权限</button>
     </p>
+
+    <!-- 通用快捷条：历史下载 / 关注版本通知（所有登录用户可见）-->
+    <div class="flex flex-wrap gap-2 mt-4">
+      <button class="btn-ghost text-xs flex items-center gap-1.5" @click="showDownloads=true">
+        <Icon name="data" class="ico" style="width:15px;height:15px" /> 历史下载</button>
+      <button class="btn-ghost text-xs flex items-center gap-1.5" @click="toggleFollow">
+        <Icon name="publish" class="ico" style="width:15px;height:15px" />
+        {{ following ? '已关注（接收版本通知）' : '关注此数据集' }}</button>
+    </div>
 
     <!-- 成员协作快捷条：核心协作动作一键直达 -->
     <div v-if="d.is_member" class="flex flex-wrap gap-2 mt-4">
@@ -1424,7 +1449,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <p class="text-gray-600">{{ c.content }}</p>
           </div>
           <div v-if="codeModal.is_member" class="mt-2">
-            <textarea v-model="codeCommentForm.content" class="input text-sm" rows="2" placeholder="写评论"></textarea>
+            <MentionInput v-model="codeCommentForm.content" v-model:mentions="codeCommentMentions" placeholder="写评论…（输入 @ 提及成员）" />
             <div class="flex items-center gap-2 mt-1">
               <label class="text-xs flex items-center gap-1"><input type="checkbox" v-model="codeCommentForm.is_correction" /> 标记为勘误类评论（指出代码问题）</label>
               <button class="btn-primary text-xs ml-auto" @click="addCodeComment">发表</button>
@@ -1754,6 +1779,10 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     <PostComposer v-if="dsComposerOpen" :edit="dsEditing"
       :context="{ datasetId: d.id, datasetName: d.name_zh }"
       @close="dsComposerOpen=false" @saved="onDsPostSaved" />
+
+    <!-- 历史下载（数据集内入口，与个人主页共用同一视图/接口）-->
+    <DownloadHistoryModal :open="showDownloads" :dataset-id="d?.id" :dataset-name="d?.name_zh"
+      @close="showDownloads=false" />
   </div>
 </template>
 

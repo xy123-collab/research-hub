@@ -4,6 +4,7 @@
 import { ref } from 'vue'
 import api from '../api'
 import Icon from './Icon.vue'
+import MentionInput from './MentionInput.vue'
 import { downloadFile } from '../utils/download'
 
 const props = defineProps<{ post: any; currentUserId?: number }>()
@@ -14,6 +15,7 @@ const expanded = ref(false)
 const commentsOpen = ref(false)
 const comments = ref<any[]>([])
 const cInput = ref(''); const replyTo = ref<any>(null)
+const cMentions = ref<any[]>([]); const mentionBox = ref<any>(null)
 const attachments = ref<any[]>([])
 
 // 计数简化：<=99 原样；100-999 → 99+；千级 → x千+；万级 → x万+
@@ -55,8 +57,12 @@ const topComments = () => comments.value.filter(c => !c.parent_id)
 const repliesOf = (id: number) => comments.value.filter(c => c.parent_id === id)
 async function sendComment() {
   if (!cInput.value.trim()) return
-  await api.post(`/posts/${p.value.id}/comments`, { content: cInput.value.trim(), parent_id: replyTo.value?.id || null })
-  cInput.value = ''; replyTo.value = null; await loadComments()
+  await api.post(`/posts/${p.value.id}/comments`, {
+    content: cInput.value.trim(), parent_id: replyTo.value?.id || null,
+    mentions: cMentions.value.map(m => ({ target_type: m.target_type, target_id: m.target_id }))
+  })
+  cInput.value = ''; cMentions.value = []; replyTo.value = null
+  mentionBox.value?.reset?.(); await loadComments()
 }
 async function delComment(c: any) {
   if (!confirm('删除该评论？')) return
@@ -161,9 +167,12 @@ const isMine = () => props.currentUserId && p.value.author_id === props.currentU
       <p v-if="!topComments().length" class="text-gray-400 text-xs mb-2">还没有评论，来说两句。</p>
       <div v-if="replyTo" class="text-xs text-gray-500 mb-1">回复 @{{ replyTo.user_name }}
         <button class="text-accent2 ml-1" @click="replyTo=null">取消</button></div>
-      <div class="flex gap-2">
-        <input v-model="cInput" class="input text-sm" placeholder="写评论…" @keyup.enter="sendComment" />
-        <button class="btn-primary text-sm" @click="sendComment">发送</button>
+      <div class="flex gap-2 items-start">
+        <div class="flex-1">
+          <MentionInput ref="mentionBox" v-model="cInput" v-model:mentions="cMentions"
+            placeholder="写评论…（输入 @ 提及成员）" @enter="sendComment" />
+        </div>
+        <button class="btn-primary text-sm shrink-0" @click="sendComment">发送</button>
       </div>
     </div>
   </div>

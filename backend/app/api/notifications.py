@@ -279,6 +279,30 @@ def build_notifications(db: Session, user: User) -> dict:
                 link=f"/datasets/{d.slug}?tab=code" if d else "/",
                 at_dt=c.created_at, sort=c.id)
 
+    # ===== interact：有人在评论里 @ 了我（或@了我所在的数据集/课题组）=====
+    from ..services.mentions import mentions_for_user
+    for mn in mentions_for_user(db, user, limit=20):
+        if mn.target_type == "user":
+            title = "有人在评论里@了你"
+        elif mn.target_type == "dataset":
+            title = "有人@了你所在的数据集"
+        else:
+            title = "有人@了你所在的课题组"
+        ref = mn.post_ref or ""
+        if ref.startswith("post="):
+            link = f"/feed?{ref}"
+        elif ref.startswith("project="):
+            link = f"/me?tab=projects"
+        elif ref.startswith("dataset="):
+            link = "/datasets/" + ref[len("dataset="):].replace("&tab=", "?tab=")
+        elif ref == "collab":
+            link = "/collab"
+        else:
+            link = "/"
+        add(type="mention", level="info", category="interact",
+            title=title, subtitle=f"{uname(mn.mentioned_by)}：{(mn.snippet or '')[:30]}",
+            link=link, at_dt=mn.created_at, sort=mn.id)
+
     # ===== collab：被拉入新的工作台 =====
     for m in db.query(WorkspaceMember).filter_by(user_id=user.id).all():
         w = db.get(Workspace, m.workspace_id)

@@ -181,6 +181,11 @@ def download_skill(sid: int, db: Session = Depends(get_db), user: User = Depends
         raise HTTPException(403, "无权下载")
     if not m or not m.file_path:
         raise HTTPException(404, "该 Skill 没有可下载文件")
+    from ..services.downloads import log_download
+    log_download(db, user_id=user.id, source="skill", dataset_id=None,
+                 location_label="Skill 协作", detail=(s.name_zh or s.name_en or "Skill"),
+                 file_name=m.file_name, link="/#/collab")
+    db.commit()
     return StreamingResponse(storage.open(m.file_path),
                              media_type=m.mime or "application/octet-stream",
                              headers={"Content-Disposition": f'attachment; filename="{m.file_name}"'})
@@ -190,6 +195,7 @@ def download_skill(sid: int, db: Session = Depends(get_db), user: User = Depends
 class SkillCommentIn(BaseModel):
     content: str
     parent_id: int | None = None
+    mentions: list[dict] = []
 
 
 @router.get("/skills/{sid}/comments")
@@ -217,7 +223,11 @@ def add_skill_comment(sid: int, body: SkillCommentIn, db: Session = Depends(get_
             raise HTTPException(400, "父评论不存在")
     c = SkillComment(skill_id=sid, user_id=user.id, content=body.content,
                      parent_id=body.parent_id)
-    db.add(c); db.commit()
+    db.add(c); db.flush()
+    from ..services.mentions import record_mentions
+    record_mentions(db, source_type="skill_comment", source_id=c.id, post_ref="collab",
+                    snippet=body.content, by_user=user, raw_mentions=(body.mentions or []))
+    db.commit()
     return {"id": c.id}
 
 

@@ -317,6 +317,14 @@ def download_bug_attachment(aid: int, db: Session = Depends(get_db),
     b = db.get(Bug, a.bug_id)
     if not is_dataset_member(db, b.dataset_id, user):
         raise HTTPException(403, "需为数据集成员")
+    from ..services.downloads import log_download
+    from ..models.dataset import Dataset as _DS
+    _d = db.get(_DS, b.dataset_id)
+    log_download(db, user_id=user.id, source="bug_attachment", dataset_id=b.dataset_id,
+                 location_label=(_d.name_zh if _d else "勘误附件"),
+                 detail=f"勘误#{b.id} 附件", file_name=a.file_name,
+                 link=(f"/#/datasets/{_d.slug}?tab=bugs&bug={b.id}" if _d else ""))
+    db.commit()
     return StreamingResponse(storage.open(a.file_path), media_type=a.mime or "application/octet-stream",
                              headers={"Content-Disposition": f'attachment; filename="{a.file_name}"'})
 

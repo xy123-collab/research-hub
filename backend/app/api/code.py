@@ -133,6 +133,13 @@ def publish_code_version(cid: int, version_label: str = Form(...), changelog: st
     c.filename = filename
     write_audit(db, user.id, "code.version.publish", "code", cid, {"v": version_label})
     db.commit()
+    try:
+        from ..services.notify import notify_code_published
+        notify_code_published(db, c, v, user)
+        db.commit()
+    except Exception as _e:
+        db.rollback()
+        import logging; logging.getLogger("notify").warning("代码通知创建失败: %s", _e)
     return {"id": v.id, "version_label": version_label}
 
 
@@ -147,18 +154,30 @@ def download_code(cid: int, vid: int | None = None, db: Session = Depends(get_db
         raise HTTPException(403, "需为数据集成员")
     filename = c.filename or f"code_{cid}.txt"
     data = (c.source_code or "").encode("utf-8")
+    from ..services.downloads import log_download
+    from ..models.dataset import Dataset as _DS
+    _d = db.get(_DS, c.dataset_id)
+    _label = _d.name_zh if _d else "处理代码"
+    _link = f"/#/datasets/{_d.slug}?tab=code" if _d else ""
     if vid:
         v = db.get(CodeVersion, vid)
         if v and v.script_id == cid:
             filename = v.filename or filename
             data = (v.source_code or "").encode("utf-8")
             if v.file_path:
+                log_download(db, user_id=user.id, source="code", dataset_id=c.dataset_id,
+                             location_label=_label, detail=f"处理代码·{v.version_label or ''}",
+                             file_name=filename, link=_link)
+                write_audit(db, user.id, "code.download", "code", cid)
+                db.commit()
                 return StreamingResponse(storage.open(v.file_path),
                     media_type="application/octet-stream",
                     headers={"Content-Disposition": f'attachment; filename="code_{vid}"'})
+    safe = f"code_{cid}.txt"
+    log_download(db, user_id=user.id, source="code", dataset_id=c.dataset_id,
+                 location_label=_label, detail="处理代码", file_name=safe, link=_link)
     write_audit(db, user.id, "code.download", "code", cid)
     db.commit()
-    safe = f"code_{cid}.txt"
     return StreamingResponse(io.BytesIO(data), media_type="text/plain; charset=utf-8",
                              headers={"Content-Disposition": f'attachment; filename="{safe}"'})
 
@@ -201,6 +220,7 @@ def list_code_comments(cid: int, db: Session = Depends(get_db),
 
 @router.post("/code/{cid}/comments")
 def add_code_comment(cid: int, content: str = Form(...), is_correction: bool = Form(False),
+                     mentions: str = Form(""),
                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     c = db.get(CodeScript, cid)
     if not c:
@@ -209,7 +229,19 @@ def add_code_comment(cid: int, content: str = Form(...), is_correction: bool = F
         raise HTTPException(403, "需为数据集成员")
     cm = CodeComment(script_id=cid, user_id=user.id, content=content,
                      is_correction=bool(is_correction), created_at=datetime.utcnow())
-    db.add(cm); db.commit()
+    db.add(cm); db.flush()
+    import json as _json
+    try:
+        raw = _json.loads(mentions) if mentions else []
+    except Exception:
+        raw = []
+    from ..models.dataset import Dataset as _DS
+    _d = db.get(_DS, c.dataset_id)
+    from ..services.mentions import record_mentions
+    record_mentions(db, source_type="code_comment", source_id=cm.id,
+                    post_ref=(f"dataset={_d.slug}&tab=code" if _d else "code"),
+                    snippet=content, by_user=user, raw_mentions=raw)
+    db.commit()
     return {"id": cm.id}
 
 

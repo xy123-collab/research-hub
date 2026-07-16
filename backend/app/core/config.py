@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     DIGEST_ENABLED: bool = True
     DIGEST_TZ: str = "Asia/Shanghai"
     DIGEST_HOURS: str = "8,18"           # 逗号分隔的小时（本地时区）
+    # 每周帖子周报（默认周一 8:00，本地时区）
+    WEEKLY_DIGEST_ENABLED: bool = True
+    WEEKLY_DIGEST_DOW: str = "mon"       # APScheduler day_of_week
+    WEEKLY_DIGEST_HOUR: int = 8
 
     # ---- 其它 ----
     ALLOWED_ORIGINS: str = "*"

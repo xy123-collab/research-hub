@@ -381,7 +381,12 @@ def add_comment(pid: int, body: CommentIn, db: Session = Depends(get_db),
         raise HTTPException(400, "评论内容不能为空")
     c = PostComment(post_id=pid, user_id=user.id, content=body.content.strip(),
                     parent_id=parent_id)
-    db.add(c); db.commit()
+    db.add(c); db.flush()
+    from ..services.mentions import record_mentions
+    record_mentions(db, source_type="post_comment", source_id=c.id,
+                    post_ref=f"post={pid}", snippet=body.content.strip(), by_user=user,
+                    raw_mentions=[m.model_dump() for m in (body.mentions or [])])
+    db.commit()
     return {"id": c.id}
 
 
@@ -415,6 +420,11 @@ def download_post_attachment(pid: int, aid: int, db: Session = Depends(get_db),
     a = db.get(PostAttachment, aid)
     if not a or a.post_id != pid:
         raise HTTPException(404, "附件不存在")
+    from ..services.downloads import log_download
+    log_download(db, user_id=user.id, source="post_attachment", dataset_id=p.dataset_id,
+                 location_label="研究讨论区", detail=(p.title or (p.content_zh or "")[:20]),
+                 file_name=a.file_name, link=f"/#/feed?post={p.id}")
+    db.commit()
     return StreamingResponse(storage.open(a.file_path),
                              media_type=a.mime or "application/octet-stream",
                              headers={"Content-Disposition": f'attachment; filename="{a.file_name}"'})
@@ -665,7 +675,12 @@ def add_project_comment(pid: int, body: CommentIn, db: Session = Depends(get_db)
         raise HTTPException(400, "评论内容不能为空")
     c = ProjectComment(project_id=pid, user_id=user.id,
                        content=body.content.strip(), parent_id=body.parent_id)
-    db.add(c); db.commit(); db.refresh(c)
+    db.add(c); db.flush()
+    from ..services.mentions import record_mentions
+    record_mentions(db, source_type="project_comment", source_id=c.id,
+                    post_ref=f"project={pid}", snippet=body.content.strip(), by_user=user,
+                    raw_mentions=[m.model_dump() for m in (body.mentions or [])])
+    db.commit(); db.refresh(c)
     return {"id": c.id}
 
 

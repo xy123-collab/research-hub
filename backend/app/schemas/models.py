@@ -102,9 +102,15 @@ class PostIn(BaseModel):
     scope_ref_ids: list[int] = []         # 多选：选中的课题组/数据集 id 列表
 
 
+class MentionIn(BaseModel):
+    target_type: str               # user | dataset | group
+    target_id: int
+
+
 class CommentIn(BaseModel):
     content: str
     parent_id: int | None = None   # 评论的评论
+    mentions: list[MentionIn] = []  # @提及（前端结构化传入，后端按范围校验）
 
 
 class ProjectIn(BaseModel):

@@ -22,5 +22,7 @@ from .governance import (AuditLog, ContributionEvent, QualityRule, QualityRun, V
 from .literature import (LitTopic, LitRef, DatasetSummaryAI, Publication,
                          DatasetSummary, AnalysisSnippet)
 from .mapping import VersionAuxFile, FileCorrection
+from .notify import (NotificationPreference, NotificationEvent, EmailDelivery,
+                     DatasetFollow, Mention, DownloadHistory)
 
 __all__ = ["User"]

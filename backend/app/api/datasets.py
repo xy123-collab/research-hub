@@ -360,6 +360,14 @@ async def publish_version(slug: str, version_id: str = Form(...),
     write_audit(db, user.id, "version.publish", "dataset", d.id,
                 {"version": version_id, "fixed_bugs": fixed})
     db.commit()
+    # 版本正式发布成功后，创建通知事件并按订阅频率发信（失败不影响发版）
+    try:
+        from ..services.notify import notify_version_published
+        notify_version_published(db, d, v, user)
+        db.commit()
+    except Exception as _e:
+        db.rollback()
+        import logging; logging.getLogger("notify").warning("版本通知创建失败: %s", _e)
     return {"id": v.id, "version_id": version_id, "fixed_bugs": fixed,
             "variables_synced": var_sync}
 
@@ -569,6 +577,11 @@ def download(slug: str, vid: int, file: str = "data", db: Session = Depends(get_
     # 四节 原则六 / 七节 4：留痕（含权限来源）
     db.add(DownloadLog(user_id=user.id, dataset_id=d.id, version_id=v.id, file_type=file,
                        file_name=key.split("/")[-1], downloaded_at=datetime.utcnow()))
+    from ..services.downloads import log_download
+    _flabel = {"data": "数据", "codebook": "codebook", "mapping": "对照表"}.get(file, file)
+    log_download(db, user_id=user.id, source="dataset_version", dataset_id=d.id,
+                 location_label=d.name_zh, detail=f"{v.version_id}·{_flabel}",
+                 file_name=key.split("/")[-1], link=f"/#/datasets/{d.slug}?tab=versions")
     write_audit(db, user.id, "download", "dataset", d.id,
                 {"version": v.version_id, "file": file, "source": source})
     db.commit()
