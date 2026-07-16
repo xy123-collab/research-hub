@@ -104,6 +104,10 @@ async function openNotifySettings() {
   try { notify.value = { ...notify.value, ...(await api.get('/notification-preferences')).data } } catch {}
   showNotify.value = true
 }
+// 编辑资料 → 通知设置
+function openNotifyFromEdit() { showEdit.value = false; openNotifySettings() }
+// 通知设置 → 编辑资料（改注册邮箱）
+function openEditFromNotify() { showNotify.value = false; openEdit() }
 function toggleDigestScope(s: string) {
   const arr = notify.value.weekly_digest_scope || []
   const i = arr.indexOf(s)
@@ -702,24 +706,22 @@ async function removeWsMember(m: any) {
         <label class="label-cap">公开联系邮箱（选填，将展示在主页卡片）</label>
         <input v-model="editForm.email" type="email" class="input mb-3" placeholder="如：name@school.edu.cn" />
 
-        <!-- 注册邮箱（账号邮箱，仅本人可见/可改）-->
+        <!-- 注册邮箱（账号邮箱，仅本人可改）-->
         <div class="border-t border-line pt-3 mb-4">
-          <label class="label-cap">注册邮箱（账号邮箱，用于找回密码与系统通知，仅你可见）</label>
+          <label class="label-cap">注册邮箱（账号邮箱，用于找回密码、系统通知与消息提醒）</label>
           <input v-model="accountEmail" type="email" class="input" placeholder="如：name@mail.school.edu.cn" />
           <p class="text-[11px] text-gray-400 mt-1">直接在此修改并「保存」即完成注册邮箱更换（需唯一、格式正确）。</p>
+          <p class="text-[11px] text-amber-600 mt-1">注意：作为负责人的联系方式，你的注册邮箱会显示在你担任负责人 / 总管理员的数据集和课题组页面上方，供成员联系。</p>
 
-          <!-- 邮件提醒开关 -->
+          <!-- 邮件提醒：入口收敛到完整「通知设置」-->
           <div class="flex items-center justify-between mt-3">
             <div>
               <div class="text-sm">邮件提醒</div>
-              <div class="text-[11px] text-gray-400">开启后接收每日消息摘要等提醒（注册后默认开启）。</div>
+              <div class="text-[11px] text-gray-400">版本更新、处理代码、消息通知、每周周报等细分订阅在「通知设置」里管理。</div>
             </div>
-            <button type="button" :disabled="emailPrefBusy" @click="toggleEmailPref"
-              :class="['relative w-11 h-6 rounded-full transition', emailOptIn ? 'bg-accent' : 'bg-gray-300']">
-              <span :class="['absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform', emailOptIn ? 'translate-x-5' : '']"></span>
-            </button>
+            <button type="button" class="btn-ghost text-xs whitespace-nowrap" @click="openNotifyFromEdit">
+              前往通知设置 →</button>
           </div>
-          <p v-if="emailPrefMsg" class="text-[11px] text-gray-500 mt-1">{{ emailPrefMsg }}</p>
         </div>
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="closeEdit">取消</button>
@@ -1011,6 +1013,13 @@ async function removeWsMember(m: any) {
           <button class="ml-auto text-gray-400 hover:text-accent2" @click="showNotify=false">✕</button>
         </div>
         <div class="p-5 space-y-4 text-sm">
+          <!-- 说明：邮件都发到注册邮箱；改注册邮箱去编辑资料 -->
+          <div class="bg-paper rounded px-3 py-2 text-[12px] text-gray-600">
+            消息通知、版本更新、每周周报等邮件都会发送到你的<b>注册邮箱</b>
+            <span v-if="notify.email">（{{ notify.email }}）</span>。
+            如需修改注册邮箱，请
+            <button type="button" class="text-accent hover:underline" @click="openEditFromNotify">前往编辑资料</button>。
+          </div>
           <label class="flex items-center gap-2">
             <input type="checkbox" v-model="notify.email_enabled" />
             <span class="font-medium">开启邮件通知</span>
