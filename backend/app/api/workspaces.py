@@ -157,7 +157,8 @@ def get_entry_file(wid: int, eid: int, db: Session = Depends(get_db),
     hdrs = attachment_headers(e.file_name)
     if inline:
         hdrs["Content-Disposition"] = hdrs["Content-Disposition"].replace("attachment", "inline", 1)
-    return StreamingResponse(storage.open(e.file_path),
+    from ..services.uploads import open_stored_file
+    return StreamingResponse(open_stored_file(e.file_path),
                              media_type=e.mime or "application/octet-stream",
                              headers=hdrs)
 
@@ -326,7 +327,8 @@ def download_ws_file(wid: int, fid: int, db: Session = Depends(get_db),
     if not f or f.workspace_id != wid:
         raise HTTPException(404, "文件不存在")
     from ..services.uploads import attachment_headers
-    return StreamingResponse(storage.open(f.file_path), media_type=f.mime or "application/octet-stream",
+    from ..services.uploads import open_stored_file
+    return StreamingResponse(open_stored_file(f.file_path), media_type=f.mime or "application/octet-stream",
                              headers=attachment_headers(f.file_name))
 
 

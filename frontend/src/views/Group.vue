@@ -212,7 +212,7 @@ function goActivity(e: any) { const l = activityLink(e); if (l) router.push(l) }
         </div>
       </section>
 
-      <!-- 组内讨论（与研究广场同一套帖子系统，默认关联本课题组）-->
+      <!-- 组内讨论（与研究讨论区同一套帖子系统，默认关联本课题组）-->
       <section>
         <div class="flex items-center justify-between mb-3 pb-2 border-b border-line">
           <h2 class="text-base text-gray-500 font-normal">组内讨论</h2>

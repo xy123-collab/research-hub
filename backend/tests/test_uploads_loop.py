@@ -44,7 +44,12 @@ def test_full_core_loop_download_bug_review_finalize_publish_fixed(client):
                 json={"adopt_level": "full", "final_score": 9}, headers=founder)
     assert client.get(f"/api/bugs/{bid}", headers=member).json()["status"] == "accepted"
     # 发布新版本并把该 bug 标 fixed
-    files = {"data_file": ("cod.dta", io.BytesIO(b"data"), "application/octet-stream")}
+    import pandas as pd
+    buf = io.BytesIO()
+    pd.DataFrame({"officerID": ["O1"], "year": [1998]}).to_stata(
+        buf, write_index=False, version=118)
+    buf.seek(0)
+    files = {"data_file": ("cod.dta", buf, "application/octet-stream")}
     r = client.post("/api/datasets/cod/versions",
                     data={"version_id": "v1.2.0", "fixed_bug_ids": str(bid),
                           "changelog_zh": "修复年份笔误"},

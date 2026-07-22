@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 统一「发布讨论」集成入口：研究广场 / 数据集讨论区 / 课题组 / 个人主页 共用。
+// 统一「发布讨论」集成入口：研究讨论区 / 数据集讨论区 / 课题组 / 个人主页 共用。
 // 只改变默认关联对象（context），字段与规则一致。支持编辑已有帖子。
 import { ref, onMounted } from 'vue'
 import api from '../api'

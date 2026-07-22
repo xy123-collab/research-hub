@@ -21,12 +21,17 @@ def test_non_member_download_blocked_but_codebook_ok(client, outsider):
 
 def test_version_not_overwritable(client, founder):
     # 版本不可覆盖：重复 version_id 报错
-    import io
-    files = {"data_file": ("x.dta", io.BytesIO(b"d"), "application/octet-stream")}
+    import io, pandas as pd
+    def valid_dta():
+        buf = io.BytesIO()
+        pd.DataFrame({"id": [1]}).to_stata(buf, write_index=False, version=118)
+        buf.seek(0)
+        return buf
+    files = {"data_file": ("x.dta", valid_dta(), "application/octet-stream")}
     r1 = client.post("/api/datasets/cod/versions",
                      data={"version_id": "v1.1.0"}, files=files, headers=founder)
     assert r1.status_code == 200
-    files2 = {"data_file": ("x.dta", io.BytesIO(b"d"), "application/octet-stream")}
+    files2 = {"data_file": ("x.dta", valid_dta(), "application/octet-stream")}
     r2 = client.post("/api/datasets/cod/versions",
                      data={"version_id": "v1.1.0"}, files=files2, headers=founder)
     assert r2.status_code == 400 and "不可覆盖" in r2.json()["detail"]

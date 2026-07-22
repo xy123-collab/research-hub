@@ -214,7 +214,8 @@ def get_avatar_file(k: str, db: Session = Depends(get_db)):
     if not k.startswith("avatar/"):
         raise HTTPException(400, "非法路径")
     try:
-        return StreamingResponse(storage.open(k), media_type="image/*")
+        from ..services.uploads import open_stored_file
+        return StreamingResponse(open_stored_file(k), media_type="image/*")
     except Exception:
         raise HTTPException(404, "头像不存在")
 

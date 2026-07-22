@@ -1,6 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import type { RouteRecordRaw } from 'vue-router'
 
-const routes = [
+const routes: RouteRecordRaw[] = [
   { path: '/login', component: () => import('../views/Login.vue') },
   { path: '/reset-password', component: () => import('../views/ResetPassword.vue') },
   { path: '/', component: () => import('../views/Home.vue') },

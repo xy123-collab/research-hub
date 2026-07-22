@@ -181,13 +181,15 @@ def download_skill(sid: int, db: Session = Depends(get_db), user: User = Depends
         raise HTTPException(403, "无权下载")
     if not m or not m.file_path:
         raise HTTPException(404, "该 Skill 没有可下载文件")
+    from ..services.uploads import open_stored_file
+    stream = open_stored_file(m.file_path)
     from ..services.downloads import log_download
     log_download(db, user_id=user.id, source="skill", dataset_id=None,
                  location_label="Skill 协作", detail=(s.name_zh or s.name_en or "Skill"),
                  file_name=m.file_name, link="/#/collab")
     db.commit()
     from ..services.uploads import attachment_headers
-    return StreamingResponse(storage.open(m.file_path),
+    return StreamingResponse(stream,
                              media_type=m.mime or "application/octet-stream",
                              headers=attachment_headers(m.file_name))
 

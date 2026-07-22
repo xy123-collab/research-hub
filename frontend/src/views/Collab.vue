@@ -181,7 +181,7 @@ function downloadSkill(s: any) {
         <label class="label-cap">内容（文字，二选一或都填）</label>
         <textarea v-model="skillForm.body_text" rows="4" class="input mb-2" placeholder="粘贴脚本 / 流程 / 提示词等文字内容"></textarea>
         <label class="label-cap">上传文件（可选）</label>
-        <input type="file" class="text-xs mb-3 block" @change="(e)=>skillFile=e.target.files[0]" />
+        <input type="file" class="text-xs mb-3 block" @change="(e:any)=>skillFile=e.target.files[0]" />
         <div class="mb-3"><ScopeSelector v-model="skillScope" /></div>
         <input v-model="skillForm.github_url" class="input mb-3" placeholder="GitHub 链接（可选）" />
         <div class="flex justify-end gap-2">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 研究广场 = 统一讨论系统。三栏：左热榜 / 中信息流 / 右分类筛选。
+// 研究讨论区 = 统一讨论系统。三栏：左热榜 / 中信息流 / 右分类筛选。
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -85,14 +85,13 @@ onMounted(async () => { readUrl(); await Promise.all([load(), loadHot(), loadSco
 watch(hotRange, loadHot)
 watch(() => route.query.post, loadFocus)
 
-// 右栏层级：选中课题组后，数据集只显示该组下的
+// 课题组和数据集可独立筛选。只有主动选了课题组时，数据集候选才缩小到该组。
 const datasetsForFilter = computed(() =>
   f.value.group ? myDatasets.value.filter(d => d.group_id === f.value.group) : myDatasets.value)
 
 function setGroup(id: number | null) { f.value.group = id; f.value.dataset = null; apply() }
 function setDataset(id: number | null) {
   f.value.dataset = id
-  if (id) { const d = myDatasets.value.find(x => x.id === id); if (d?.group_id) f.value.group = d.group_id }
   apply()
 }
 function setType(v: string | null) { f.value.type = f.value.type === v ? null : v; apply() }
@@ -110,7 +109,7 @@ const activeChips = computed(() => {
   if (f.value.mine) chips.push({ k: 'mine', label: (MINE.find(x => x[0] === f.value.mine) || [])[1] })
   return chips
 })
-function removeChip(k: string) { (f.value as any)[k] = null; if (k === 'group') f.value.dataset = null; apply() }
+function removeChip(k: string) { (f.value as any)[k] = null; apply() }
 
 function onSaved() { load(); loadHot() }
 function onDeleted(id: number) { posts.value = posts.value.filter(p => p.id !== id); loadHot() }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 统一帖子卡片：作者/时间/类型/标题/摘要/关联/标签/范围/点赞·评论数/展开详情/评论回复/编辑删除。
-// 研究广场、数据集讨论区、课题组、个人主页共用同一组件与同一份数据。
+// 研究讨论区、数据集讨论区、课题组、个人主页共用同一组件与同一份数据。
 import { ref } from 'vue'
 import api from '../api'
 import Icon from './Icon.vue'

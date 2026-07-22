@@ -121,7 +121,8 @@ def publish_code_version(cid: int, version_label: str = Form(...), changelog: st
             src = raw.decode("latin-1", errors="replace")
         filename = file.filename
         key = f"code/{cid}/{version_label}/{filename}"
-        storage.save(key, io.BytesIO(raw))
+        from ..services.uploads import save_stored_file
+        save_stored_file(key, io.BytesIO(raw))
     db.query(CodeVersion).filter_by(script_id=cid, is_current=True).update({"is_current": False})
     v = CodeVersion(script_id=cid, version_label=version_label, filename=filename,
                     file_path=key, source_code=src, changelog=changelog,
@@ -165,13 +166,15 @@ def download_code(cid: int, vid: int | None = None, db: Session = Depends(get_db
             filename = v.filename or filename
             data = (v.source_code or "").encode("utf-8")
             if v.file_path:
+                from ..services.uploads import open_stored_file
+                stream = open_stored_file(v.file_path)
                 log_download(db, user_id=user.id, source="code", dataset_id=c.dataset_id,
                              location_label=_label, detail=f"处理代码·{v.version_label or ''}",
                              file_name=filename, link=_link)
                 write_audit(db, user.id, "code.download", "code", cid)
                 db.commit()
-                return StreamingResponse(storage.open(v.file_path),
-                    media_type="application/octet-stream",
+                return StreamingResponse(stream,
+                                         media_type="application/octet-stream",
                     headers={"Content-Disposition": f'attachment; filename="code_{vid}"'})
     safe = f"code_{cid}.txt"
     log_download(db, user_id=user.id, source="code", dataset_id=c.dataset_id,

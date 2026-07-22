@@ -114,7 +114,7 @@ def feed(dataset_id: int | None = None, group_id: int | None = None,
          mine: str | None = None,
          sort: str = "new", range: str = "all", limit: int = 100,
          db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """统一帖子流。研究广场/数据集讨论区/课题组/个人主页共享同一份数据，
+    """统一帖子流。研究讨论区/数据集讨论区/课题组/个人主页共享同一份数据，
     只是默认筛选不同。支持按 组/集/类型/状态/作者 筛选，按 new|hot 排序。
     mine=authored|liked|followed|commented：按「我参与」的方式筛选。"""
     from datetime import datetime, timedelta
@@ -420,13 +420,15 @@ def download_post_attachment(pid: int, aid: int, db: Session = Depends(get_db),
     a = db.get(PostAttachment, aid)
     if not a or a.post_id != pid:
         raise HTTPException(404, "附件不存在")
+    from ..services.uploads import open_stored_file
+    stream = open_stored_file(a.file_path)
     from ..services.downloads import log_download
     log_download(db, user_id=user.id, source="post_attachment", dataset_id=p.dataset_id,
                  location_label="研究讨论区", detail=(p.title or (p.content_zh or "")[:20]),
                  file_name=a.file_name, link=f"/#/feed?post={p.id}")
     db.commit()
     from ..services.uploads import attachment_headers
-    return StreamingResponse(storage.open(a.file_path),
+    return StreamingResponse(stream,
                              media_type=a.mime or "application/octet-stream",
                              headers=attachment_headers(a.file_name))
 
@@ -545,7 +547,8 @@ def project_image(pid: int, db: Session = Depends(get_db)):
     m = db.get(ProjectMeta, pid)
     if not m or not m.image_path:
         raise HTTPException(404, "无封面图")
-    return StreamingResponse(storage.open(m.image_path),
+    from ..services.uploads import open_stored_file
+    return StreamingResponse(open_stored_file(m.image_path),
                              media_type=m.image_mime or "image/*")
 
 

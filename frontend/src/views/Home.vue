@@ -34,7 +34,7 @@ const recentFeed = computed(() => {
   const rows: any[] = []
   mineDs.value.forEach((d: any) => (d.recent || []).forEach((e: any) =>
     rows.push({ ...e, ds_name: d.name_zh, ds_slug: d.slug })))
-  return rows.sort((a, b) => (b.at || '').localeCompare(a.at || '')).slice(0, 6)
+  return rows.sort((a, b) => (b.at || '').localeCompare(a.at || '')).slice(0, 3)
 })
 
 function resolveGroup() {

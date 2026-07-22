@@ -317,6 +317,8 @@ def download_bug_attachment(aid: int, db: Session = Depends(get_db),
     b = db.get(Bug, a.bug_id)
     if not is_dataset_member(db, b.dataset_id, user):
         raise HTTPException(403, "需为数据集成员")
+    from ..services.uploads import open_stored_file
+    stream = open_stored_file(a.file_path)
     from ..services.downloads import log_download
     from ..models.dataset import Dataset as _DS
     _d = db.get(_DS, b.dataset_id)
@@ -326,7 +328,7 @@ def download_bug_attachment(aid: int, db: Session = Depends(get_db),
                  link=(f"/#/datasets/{_d.slug}?tab=bugs&bug={b.id}" if _d else ""))
     db.commit()
     from ..services.uploads import attachment_headers
-    return StreamingResponse(storage.open(a.file_path), media_type=a.mime or "application/octet-stream",
+    return StreamingResponse(stream, media_type=a.mime or "application/octet-stream",
                              headers=attachment_headers(a.file_name))
 
 
@@ -414,6 +416,44 @@ def finalize_item(iid: int, body: FinalizeIn, db: Session = Depends(get_db),
 
 
 # ============ 一键把已采纳勘误应用到上一版数据，生成新版本 ============
+def _accepted_release_material(db: Session, dataset_id: int, unique_id_var: str):
+    """生成勘误发版所需的结构化修改项、文字说明和实际修改代码。"""
+    from ..services.data_ops import apply_corrections_script
+    items = db.query(BugItem).filter_by(dataset_id=dataset_id, status="accepted").filter(
+        BugItem.applied_in_version.is_(None)).order_by(BugItem.bug_id, BugItem.seq).all()
+    payload = [{"seq": it.id, "bug_id": it.bug_id, "item_seq": it.seq,
+                "uid_value": it.uid_value, "var_name": it.var_name,
+                "current_value": it.current_value, "suggested_value": it.suggested_value,
+                "reason": it.reason} for it in items]
+    script = apply_corrections_script(payload, unique_id_var) if payload else ""
+    lines = [f"本版本应用 {len(payload)} 条已采纳勘误："]
+    for it in payload:
+        reason = f"；说明：{it['reason']}" if it.get("reason") else ""
+        lines.append(
+            f"- 勘误 #{it['bug_id']}·第 {it['item_seq']} 项：{unique_id_var}={it['uid_value']}，"
+            f"{it['var_name']} 由「{it.get('current_value') or ''}」改为「{it.get('suggested_value') or ''}」{reason}")
+    if script:
+        lines.extend(["", "修改代码：", script.rstrip()])
+    return items, payload, script, "\n".join(lines)
+
+
+@router.get("/datasets/{slug}/corrections-release-preview")
+def corrections_release_preview(slug: str, db: Session = Depends(get_db),
+                                user: User = Depends(get_current_user)):
+    """一键发版弹窗默认说明：同时给出人可读摘要与可复核修改代码。"""
+    d = _ds(db, slug)
+    if not is_dataset_admin(db, d.id, user):
+        raise HTTPException(403, "仅数据集管理员可查看已采纳勘误的发版说明")
+    cfg = db.get(DatasetDataConfig, d.id)
+    uidv = cfg.unique_id_var if cfg else None
+    if not uidv:
+        raise HTTPException(400, "请先在「数据处理设置」指定唯一ID变量，再生成勘误发版说明")
+    _, payload, script, changelog = _accepted_release_material(db, d.id, uidv)
+    if not payload:
+        raise HTTPException(400, "没有待应用的已采纳勘误项；请先完成勘误终审")
+    return {"count": len(payload), "changelog_zh": changelog, "script": script}
+
+
 @router.post("/datasets/{slug}/apply-corrections")
 def apply_corrections_endpoint(slug: str, base_version_id: int = Form(...),
                                new_version_id: str = Form(...), changelog_zh: str = Form(""),
@@ -434,25 +474,23 @@ def apply_corrections_endpoint(slug: str, base_version_id: int = Form(...),
     uidv = cfg.unique_id_var if cfg else None
     if not uidv:
         raise HTTPException(400, "请先在数据设置里指定唯一ID变量，才能按ID定位修改")
-    items = db.query(BugItem).filter_by(dataset_id=d.id, status="accepted").filter(
-        BugItem.applied_in_version.is_(None)).all()
-    if not items:
+    items, payload, script, default_changelog = _accepted_release_material(db, d.id, uidv)
+    if not payload:
         raise HTTPException(400, "没有待应用的已采纳勘误项")
-    payload = [{"seq": it.id, "uid_value": it.uid_value, "var_name": it.var_name,
-                "suggested_value": it.suggested_value} for it in items]
-    new_bytes, source, script, applied_ids = apply_corrections(
+    new_bytes, source, generated_script, applied_ids = apply_corrections(
         base.data_file_path, payload, uidv, cfg.script_only if cfg else False)
     if new_bytes is None:
         write_audit(db, user.id, "dataset.apply_corrections.script", "dataset", d.id)
-        return {"generated": "script", "script": script,
+        return {"generated": "script", "script": generated_script,
                 "note": "数据过大或设为仅脚本模式：请在本地运行脚本改好数据后，用「发布新版本·原始」上传。"}
     key = f"versions/{d.slug}/{new_version_id}/data.dta"
-    storage.save(key, io.BytesIO(new_bytes))
+    from ..services.uploads import save_stored_file
+    save_stored_file(key, io.BytesIO(new_bytes))
     db.query(DataVersion).filter_by(dataset_id=d.id, is_current=True).update(
         {"is_current": False, "valid_to": datetime.utcnow()})
     v = DataVersion(dataset_id=d.id, version_id=new_version_id, based_on_version=base.version_id,
                     release_date=datetime.utcnow(), data_file_path=key,
-                    changelog_zh=changelog_zh or f"应用 {len(applied_ids)} 条已采纳勘误",
+                    changelog_zh=(changelog_zh or "").strip() or default_changelog,
                     created_by=user.id, is_current=True, valid_from=datetime.utcnow())
     db.add(v); db.flush()
     db.add(VersionExtra(version_id=v.id, data_kind="raw", generated=source))

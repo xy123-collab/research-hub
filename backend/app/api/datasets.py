@@ -315,21 +315,40 @@ async def publish_version(slug: str, version_id: str = Form(...),
     # 版本不可覆盖：同 (dataset, version_id) 不允许重复
     if db.query(DataVersion).filter_by(dataset_id=d.id, version_id=version_id).first():
         raise HTTPException(400, f"版本 {version_id} 已存在，版本不可覆盖")
+    if not (version_id or "").strip():
+        raise HTTPException(400, "请填写版本号（如 v1.1.0）")
     data_key = codebook_key = None
     if data_file:
-        from ..services.uploads import DATA_EXT, data_ext_of
-        ext = data_ext_of(data_file.filename)
-        if ext not in DATA_EXT:
-            raise HTTPException(400, "数据文件仅支持：" + " / ".join(sorted(DATA_EXT)))
-        data_key = f"versions/{d.slug}/{version_id}/{data_file.filename}"
-        storage.save(data_key, data_file.file)
+        from ..services.uploads import DATA_EXT, validate_upload
+        from ..services.introspect import read_table_df
+        checked = validate_upload(data_file, DATA_EXT)
+        raw = data_file.file.read(); data_file.file.seek(0)
+        try:
+            probe = read_table_df(raw, checked["ext"].lstrip("."), nrows=5)
+            if len(probe.columns) == 0:
+                raise ValueError("未读取到变量列")
+        except Exception as exc:
+            hint = ("MATLAB v7.3 文件请在 MATLAB 中用 save(..., '-v7') 另存"
+                    if checked["ext"] == ".mat" else
+                    "请确认扩展名与真实格式一致、文件未加密且未损坏")
+            raise HTTPException(
+                400, f"无法解析数据文件「{checked['filename']}」：{exc}。{hint}")
+        data_key = f"versions/{d.slug}/{version_id}/{checked['filename']}"
+        from ..services.uploads import save_stored_file
+        save_stored_file(data_key, data_file.file)
     if codebook_file:
-        codebook_key = f"versions/{d.slug}/{version_id}/{codebook_file.filename}"
-        storage.save(codebook_key, codebook_file.file)
+        from ..services.uploads import validate_upload
+        checked = validate_upload(codebook_file, allow_any_type=True)
+        codebook_key = f"versions/{d.slug}/{version_id}/{checked['filename']}"
+        from ..services.uploads import save_stored_file
+        save_stored_file(codebook_key, codebook_file.file)
     mapping_key = None
     if mapping_file:
-        mapping_key = f"versions/{d.slug}/{version_id}/mapping_{mapping_file.filename}"
-        storage.save(mapping_key, mapping_file.file)
+        from ..services.uploads import validate_upload
+        checked_mapping = validate_upload(mapping_file, allow_any_type=True)
+        mapping_key = f"versions/{d.slug}/{version_id}/mapping_{checked_mapping['filename']}"
+        from ..services.uploads import save_stored_file
+        save_stored_file(mapping_key, mapping_file.file)
     # 样例数据不参与"当前推荐版"迭代（公开、独立、不迭代）；原始/脱敏才竞争 current
     is_iterating = data_kind in ("raw", "masked")
     if is_iterating:
@@ -347,7 +366,7 @@ async def publish_version(slug: str, version_id: str = Form(...),
     # #3 上传原始数据后，自动抽取该版本变量并同步到「数据处理设置」的变量清单
     if mapping_key:
         db.add(VersionAuxFile(version_id=v.id, dataset_id=d.id, kind="mapping",
-                              filename=mapping_file.filename, file_path=mapping_key,
+                              filename=checked_mapping["filename"], file_path=mapping_key,
                               note_zh=(mapping_note or "").strip() or None,
                               uploaded_by=user.id))
     var_sync = None
@@ -578,6 +597,8 @@ def download(slug: str, vid: int, file: str = "data", db: Session = Depends(get_
         key = v.data_file_path
     if not key:
         raise HTTPException(404, "文件不存在")
+    from ..services.uploads import open_stored_file
+    stream = open_stored_file(key)
     # 四节 原则六 / 七节 4：留痕（含权限来源）
     db.add(DownloadLog(user_id=user.id, dataset_id=d.id, version_id=v.id, file_type=file,
                        file_name=key.split("/")[-1], downloaded_at=datetime.utcnow()))
@@ -590,7 +611,7 @@ def download(slug: str, vid: int, file: str = "data", db: Session = Depends(get_
                 {"version": v.version_id, "file": file, "source": source})
     db.commit()
     from ..services.uploads import attachment_headers
-    return StreamingResponse(storage.open(key), media_type="application/octet-stream",
+    return StreamingResponse(stream, media_type="application/octet-stream",
                              headers=attachment_headers(key.split("/")[-1]))
 
 
@@ -996,7 +1017,8 @@ def desensitize_version(slug: str, vid: int, new_version_id: str = Form(...),
                 "note": "数据过大或设为仅脚本模式：请在本地运行该脚本生成脱敏数据后，"
                         "用「发布新版本·脱敏」上传。"}
     key = f"versions/{d.slug}/{new_version_id}/masked.dta"
-    storage.save(key, io.BytesIO(new_bytes))
+    from ..services.uploads import save_stored_file
+    save_stored_file(key, io.BytesIO(new_bytes))
     # 脱敏版参与迭代：取代当前推荐版
     db.query(DataVersion).filter_by(dataset_id=d.id, is_current=True).update(
         {"is_current": False, "valid_to": datetime.utcnow()})
@@ -1149,7 +1171,8 @@ def upload_candidate(slug: str, note: str = Form(""), file: UploadFile = File(..
     if not has_dataset_perm(db, d.id, user, "upload.candidate"):
         raise HTTPException(403, "需获得「上传版本候选文件」授权")
     key = f"candidates/{d.slug}/{datetime.utcnow():%Y%m%d%H%M%S}_{file.filename}"
-    storage.save(key, file.file)
+    from ..services.uploads import save_stored_file
+    save_stored_file(key, file.file)
     c = VersionCandidate(dataset_id=d.id, uploaded_by=user.id, file_path=key,
                          file_name=file.filename, note=note, status="pending",
                          created_at=datetime.utcnow())

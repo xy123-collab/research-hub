@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuth } from '../stores/auth'
@@ -10,6 +10,7 @@ import PostCard from '../components/PostCard.vue'
 import PostComposer from '../components/PostComposer.vue'
 import MentionInput from '../components/MentionInput.vue'
 import DownloadHistoryModal from '../components/DownloadHistoryModal.vue'
+import { downloadFile } from '../utils/download'
 
 const route = useRoute(); const router = useRouter(); const { t } = useI18n(); const auth = useAuth()
 const uid = ref<number>(0)
@@ -456,9 +457,23 @@ async function createWs() {
   finally { wsSaving.value = false }
 }
 async function openWs(id: number) {
+  clearEntryImageUrls()
   wsModal.value = (await api.get(`/workspaces/${id}`)).data; entryCat.value = 'all'
   wsMemberQ.value = ''; wsMemberResults.value = []
+  for (const e of (wsModal.value.entries || []).filter((x: any) => x.is_image && x.file_url)) {
+    try {
+      const r = await api.get(e.file_url, { responseType: 'blob' })
+      entryImageUrls.value[e.id] = URL.createObjectURL(r.data)
+    } catch { e.image_load_failed = true }
+  }
 }
+const entryImageUrls = ref<Record<number, string>>({})
+function clearEntryImageUrls() {
+  Object.values(entryImageUrls.value).forEach(url => URL.revokeObjectURL(url))
+  entryImageUrls.value = {}
+}
+function closeWs() { clearEntryImageUrls(); wsModal.value = null }
+onBeforeUnmount(clearEntryImageUrls)
 async function delWs(id: number) {
   if (!confirm('确定删除该工作台？')) return
   await api.delete(`/workspaces/${id}`); reloadWs()
@@ -634,7 +649,7 @@ async function removeWsMember(m: any) {
         </div>
       </div>
 
-      <!-- 我的讨论（与研究广场同一套帖子，改动即时同步）-->
+    <!-- 我的讨论（与研究讨论区同一套帖子，改动即时同步）-->
       <div v-else-if="tab==='discuss'">
         <div class="flex items-center justify-between mb-3">
           <div class="flex flex-wrap gap-1 text-xs">
@@ -927,7 +942,7 @@ async function removeWsMember(m: any) {
             <h3 class="text-lg">{{ wsModal.title }}</h3>
             <div class="text-xs text-gray-400 mt-0.5">成员：{{ (wsModal.member_list||[]).map((m)=>m.name).join('、') }}</div>
           </div>
-          <button @click="wsModal=null" class="text-gray-400"><Icon name="close" class="ico" style="width:18px;height:18px" /></button>
+          <button @click="closeWs" class="text-gray-400"><Icon name="close" class="ico" style="width:18px;height:18px" /></button>
         </div>
         <a v-if="wsModal.overleaf_url" :href="wsModal.overleaf_url" target="_blank" class="text-accent text-xs">Overleaf ↗</a>
 
@@ -963,7 +978,7 @@ async function removeWsMember(m: any) {
           </div>
           <textarea v-model="entryForm.body" rows="2" class="input mb-2" placeholder="记录一条进展 / 结果 / 讨论…"></textarea>
           <div class="flex items-center justify-between">
-            <input type="file" class="text-xs" @change="(e)=>entryFile=e.target.files[0]" />
+            <input type="file" class="text-xs" @change="(e:any)=>entryFile=e.target.files[0]" />
             <button class="btn-primary text-sm" :disabled="entrySaving" @click="addEntry">{{ entrySaving ? '添加中…' : '＋添加到时间轴' }}</button>
           </div>
         </div>
@@ -990,10 +1005,11 @@ async function removeWsMember(m: any) {
             </div>
             <div class="font-medium text-sm mt-1" v-if="e.title">{{ e.title }}</div>
             <p v-if="e.body" class="text-sm text-gray-600 whitespace-pre-line mt-0.5">{{ e.body }}</p>
-            <img v-if="e.is_image && e.file_url" :src="e.file_url" class="mt-2 rounded max-h-56 border border-line" />
-            <a v-else-if="e.has_file" :href="e.file_url" target="_blank"
+            <img v-if="e.is_image && entryImageUrls[e.id]" :src="entryImageUrls[e.id]" class="mt-2 rounded max-h-56 border border-line" />
+            <p v-else-if="e.is_image && e.image_load_failed" class="text-xs text-accent2 mt-1">图片读取失败；请刷新工作台，若仍失败请管理员检查文件存储。</p>
+            <button v-else-if="e.has_file" @click="downloadFile(e.file_url, e.file_name)"
               class="text-accent text-xs mt-1 inline-flex items-center gap-1 hover:underline">
-              <Icon name="clip" class="ico" style="width:12px;height:12px" /> {{ e.file_name }}</a>
+              <Icon name="clip" class="ico" style="width:12px;height:12px" /> {{ e.file_name }}</button>
           </div>
           <p v-if="!filteredEntries.length" class="text-gray-400 text-sm">这个分类下还没有内容。</p>
         </div>

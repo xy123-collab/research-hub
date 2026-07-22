@@ -295,9 +295,13 @@ async function doDesensitize() {
 }
 // ---------- 一键应用已采纳勘误 ----------
 const showApply = ref(false); const applyForm = ref<any>({ base_version_id: null, new_version_id: '', changelog_zh: '' })
-function openApply() {
+async function openApply() {
   applyForm.value = { base_version_id: d.value.current_version?.id || null, new_version_id: '', changelog_zh: '' }
-  showApply.value = true
+  try {
+    const preview = (await api.get(`/datasets/${slug}/corrections-release-preview`)).data
+    applyForm.value.changelog_zh = preview.changelog_zh || ''
+    showApply.value = true
+  } catch (e: any) { alert(e.response?.data?.detail || '无法生成勘误发版说明') }
 }
 async function doApply() {
   try {
@@ -434,10 +438,15 @@ async function doPublish() {
     d.value = (await api.get(`/datasets/${slug}`)).data
     const vs = r.data?.variables_synced
     if (vs && !vs.error) alert(`已发布 ${r.data.version_id}。变量已自动抽取：新增 ${vs.added}，保留 ${vs.kept}，停用 ${vs.disabled}，共 ${vs.total} 个`)
+    else if (vs?.error) alert(`已发布 ${r.data.version_id}，但变量清单同步失败。请在「数据处理设置」点击「从最新原始数据刷新变量」；若仍失败，请检查文件存储。`)
+    else alert(`已发布 ${r.data.version_id}`)
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 function download(v: any, file: string) {
   downloadFile(`/datasets/${slug}/versions/${v.id}/download?file=${file}`)
+}
+function downloadBugAttachment(a: any) {
+  downloadFile(`/bug-attachments/${a.id}/download`, a.file_name || `bug_attachment_${a.id}`)
 }
 async function deleteVersion(v: any) {
   if (!confirm(`确认删除版本 ${v.version_id}？该版本的数据/codebook/对照表文件与发布记录将一并删除，不可恢复。`)) return
@@ -1149,7 +1158,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <p class="text-xs text-gray-500 mb-2">下载模板，按「标题/作者/年份/刊物·出版社/DOI/链接URL」填写（前四必填）；导入后按行预览，可一键 AI 核验，可疑项核对后勾选「确认真实」强制上传。</p>
               <div class="flex items-center gap-2 flex-wrap">
                 <button class="btn-ghost text-xs" @click="downloadLitTemplate">下载批量模板</button>
-                <input type="file" accept=".xlsx,.csv" class="text-xs" @change="(e)=>litFile=e.target.files[0]" />
+                <input type="file" accept=".xlsx,.csv" class="text-xs" @change="(e:any)=>litFile=e.target.files[0]" />
                 <button class="btn-primary text-xs" @click="parseLit">解析预览</button>
               </div>
               <div v-if="litRows.length" class="mt-3">
@@ -1189,10 +1198,10 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
       </div>
 
-      <!-- feed 研究讨论区（与研究广场同一套帖子系统，默认关联本数据集）-->
+      <!-- feed 研究讨论区（全站同一套帖子系统，默认关联本数据集）-->
       <div v-else-if="tab==='feed'">
         <div class="flex items-center justify-between mb-3">
-          <p class="text-xs text-gray-400">与研究广场同一套讨论系统，这里默认展示并关联本数据集的讨论。</p>
+          <p class="text-xs text-gray-400">与全站研究讨论区共用同一套讨论系统，这里默认展示并关联本数据集的讨论。</p>
           <button v-if="d.is_member" class="btn-primary text-sm" @click="openDsCompose">＋发布讨论</button>
         </div>
         <PostCard v-for="p in posts" :key="p.id" :post="p" :current-user-id="auth.user?.id"
@@ -1383,7 +1392,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
         <div v-if="bugModal.attachments.length" class="mt-2">
           <div class="label-cap">证据附件</div>
-          <a v-for="a in bugModal.attachments" :key="a.id" :href="`/api/bug-attachments/${a.id}/download`" target="_blank" class="text-accent text-xs flex items-center gap-1 hover:underline"><Icon name="clip" class="ico" style="width:13px;height:13px" /> {{ a.file_name }}</a>
+          <button v-for="a in bugModal.attachments" :key="a.id" @click="downloadBugAttachment(a)" class="text-accent text-xs flex items-center gap-1 hover:underline"><Icon name="clip" class="ico" style="width:13px;height:13px" /> {{ a.file_name }}</button>
         </div>
         <div class="mt-3 border-t border-line pt-3">
           <div class="label-cap">评审记录</div>
@@ -1500,14 +1509,15 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <option value="masked">脱敏数据（与原始同步迭代）</option>
           <option value="sample">样例数据（公开可下、独立不迭代）</option>
         </select>
-        <textarea v-model="pub.changelog_zh" class="input mb-2" placeholder="更新说明 changelog"></textarea>
-        <label class="label-cap">数据文件（.dta / .csv / .xlsx / .parquet / .mat）</label>
+        <textarea v-model="pub.changelog_zh" class="input mb-2" rows="4" placeholder="建议同时填写：①文字说明（改了什么、为什么） ②修改代码/关键命令（如 replace/merge/变量构造语句）"></textarea>
+        <label class="label-cap">数据文件（.dta / .csv / .xlsx / .xls / .parquet / .mat）</label>
         <input type="file" accept=".dta,.csv,.xlsx,.xls,.parquet,.mat" @change="(e:any)=>pubData=e.target.files[0]" class="text-xs mb-2 block" />
         <p v-if="pub.data_kind==='raw'" class="text-xs text-gray-400 mb-2">上传原始数据文件后，系统会自动抽取其变量清单，同步到「数据处理设置」，并作为在线分析 df 的真实变量。支持中文文件名与中文变量名；.mat 仅支持 v7.2 及以下（MATLAB 里用 save(...,'-v7') 另存）。</p>
-        <label class="label-cap">Codebook (PDF/DOCX)</label>
+        <label class="label-cap">Codebook（支持任意格式）</label>
+        <p class="text-xs text-gray-400 mb-1">平台仅原样存储，不解析内容；下载时保留上传格式。</p>
         <input type="file" @change="(e:any)=>pubCode=e.target.files[0]" class="text-xs mb-2 block" />
-        <label class="label-cap">对照表 / 取值字典（可选）</label>
-        <p class="text-xs text-gray-400 mb-1">存放数字编码与真实中文/文字的映射，如城市列表、职位列表（CSV/Excel/PDF 均可）。</p>
+        <label class="label-cap">对照表 / 取值字典（可选，支持任意格式）</label>
+        <p class="text-xs text-gray-400 mb-1">存放数字编码与真实文字的映射；可上传 DTA、CSV、XLSX、DOCX、PDF 或其他格式。平台仅原样存储，下载时保留原格式。</p>
         <input type="file" @change="(e:any)=>pubMapping=e.target.files[0]" class="text-xs mb-1 block" />
         <input v-model="pubMappingNote" class="input mb-2 text-xs" placeholder="对照表简短说明，如「城市编码对照」" />
         <div v-if="acceptedBugs.length" class="mt-2">
@@ -1699,7 +1709,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <option v-for="v in versions.filter(x=>x.has_data)" :key="v.id" :value="v.id">{{ v.version_id }}（{{ kindLabel[v.data_kind] }}）</option>
         </select>
         <input v-model="applyForm.new_version_id" class="input mb-2 font-mono" placeholder="新版本号，如 v1.1.0" />
-        <textarea v-model="applyForm.changelog_zh" class="input mb-2" placeholder="更新说明（可留空，自动记录应用条数）"></textarea>
+        <textarea v-model="applyForm.changelog_zh" class="input mb-2 font-mono text-xs" rows="12" placeholder="系统将默认填入勘误文字说明和修改代码，可在发版前补充。"></textarea>
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showApply=false">取消</button>
           <button class="btn-primary" @click="doApply">应用并发版</button>

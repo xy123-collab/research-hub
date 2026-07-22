@@ -71,7 +71,7 @@ def _rule_based_body(u: User, items: list[dict], period_label: str, lang: str) -
              "值得关注："]
     for it in items_sorted[:6]:
         lines.append(f"• 《{it['title']}》— {it['author']}，{it['comments']} 评论 / {it['likes']} 赞")
-    lines += ["", f"进入研究广场：{link}",
+    lines += ["", f"进入研究讨论区：{link}",
               f"周报设置 / 退订：{site}/api/unsubscribe?token={make_unsub_token(u.id)}"]
     return "\n".join(lines)
 
@@ -92,7 +92,7 @@ def _ai_body(u: User, items: list[dict], period_label: str) -> str | None:
         site = settings.SITE_URL
         return (f"{u.display_name or u.username} 你好：\n\n统计周期：{period_label}\n"
                 f"本周你可见的新帖子共 {len(items)} 条。\n\n{text}\n\n"
-                f"进入研究广场：{site}/#/feed\n"
+                f"进入研究讨论区：{site}/#/feed\n"
                 f"周报设置 / 退订：{site}/api/unsubscribe?token={make_unsub_token(u.id)}")
     except Exception as e:
         log.warning("周报 AI 摘要失败，降级规则式：%s", e)
