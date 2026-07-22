@@ -9,8 +9,8 @@ const { t } = useI18n(); const router = useRouter()
 const mineDs = ref<any[]>([]); const allDs = ref<any[]>([]); const myGroups = ref<any[]>([])
 const q = ref('')
 const showDs = ref(false); const showGroup = ref(false)
-const dsForm = ref({ slug: '', name_zh: '', desc_zh: '', founder_contact: '', is_sensitive: false, group: '' })
-const gForm = ref({ slug: '', name_zh: '', desc_zh: '' })
+const dsForm = ref({ name_zh: '', desc_zh: '', founder_contact: '', is_sensitive: false, group: '' })
+const gForm = ref({ name_zh: '', desc_zh: '' })
 
 onMounted(load)
 async function load() {
@@ -43,12 +43,12 @@ function resolveGroup() {
   return myGroups.value.find((g: any) => String(g.id) === v || g.slug === v || g.name_zh === v) || false
 }
 async function createDs() {
-  if (!dsForm.value.slug || !dsForm.value.name_zh) {
-    alert('数据集标识、名称为必填'); return
+  if (!dsForm.value.name_zh) {
+    alert('数据集名称为必填'); return
   }
   const grp = resolveGroup()
   if (grp === false) { alert('未找到你所在的课题组（可按名称或 ID 填写；只能归属到你已加入的课题组）'); return }
-  const body = { slug: dsForm.value.slug, name_zh: dsForm.value.name_zh, desc_zh: dsForm.value.desc_zh,
+  const body = { name_zh: dsForm.value.name_zh, desc_zh: dsForm.value.desc_zh,
                  is_sensitive: dsForm.value.is_sensitive }
   try {
     const r = grp ? await api.post(`/groups/${grp.slug}/datasets`, body) : await api.post('/datasets', body)
@@ -57,10 +57,10 @@ async function createDs() {
   } catch (e: any) { alert(e.response?.data?.detail || '创建失败') }
 }
 async function createGroup() {
-  if (!gForm.value.slug || !gForm.value.name_zh) { alert('请填写标识与名称'); return }
+  if (!gForm.value.name_zh) { alert('请填写课题组名称'); return }
   try {
     await api.post('/groups', gForm.value); showGroup.value = false
-    gForm.value = { slug: '', name_zh: '', desc_zh: '' }; router.push('/groups')
+    gForm.value = { name_zh: '', desc_zh: '' }; router.push('/groups')
   } catch (e: any) { alert(e.response?.data?.detail || '创建失败') }
 }
 const evColor = (x: string) => x === 'version' ? '#2d4a7c' : '#7c2d3a'
@@ -183,11 +183,10 @@ const evColor = (x: string) => x === 'version' ? '#2d4a7c' : '#7c2d3a'
   </section>
 
   <!-- 创建数据集（可选归属课题组）-->
-  <div v-if="showDs" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showDs=false">
+  <div v-if="showDs" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
     <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
       <h3 class="text-lg mb-1">{{ t('home.createDataset') }}</h3>
       <p class="text-xs text-gray-400 mb-3">{{ t('home.createDsHint') }}</p>
-      <input v-model="dsForm.slug" class="input mb-2" placeholder="slug（英文唯一标识）" />
       <input v-model="dsForm.name_zh" class="input mb-2" placeholder="数据集名称" />
       <textarea v-model="dsForm.desc_zh" class="input mb-2" placeholder="简介"></textarea>
       <input v-model="dsForm.group" list="mygroups" class="input mb-1" :placeholder="t('home.attachOptional')" />
@@ -204,10 +203,9 @@ const evColor = (x: string) => x === 'version' ? '#2d4a7c' : '#7c2d3a'
   </div>
 
   <!-- 创建课题组 -->
-  <div v-if="showGroup" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showGroup=false">
+  <div v-if="showGroup" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
     <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
       <h3 class="text-lg mb-3">{{ t('home.createGroup2') }}</h3>
-      <input v-model="gForm.slug" class="input mb-2" placeholder="slug（英文唯一标识）" />
       <input v-model="gForm.name_zh" class="input mb-2" placeholder="课题组名称" />
       <textarea v-model="gForm.desc_zh" class="input mb-3" placeholder="简介"></textarea>
       <div class="flex justify-end gap-2">

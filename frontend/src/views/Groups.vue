@@ -6,7 +6,7 @@ import api from '../api'
 
 const { t } = useI18n(); const router = useRouter()
 const mine = ref<any[]>([]); const discover = ref<any[]>([]); const q = ref('')
-const showCreate = ref(false); const form = ref({ slug: '', name_zh: '', desc_zh: '' })
+const showCreate = ref(false); const form = ref({ name_zh: '', desc_zh: '' })
 
 onMounted(load)
 async function load() {
@@ -21,10 +21,10 @@ function matchG(g: any) {
 const mineShown = computed(() => mine.value.filter(matchG))
 const discoverShown = computed(() => discover.value.filter(matchG))
 async function createGroup() {
-  if (!form.value.slug || !form.value.name_zh) { alert('请填写标识与名称'); return }
+  if (!form.value.name_zh) { alert('请填写课题组名称'); return }
   try {
     await api.post('/groups', form.value); showCreate.value = false
-    form.value = { slug: '', name_zh: '', desc_zh: '' }; load()
+    form.value = { name_zh: '', desc_zh: '' }; load()
   } catch (e: any) { alert(e.response?.data?.detail || '创建失败') }
 }
 async function joinGroup(slug: string) {
@@ -82,10 +82,9 @@ async function joinGroup(slug: string) {
     </div>
   </section>
 
-  <div v-if="showCreate" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showCreate=false">
+  <div v-if="showCreate" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
     <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
       <h3 class="text-lg mb-3">{{ t('home.createGroup') }}</h3>
-      <input v-model="form.slug" class="input mb-2" placeholder="slug（英文唯一标识）" />
       <input v-model="form.name_zh" class="input mb-2" placeholder="课题组名称" />
       <textarea v-model="form.desc_zh" class="input mb-3" placeholder="简介"></textarea>
       <div class="flex justify-end gap-2">

@@ -25,7 +25,7 @@ watch(() => props.open, v => { if (v) { onlyThis.value = !!props.datasetId; load
 watch(onlyThis, () => { if (props.open) load() })
 </script>
 <template>
-  <div v-if="open" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="emit('close')">
+  <div v-if="open" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
     <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col">
       <div class="flex items-center gap-2 px-5 py-3 border-b border-line">
         <Icon name="data" class="ico text-accent" style="width:16px;height:16px" />

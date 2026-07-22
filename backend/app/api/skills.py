@@ -186,9 +186,10 @@ def download_skill(sid: int, db: Session = Depends(get_db), user: User = Depends
                  location_label="Skill 协作", detail=(s.name_zh or s.name_en or "Skill"),
                  file_name=m.file_name, link="/#/collab")
     db.commit()
+    from ..services.uploads import attachment_headers
     return StreamingResponse(storage.open(m.file_path),
                              media_type=m.mime or "application/octet-stream",
-                             headers={"Content-Disposition": f'attachment; filename="{m.file_name}"'})
+                             headers=attachment_headers(m.file_name))
 
 
 # ======================= Skill 评论（含评论的评论）=======================

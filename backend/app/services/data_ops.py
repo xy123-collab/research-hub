@@ -55,8 +55,9 @@ def desensitize(raw_key: str, rules: list[dict], unique_id_var: str | None,
         raw = _read_bytes(raw_key)
         if _too_big(raw):
             return None, "script", script
+        from .introspect import read_table_df, _ext_of
         import pandas as pd
-        df = pd.read_stata(io.BytesIO(raw))
+        df = read_table_df(raw, _ext_of(raw_key))
         for r in rules:
             v, act = r["var_name"], r.get("mask_action", "keep")
             if v not in df.columns:
@@ -104,8 +105,9 @@ def apply_corrections(base_key: str, items: list[dict], unique_id_var: str,
         raw = _read_bytes(base_key)
         if _too_big(raw):
             return None, "script", script, []
+        from .introspect import read_table_df, _ext_of
         import pandas as pd
-        df = pd.read_stata(io.BytesIO(raw))
+        df = read_table_df(raw, _ext_of(base_key))
         if unique_id_var not in df.columns:
             return None, "script", script, []
         key_str = df[unique_id_var].astype(str)

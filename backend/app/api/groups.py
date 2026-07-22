@@ -7,7 +7,7 @@ from ..core.permissions import (get_current_user, is_super_admin, is_group_admin
                                 group_lead_id, is_group_lead, GROUP_ADMIN_ROLES,
                                 GROUP_LEAD_ROLES)
 from ..core.audit import write_audit
-from ..core.naming import ensure_unique, normalize_name
+from ..core.naming import ensure_unique, normalize_name, gen_slug
 from ..models.user import User
 from ..models.group import ResearchGroup, GroupMember, GroupJoinRequest, Charter
 from ..models.dataset import Dataset, DatasetMember, DatasetGroupRequest
@@ -39,11 +39,13 @@ def list_groups(user: User = Depends(get_current_user), db: Session = Depends(ge
 @router.post("/groups")
 def create_group(body: GroupIn, user: User = Depends(get_current_user),
                  db: Session = Depends(get_db)):
-    if db.query(ResearchGroup).filter_by(slug=body.slug).first():
+    slug = (body.slug or "").strip() or gen_slug(db, ResearchGroup, "grp")
+    if db.query(ResearchGroup).filter_by(slug=slug).first():
         raise HTTPException(400, "slug 已存在")
     ensure_unique(db, ResearchGroup, "name_zh", body.name_zh, "课题组名称",
                   extra_filter={"is_deleted": False})
-    g = ResearchGroup(**body.model_dump(), created_by=user.id)
+    data = body.model_dump(); data["slug"] = slug
+    g = ResearchGroup(**data, created_by=user.id)
     db.add(g); db.flush()
     # 创建者成为课题组总管理员（group_owner）
     db.add(GroupMember(group_id=g.id, user_id=user.id, group_role="group_owner",
@@ -257,11 +259,13 @@ def create_dataset(slug: str, body: DatasetIn, user: User = Depends(get_current_
     # 原则一 + 二：仅本组成员/管理员可在组内发起数据集；总管理员不因平台身份获得此权
     if role not in ("group_admin", "member"):
         raise HTTPException(403, "需先加入课题组")
-    if db.query(Dataset).filter_by(slug=body.slug).first():
+    ds_slug = (body.slug or "").strip() or gen_slug(db, Dataset, "ds")
+    if db.query(Dataset).filter_by(slug=ds_slug).first():
         raise HTTPException(400, "数据集 slug 已存在")
     ensure_unique(db, Dataset, "name_zh", body.name_zh, "数据集名称",
                   extra_filter={"is_deleted": False})
     data = body.model_dump()
+    data["slug"] = ds_slug
     data["founder_contact"] = data.get("founder_contact") or ""  # 列非空；联系方式已改为自动取总管理员邮箱
     d = Dataset(group_id=g.id, founder_id=user.id, **data)
     db.add(d); db.flush()

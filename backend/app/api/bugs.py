@@ -325,8 +325,9 @@ def download_bug_attachment(aid: int, db: Session = Depends(get_db),
                  detail=f"勘误#{b.id} 附件", file_name=a.file_name,
                  link=(f"/#/datasets/{_d.slug}?tab=bugs&bug={b.id}" if _d else ""))
     db.commit()
+    from ..services.uploads import attachment_headers
     return StreamingResponse(storage.open(a.file_path), media_type=a.mime or "application/octet-stream",
-                             headers={"Content-Disposition": f'attachment; filename="{a.file_name}"'})
+                             headers=attachment_headers(a.file_name))
 
 
 @router.get("/bugs/{bid}")

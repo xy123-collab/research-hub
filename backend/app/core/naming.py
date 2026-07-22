@@ -29,6 +29,19 @@ def normalize_name(s: str | None) -> str:
     return " ".join(str(s).split()).casefold()
 
 
+def gen_slug(db, model, prefix: str) -> str:
+    """自动生成机器名 slug（URL 标识），全局唯一。
+
+    创建表单不再要求用户手填 slug：它只用于 URL/接口寻址，对用户无意义。
+    形如 ds-a1b2c3d4 / grp-a1b2c3d4，撞名概率极低，撞了重抽。
+    """
+    import secrets
+    while True:
+        s = f"{prefix}-{secrets.token_hex(4)}"
+        if not db.query(model).filter_by(slug=s).first():
+            return s
+
+
 def ensure_unique(db, model, field: str, value: str, label: str,
                   exclude_id=None, extra_filter: dict | None = None):
     """判重：库里已存在同名（归一化后相等）则抛 400。

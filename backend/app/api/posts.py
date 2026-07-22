@@ -425,9 +425,10 @@ def download_post_attachment(pid: int, aid: int, db: Session = Depends(get_db),
                  location_label="研究讨论区", detail=(p.title or (p.content_zh or "")[:20]),
                  file_name=a.file_name, link=f"/#/feed?post={p.id}")
     db.commit()
+    from ..services.uploads import attachment_headers
     return StreamingResponse(storage.open(a.file_path),
                              media_type=a.mime or "application/octet-stream",
-                             headers={"Content-Disposition": f'attachment; filename="{a.file_name}"'})
+                             headers=attachment_headers(a.file_name))
 
 
 @router.post("/posts/{pid}/flag")

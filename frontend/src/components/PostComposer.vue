@@ -84,7 +84,7 @@ async function submit() {
 }
 </script>
 <template>
-  <div class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="emit('close')">
+  <div class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
     <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[90vh] overflow-y-auto">
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-lg">{{ edit ? '编辑讨论' : '发布讨论' }}</h3>

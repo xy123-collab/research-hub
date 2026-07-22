@@ -12,7 +12,7 @@ from ..core.permissions import (get_current_user, is_super_admin, is_dataset_mem
                                 DS_ADMIN_ROLES, DS_LEAD_ROLES, dataset_lead_id,
                                 is_dataset_lead)
 from ..core.audit import write_audit, record_contribution
-from ..core.naming import ensure_unique, normalize_name
+from ..core.naming import ensure_unique, normalize_name, gen_slug
 from ..models.user import User
 from ..models.dataset import (Dataset, DatasetMember, JoinRequest, Variable,
                               DatasetGroupRequest)
@@ -115,11 +115,13 @@ def my_datasets(db: Session = Depends(get_db), user: User = Depends(get_current_
 def create_standalone_dataset(body: DatasetIn, db: Session = Depends(get_db),
                               user: User = Depends(get_current_user)):
     """独立创建数据集（不归属任何课题组）。创建者即发起人/数据集管理员。"""
-    if db.query(Dataset).filter_by(slug=body.slug).first():
+    ds_slug = (body.slug or "").strip() or gen_slug(db, Dataset, "ds")
+    if db.query(Dataset).filter_by(slug=ds_slug).first():
         raise HTTPException(400, "数据集 slug 已存在")
     ensure_unique(db, Dataset, "name_zh", body.name_zh, "数据集名称",
                   extra_filter={"is_deleted": False})
     data = body.model_dump()
+    data["slug"] = ds_slug
     data["founder_contact"] = data.get("founder_contact") or ""  # 列非空；联系方式已改为自动取总管理员邮箱
     d = Dataset(group_id=None, founder_id=user.id, **data)
     db.add(d); db.flush()
@@ -315,8 +317,10 @@ async def publish_version(slug: str, version_id: str = Form(...),
         raise HTTPException(400, f"版本 {version_id} 已存在，版本不可覆盖")
     data_key = codebook_key = None
     if data_file:
-        if not data_file.filename.endswith(".dta"):
-            raise HTTPException(400, "数据文件仅支持 .dta")
+        from ..services.uploads import DATA_EXT, data_ext_of
+        ext = data_ext_of(data_file.filename)
+        if ext not in DATA_EXT:
+            raise HTTPException(400, "数据文件仅支持：" + " / ".join(sorted(DATA_EXT)))
         data_key = f"versions/{d.slug}/{version_id}/{data_file.filename}"
         storage.save(data_key, data_file.file)
     if codebook_file:
@@ -585,9 +589,9 @@ def download(slug: str, vid: int, file: str = "data", db: Session = Depends(get_
     write_audit(db, user.id, "download", "dataset", d.id,
                 {"version": v.version_id, "file": file, "source": source})
     db.commit()
+    from ..services.uploads import attachment_headers
     return StreamingResponse(storage.open(key), media_type="application/octet-stream",
-                             headers={"Content-Disposition":
-                                      f'attachment; filename="{key.split("/")[-1]}"'})
+                             headers=attachment_headers(key.split("/")[-1]))
 
 
 # -------- members / join --------
@@ -797,14 +801,15 @@ def _latest_raw_version(db, dataset_id):
 
 
 def sync_variables_from_version(db, dataset, version) -> dict:
-    """读取某版本 .dta 的列名（含 Stata 变量标签），同步进 Variable 表。
+    """读取某版本数据文件（dta/csv/xlsx/parquet/mat）的列名（.dta 含 Stata 变量标签），
+    同步进 Variable 表。中文变量名可正常同步。
     保留已有变量的中文标签（label_zh）与 enabled；新列新增；原库中已不存在
     的变量置 enabled=False（不物理删除，保留脱敏规则等历史配置）。
     返回 {added, kept, disabled, total, error?}。"""
-    from ..services.introspect import read_dta_schema
+    from ..services.introspect import read_table_schema
     if not version or not version.data_file_path:
         return {"error": "no_raw_version", "added": 0, "kept": 0, "disabled": 0, "total": 0}
-    schema = read_dta_schema(version.data_file_path)
+    schema = read_table_schema(version.data_file_path)
     if not schema:
         return {"error": "read_failed", "added": 0, "kept": 0, "disabled": 0, "total": 0}
     existing = {v.var_name: v for v in
@@ -887,7 +892,7 @@ def refresh_variables(slug: str, db: Session = Depends(get_db),
         raise HTTPException(400, "还没有带数据文件的原始版本，请先发布原始数据")
     result = sync_variables_from_version(db, d, v)
     if result.get("error") == "read_failed":
-        raise HTTPException(400, "读取 .dta 失败：文件可能已丢失（免费档重启会清空上传文件）或格式异常")
+        raise HTTPException(400, "读取数据文件失败：文件可能已丢失（免费档重启会清空上传文件）或格式异常/依赖缺失")
     write_audit(db, user.id, "dataset.variables_refresh", "dataset", d.id, result)
     db.commit()
     return {"ok": True, "source_version": v.version_id, **result}
@@ -1257,9 +1262,9 @@ def _sandbox_variables(db, d):
         return [{"var_name": v.var_name, "label_zh": v.label_zh} for v in vs]
     v = _latest_raw_version(db, d.id)
     if v:
-        from ..services.introspect import read_dta_schema
+        from ..services.introspect import read_table_schema
         return [{"var_name": s["var_name"], "label_zh": s.get("label_zh")}
-                for s in read_dta_schema(v.data_file_path)]
+                for s in read_table_schema(v.data_file_path)]
     return []
 
 
@@ -1314,13 +1319,13 @@ def run_analysis(slug: str, code: str, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
     """只读沙箱执行；加载最新原始版真实数据（行数上限防爆内存），绝不写回。"""
     from ..services.sandbox import run_readonly, SandboxViolation
-    from ..services.introspect import load_dta_records
+    from ..services.introspect import load_table_records
     d = _get_ds(db, slug)
     _require_analysis(db, d, user)
     v = _latest_raw_version(db, d.id)
     if not v:
         raise HTTPException(400, "暂未连接到原始数据：请管理员先在版本库发布一版「原始」数据")
-    records, meta = load_dta_records(v.data_file_path)
+    records, meta = load_table_records(v.data_file_path)
     if meta.get("error") or not records:
         raise HTTPException(400,
                             "读取原始数据失败：文件可能已丢失（免费档重启会清空上传文件，"

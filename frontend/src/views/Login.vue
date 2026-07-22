@@ -7,7 +7,8 @@ import api from '../api'
 const auth = useAuth()
 const router = useRouter()
 const mode = ref<'login' | 'register' | 'forgot'>('login')
-const username = ref(''); const password = ref(''); const displayName = ref('')
+const forgotKind = ref<'password' | 'username'>('password')
+const username = ref(''); const password = ref(''); const password2 = ref(''); const displayName = ref('')
 const email = ref('')
 const err = ref(''); const msg = ref(''); const cfg = ref<any>({})
 
@@ -21,12 +22,16 @@ async function submit() {
       router.push('/')
     } else if (mode.value === 'register') {
       if (!email.value.trim()) { err.value = '注册必须填写邮箱（用于找回密码与消息通知）'; return }
+      if (password.value !== password2.value) { err.value = '两次输入的密码不一致，请重新输入'; return }
       await auth.register({ username: username.value, password: password.value,
         display_name: displayName.value, email: email.value.trim() })
       router.push('/')
-    } else {
+    } else if (forgotKind.value === 'password') {
       const r = await api.post('/auth/forgot-password', { email: email.value.trim() })
       msg.value = r.data.detail || '若该邮箱存在，我们已发送重置链接'
+    } else {
+      const r = await api.post('/auth/forgot-username', { email: email.value.trim() })
+      msg.value = r.data.detail || '若该邮箱存在，我们已发送你的账号名'
     }
   } catch (e: any) { err.value = e.response?.data?.detail || '失败' }
 }
@@ -44,24 +49,32 @@ async function submit() {
       </div>
 
       <template v-if="mode!=='forgot'">
-        <input v-if="mode==='register'" v-model="displayName" class="input mb-2" placeholder="显示名" />
-        <input v-model="username" class="input mb-2" placeholder="用户名" />
-        <input v-if="mode==='register'" v-model="email" type="email" class="input mb-2" placeholder="邮箱（必填，用于找回密码）" />
-        <input v-model="password" type="password" class="input mb-3" placeholder="密码" @keyup.enter="submit" />
+        <input v-if="mode==='register'" v-model="displayName" class="input mb-2" placeholder="昵称（对外展示，之后可修改）" />
+        <input v-model="username" class="input mb-1" placeholder="账号名" />
+        <p v-if="mode==='register'" class="text-[11px] text-gray-400 mb-2">账号名用于登录，注册后不可修改，建议用字母/数字。</p>
+        <input v-if="mode==='register'" v-model="email" type="email" class="input mb-2" placeholder="邮箱（必填，用于找回密码/账号名）" />
+        <input v-model="password" type="password" :class="mode==='register'?'input mb-2':'input mb-3'" placeholder="密码" @keyup.enter="mode==='login' && submit()" />
+        <input v-if="mode==='register'" v-model="password2" type="password" class="input mb-3" placeholder="再次输入密码（确认一致）" @keyup.enter="submit" />
       </template>
       <template v-else>
-        <p class="text-sm text-gray-500 mb-2">输入注册邮箱，我们会给你发送重置密码的链接。</p>
+        <div class="flex gap-2 mb-3 text-xs">
+          <button :class="forgotKind==='password'?'btn-primary':'btn-ghost'" @click="forgotKind='password';err='';msg=''">找回密码</button>
+          <button :class="forgotKind==='username'?'btn-primary':'btn-ghost'" @click="forgotKind='username';err='';msg=''">找回账号名</button>
+        </div>
+        <p class="text-sm text-gray-500 mb-2">
+          {{ forgotKind==='password' ? '输入注册邮箱，我们会给你发送重置密码的链接。' : '输入注册邮箱，我们会把该邮箱对应的账号名发送给你。' }}
+        </p>
         <input v-model="email" type="email" class="input mb-3" placeholder="注册邮箱" @keyup.enter="submit" />
       </template>
 
       <p v-if="err" class="text-accent2 text-xs mb-2">{{ err }}</p>
       <p v-if="msg" class="text-green-700 text-xs mb-2">{{ msg }}</p>
       <button class="btn-primary w-full" @click="submit">
-        {{ mode==='login'?'登录':mode==='register'?'注册':'发送重置链接' }}
+        {{ mode==='login'?'登录':mode==='register'?'注册':(forgotKind==='password'?'发送重置链接':'发送账号名') }}
       </button>
 
       <div class="flex justify-between mt-3 text-[12px]">
-        <button v-if="mode!=='forgot'" class="text-accent hover:underline" @click="mode='forgot';err='';msg=''">忘记密码？</button>
+        <button v-if="mode!=='forgot'" class="text-accent hover:underline" @click="mode='forgot';forgotKind='password';err='';msg=''">忘记密码 / 账号名？</button>
         <button v-else class="text-accent hover:underline" @click="mode='login';err='';msg=''">← 返回登录</button>
         <span class="text-gray-400">试用账号：lixiaoyu / pass123</span>
       </div>

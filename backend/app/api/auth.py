@@ -20,7 +20,7 @@ router = APIRouter(tags=["auth"])
 @router.post("/auth/register", response_model=TokenOut)
 def register(body: RegisterIn, db: Session = Depends(get_db)):
     if db.query(User).filter_by(username=body.username).first():
-        raise HTTPException(400, "用户名已存在")
+        raise HTTPException(400, "账号名已存在")
     if db.query(User).filter_by(email=body.email).first():
         raise HTTPException(400, "该邮箱已被注册")
     member = db.query(Role).filter_by(code="member").first()
@@ -55,6 +55,25 @@ def forgot_password(body: ForgotPasswordIn, db: Session = Depends(get_db)):
     return {"ok": True, "detail": "若该邮箱存在，我们已发送重置链接"}
 
 
+@router.post("/auth/forgot-username")
+def forgot_username(body: ForgotPasswordIn, db: Session = Depends(get_db)):
+    """找回账号名：把该注册邮箱对应的账号名通过邮件告知本人。
+
+    与找回密码一样，无论邮箱是否存在都返回相同结果（避免探测注册邮箱）。
+    """
+    email = (body.email or "").strip()
+    u = db.query(User).filter_by(email=email).first() if email else None
+    if u:
+        send_email(db, user_id=u.id, to_email=u.email, kind="username_reminder",
+                   subject="【科研数据共享平台】找回账号名",
+                   body=(f"你好 {u.display_name or u.username}：\n\n"
+                         f"我们收到你的找回账号名请求。你的账号名是：\n\n    {u.username}\n\n"
+                         f"请使用该账号名配合密码登录。若你也忘记了密码，可在登录页选择「找回密码」。\n"
+                         f"若非本人操作，请忽略本邮件。"),
+                   meta={"username": u.username})
+    return {"ok": True, "detail": "若该邮箱存在，我们已发送你的账号名"}
+
+
 @router.post("/auth/reset-password")
 def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
     row = db.query(PasswordResetToken).filter_by(token=body.token, used=False).first()
@@ -75,7 +94,7 @@ def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
 def login(body: LoginIn, db: Session = Depends(get_db)):
     u = db.query(User).filter_by(username=body.username).first()
     if not u or not verify_password(body.password, u.password_hash):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户名或密码错误")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账号名或密码错误")
     write_audit(db, u.id, "login"); db.commit()
     return TokenOut(access_token=create_access_token(u.id),
                     refresh_token=create_refresh_token(u.id))

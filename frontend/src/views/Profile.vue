@@ -682,7 +682,7 @@ async function removeWsMember(m: any) {
     </div>
 
     <!-- ============ 编辑资料弹窗 ============ -->
-    <div v-if="showEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="closeEdit">
+    <div v-if="showEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-lg">编辑资料</h3>
@@ -697,8 +697,10 @@ async function removeWsMember(m: any) {
             <input type="file" accept="image/*" class="hidden" @change="pickAvatar" />
           </label>
         </div>
-        <label class="label-cap">姓名</label>
-        <input v-model="editForm.display_name" class="input mb-2" placeholder="显示名" />
+        <label class="label-cap">账号名（用于登录，不可修改）</label>
+        <input :value="profile?.username || ''" class="input mb-2 bg-gray-50 text-gray-500" disabled />
+        <label class="label-cap">昵称（对外展示，可修改）</label>
+        <input v-model="editForm.display_name" class="input mb-2" placeholder="昵称" />
         <label class="label-cap">研究方向</label>
         <input v-model="editForm.research_direction" class="input mb-2" placeholder="如：产业组织 / 发展经济学" />
         <label class="label-cap">关键词（逗号分隔）</label>
@@ -731,7 +733,7 @@ async function removeWsMember(m: any) {
     </div>
 
     <!-- ============ 编辑简历弹窗 ============ -->
-    <div v-if="showResumeEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="closeResumeEdit">
+    <div v-if="showResumeEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-2xl w-full p-6 m-4">
         <div class="flex items-center justify-between mb-2">
           <h3 class="text-lg">编辑简历</h3>
@@ -753,7 +755,7 @@ async function removeWsMember(m: any) {
     </div>
 
     <!-- ============ 创建项目弹窗 ============ -->
-    <div v-if="showProjCreate" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showProjCreate=false">
+    <div v-if="showProjCreate" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-3">创建项目 <span class="text-xs text-gray-400">标题·图片·文字均必填</span></h3>
         <input v-model="projForm.title" class="input mb-2" placeholder="项目标题 *" />
@@ -791,7 +793,7 @@ async function removeWsMember(m: any) {
     </div>
 
     <!-- ============ 项目详情 / 编辑 / 评论 ============ -->
-    <div v-if="projDetail" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="projDetail=null">
+    <div v-if="projDetail" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-2xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
@@ -888,7 +890,7 @@ async function removeWsMember(m: any) {
     </div>
 
     <!-- ============ 新建工作台弹窗（含邀请成员检索）============ -->
-    <div v-if="showWsCreate" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showWsCreate=false">
+    <div v-if="showWsCreate" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-3">新建项目工作台</h3>
         <input v-model="wsForm.title" class="input mb-2" placeholder="标题 *" />
@@ -918,7 +920,7 @@ async function removeWsMember(m: any) {
     </div>
 
     <!-- ============ 工作台详情（时间轴相册 + 分类 + 成员管理）============ -->
-    <div v-if="wsModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="wsModal=null">
+    <div v-if="wsModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-3xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
         <div class="flex items-center justify-between">
           <div>
@@ -1006,7 +1008,7 @@ async function removeWsMember(m: any) {
     <DownloadHistoryModal :open="showDownloads" @close="showDownloads=false" />
 
     <!-- ============ 通知设置 ============ -->
-    <div v-if="showNotify" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showNotify=false">
+    <div v-if="showNotify" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[85vh] overflow-auto">
         <div class="flex items-center px-5 py-3 border-b border-line">
           <h3 class="text-base font-medium">通知设置</h3>

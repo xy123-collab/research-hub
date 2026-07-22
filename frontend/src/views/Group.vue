@@ -19,7 +19,7 @@ async function loadGroupPosts() {
 function openGCompose() { gEditing.value = null; gComposerOpen.value = true }
 function onGPostEdit(post: any) { gEditing.value = post; gComposerOpen.value = true }
 function onGPostDeleted(id: number) { gPosts.value = gPosts.value.filter((p: any) => p.id !== id) }
-const showDs = ref(false); const dsForm = ref({ slug: '', name_zh: '', desc_zh: '', founder_contact: '' })
+const showDs = ref(false); const dsForm = ref({ name_zh: '', desc_zh: '', founder_contact: '' })
 const showEdit = ref(false); const editForm = ref<any>({})
 
 const slug = () => route.params.slug as string
@@ -34,7 +34,7 @@ async function load() {
   }
 }
 async function createDs() {
-  if (!dsForm.value.slug || !dsForm.value.name_zh) { alert('数据集标识、名称为必填'); return }
+  if (!dsForm.value.name_zh) { alert('数据集名称为必填'); return }
   try {
     await api.post(`/groups/${slug()}/datasets`, dsForm.value)
     showDs.value = false; load()
@@ -228,10 +228,9 @@ function goActivity(e: any) { const l = activityLink(e); if (l) router.push(l) }
       :context="{ groupId: g.id, groupName: g.name_zh }"
       @close="gComposerOpen=false" @saved="loadGroupPosts" />
 
-    <div v-if="showDs" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showDs=false">
+    <div v-if="showDs" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
         <h3 class="text-lg mb-3">发起新数据集</h3>
-        <input v-model="dsForm.slug" class="input mb-2" placeholder="slug" />
         <input v-model="dsForm.name_zh" class="input mb-2" placeholder="数据集名称" />
         <textarea v-model="dsForm.desc_zh" class="input mb-3" placeholder="简介"></textarea>
         <div class="flex justify-end gap-2">
@@ -242,7 +241,7 @@ function goActivity(e: any) { const l = activityLink(e); if (l) router.push(l) }
     </div>
 
     <!-- 全部成员弹窗（检索栏在最上方，可下拉滚动）-->
-    <div v-if="showMembers" class="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-16" @click.self="showMembers=false">
+    <div v-if="showMembers" class="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-16">
       <div class="bg-white rounded-lg max-w-lg w-full m-4 max-h-[75vh] flex flex-col">
         <div class="p-4 border-b border-line">
           <div class="flex items-center justify-between mb-2">
@@ -271,7 +270,7 @@ function goActivity(e: any) { const l = activityLink(e); if (l) router.push(l) }
     </div>
 
     <!-- 编辑课题组公约 -->
-    <div v-if="showCharterEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showCharterEdit=false">
+    <div v-if="showCharterEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-1">编辑课题组公约</h3>
         <p class="text-xs text-gray-500 mb-3">保存后版本号 +1，成员需重新确认。</p>
@@ -284,7 +283,7 @@ function goActivity(e: any) { const l = activityLink(e); if (l) router.push(l) }
     </div>
 
     <!-- 编辑课题组 -->
-    <div v-if="showEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showEdit=false">
+    <div v-if="showEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
         <h3 class="text-lg mb-3">编辑课题组</h3>
         <input v-model="editForm.name_zh" class="input mb-2" placeholder="课题组名称" />

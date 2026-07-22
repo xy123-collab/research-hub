@@ -970,7 +970,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             </template>
             <button v-if="!v.has_data" class="text-xs text-gray-400">无数据文件</button>
             <button v-else-if="v.data_kind==='sample' || d.is_admin || (v.is_current ? canDownloadCurrent : (d.settings?.history_downloadable || (d.my_perms||[]).includes('download.history')))"
-              class="btn-ghost text-xs" @click="download(v,'data')">下载 .dta</button>
+              class="btn-ghost text-xs" @click="download(v,'data')">下载数据</button>
             <button v-else-if="d.is_member && v.is_current && d.settings?.download_policy==='approval'"
               class="btn-ghost text-xs text-accent" @click="openDlReq">申请下载</button>
             <span v-else class="text-xs text-gray-400">无下载权限</span>
@@ -1109,7 +1109,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
 
         <!-- 文献上传浮层：三选一 -->
-        <div v-if="showLitUpload" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showLitUpload=false">
+        <div v-if="showLitUpload" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div class="bg-white rounded-lg max-w-2xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
             <div class="flex items-center justify-between mb-3">
               <h3 class="text-lg">文献上传</h3>
@@ -1313,7 +1313,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
       </svg>
     </button>
 
-    <div v-if="showHint" class="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-[70]" @click.self="showHint=false">
+    <div v-if="showHint" class="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-[70]">
       <div class="bg-white rounded-lg max-w-lg w-full p-5 m-4 max-h-[85vh] overflow-y-auto">
         <div class="flex items-center justify-between mb-2">
           <h3 class="text-lg flex items-center gap-2"><span>🔍</span> AI 勘误助手</h3>
@@ -1348,7 +1348,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 
     <!-- ========== 弹窗 ========== -->
     <!-- bug 详情 -->
-    <div v-if="bugModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="bugModal=null">
+    <div v-if="bugModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <div class="flex items-center justify-between">
           <h3 class="text-lg">勘误 #{{ bugModal.id }} <span class="tag ml-1">{{ bugModal.status }}</span></h3>
@@ -1411,7 +1411,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- code 详情 -->
-    <div v-if="codeModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="codeModal=null">
+    <div v-if="codeModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-2xl w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <div class="flex items-center justify-between">
           <h3 class="text-lg font-mono">{{ codeModal.filename }}</h3>
@@ -1460,7 +1460,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 发布代码新版本 -->
-    <div v-if="showCodeVer" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]" @click.self="showCodeVer=false">
+    <div v-if="showCodeVer" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
         <h3 class="text-lg mb-3">发布代码新版本</h3>
         <input v-model="codeVerForm.version_label" class="input mb-2 font-mono" placeholder="版本号，如 v2" />
@@ -1476,7 +1476,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 授予代码权限 -->
-    <div v-if="showCodeGrant" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]" @click.self="showCodeGrant=false">
+    <div v-if="showCodeGrant" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]">
       <div class="bg-white rounded-lg max-w-sm w-full p-6 m-4">
         <h3 class="text-lg mb-3">授予代码权限</h3>
         <input v-model.number="codeGrantForm.user_id" type="number" class="input mb-2" placeholder="成员用户 ID" />
@@ -1490,7 +1490,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 发布版本 -->
-    <div v-if="showPublish" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showPublish=false">
+    <div v-if="showPublish" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-3">发布新版本（旧版本保留、不可覆盖）</h3>
         <input v-model="pub.version_id" class="input mb-2 font-mono" placeholder="版本号，如 v1.1.0 / v1.0.1-hotfix" />
@@ -1501,9 +1501,9 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <option value="sample">样例数据（公开可下、独立不迭代）</option>
         </select>
         <textarea v-model="pub.changelog_zh" class="input mb-2" placeholder="更新说明 changelog"></textarea>
-        <label class="label-cap">数据文件 (.dta)</label>
-        <input type="file" accept=".dta" @change="(e:any)=>pubData=e.target.files[0]" class="text-xs mb-2 block" />
-        <p v-if="pub.data_kind==='raw'" class="text-xs text-gray-400 mb-2">上传原始 .dta 后，系统会自动抽取其变量清单，同步到「数据处理设置」，并作为在线分析 df 的真实变量。</p>
+        <label class="label-cap">数据文件（.dta / .csv / .xlsx / .parquet / .mat）</label>
+        <input type="file" accept=".dta,.csv,.xlsx,.xls,.parquet,.mat" @change="(e:any)=>pubData=e.target.files[0]" class="text-xs mb-2 block" />
+        <p v-if="pub.data_kind==='raw'" class="text-xs text-gray-400 mb-2">上传原始数据文件后，系统会自动抽取其变量清单，同步到「数据处理设置」，并作为在线分析 df 的真实变量。支持中文文件名与中文变量名；.mat 仅支持 v7.2 及以下（MATLAB 里用 save(...,'-v7') 另存）。</p>
         <label class="label-cap">Codebook (PDF/DOCX)</label>
         <input type="file" @change="(e:any)=>pubCode=e.target.files[0]" class="text-xs mb-2 block" />
         <label class="label-cap">对照表 / 取值字典（可选）</label>
@@ -1524,7 +1524,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 编辑数据集 -->
-    <div v-if="showEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showEdit=false">
+    <div v-if="showEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
         <h3 class="text-lg mb-3">编辑数据集</h3>
         <input v-model="edit.name_zh" class="input mb-2" placeholder="名称" />
@@ -1539,7 +1539,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 提交代码 -->
-    <div v-if="showCodeAdd" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showCodeAdd=false">
+    <div v-if="showCodeAdd" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4">
         <h3 class="text-lg mb-3">提交处理代码</h3>
         <div class="flex gap-2 mb-2">
@@ -1559,7 +1559,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 下载申请（成员）-->
-    <div v-if="showDlReq" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showDlReq=false">
+    <div v-if="showDlReq" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-3">申请数据下载权限</h3>
         <label class="label-cap">研究用途（必填）</label>
@@ -1578,7 +1578,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 申请其他单独授权（成员）-->
-    <div v-if="showPermReq" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showPermReq=false">
+    <div v-if="showPermReq" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
         <h3 class="text-lg mb-3">申请单独授权</h3>
         <label class="label-cap">选择要申请的权限</label>
@@ -1595,7 +1595,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 授予单独授权（管理员）-->
-    <div v-if="showGrant" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showGrant=false">
+    <div v-if="showGrant" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
         <h3 class="text-lg mb-1">授予单独授权</h3>
         <p class="text-xs text-gray-500 mb-3">给「{{ grantTarget?.name }}」授予一项权限（加入数据集不自动获得，需在此单独授予）。</p>
@@ -1621,7 +1621,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 数据集设置（管理员）-->
-    <div v-if="showSettings" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showSettings=false">
+    <div v-if="showSettings" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-3">数据集设置</h3>
         <label class="label-cap">下载策略</label>
@@ -1645,7 +1645,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 编辑数据集公约 -->
-    <div v-if="showCharterEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showCharterEdit=false">
+    <div v-if="showCharterEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-1">编辑数据集公约</h3>
         <p class="text-xs text-gray-500 mb-3">保存后版本号 +1，成员需重新确认。</p>
@@ -1658,7 +1658,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 上传候选文件 -->
-    <div v-if="showCand" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showCand=false">
+    <div v-if="showCand" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-1">上传版本候选文件</h3>
         <p class="text-xs text-gray-500 mb-3">候选文件供数据集管理员审阅后正式发版；候选不等于正式版本。</p>
@@ -1676,7 +1676,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 一键生成脱敏版 -->
-    <div v-if="showDesens" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showDesens=false">
+    <div v-if="showDesens" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
         <h3 class="text-lg mb-1">从「{{ desensForm.from?.version_id }}」生成脱敏版</h3>
         <p class="text-xs text-gray-500 mb-3">按「数据处理设置」里的脱敏规则处理。数据不大将在服务器直接生成；否则返回脚本供本地运行。</p>
@@ -1690,7 +1690,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 一键应用已采纳勘误发版 -->
-    <div v-if="showApply" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showApply=false">
+    <div v-if="showApply" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
         <h3 class="text-lg mb-1">应用已采纳勘误 → 生成新版本</h3>
         <p class="text-xs text-gray-500 mb-3">按唯一ID+变量名定位单元格，自动改上一版数据。需先在「数据处理设置」指定唯一ID。数据过大将回退为脚本。</p>
@@ -1708,7 +1708,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 数据处理设置：唯一ID + 脱敏规则 -->
-    <div v-if="showDataCfg" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showDataCfg=false">
+    <div v-if="showDataCfg" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <h3 class="text-lg mb-1">数据处理设置</h3>
         <p class="text-xs text-gray-500 mb-2">唯一ID用于批量勘误定位记录（其本身不可修改）；脱敏规则用于一键生成脱敏版。</p>
@@ -1742,7 +1742,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- Codebook / 对照表 勘误提交 -->
-    <div v-if="showFileCorrect" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showFileCorrect=false">
+    <div v-if="showFileCorrect" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
         <h3 class="text-lg mb-1">{{ fileCorrectForm.targetLabel }}勘误报错</h3>
         <p class="text-xs text-gray-500 mb-3">针对版本 <span class="font-mono">{{ fileCorrectForm.version_name }}</span> 的{{ fileCorrectForm.targetLabel }}。提交后发给数据集管理员确认是否采纳（不记录历史版本迭代）。</p>
@@ -1755,7 +1755,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- 全部成员弹窗（检索栏在最上方）-->
-    <div v-if="showMembers" class="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-16" @click.self="showMembers=false">
+    <div v-if="showMembers" class="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-16">
       <div class="bg-white rounded-lg max-w-lg w-full m-4 max-h-[75vh] flex flex-col">
         <div class="p-4 border-b border-line">
           <div class="flex items-center justify-between mb-2">

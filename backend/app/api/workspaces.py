@@ -152,11 +152,14 @@ def get_entry_file(wid: int, eid: int, db: Session = Depends(get_db),
     e = db.get(WorkspaceEntry, eid)
     if not e or e.workspace_id != wid or not e.file_path:
         raise HTTPException(404, "文件不存在")
+    from ..services.uploads import attachment_headers
     inline = bool(e.mime and e.mime.startswith("image/"))
-    disp = "inline" if inline else "attachment"
+    hdrs = attachment_headers(e.file_name)
+    if inline:
+        hdrs["Content-Disposition"] = hdrs["Content-Disposition"].replace("attachment", "inline", 1)
     return StreamingResponse(storage.open(e.file_path),
                              media_type=e.mime or "application/octet-stream",
-                             headers={"Content-Disposition": f'{disp}; filename="{e.file_name}"'})
+                             headers=hdrs)
 
 
 @router.patch("/workspaces/{wid}")
@@ -322,8 +325,9 @@ def download_ws_file(wid: int, fid: int, db: Session = Depends(get_db),
     f = db.get(WorkspaceFile, fid)
     if not f or f.workspace_id != wid:
         raise HTTPException(404, "文件不存在")
+    from ..services.uploads import attachment_headers
     return StreamingResponse(storage.open(f.file_path), media_type=f.mime or "application/octet-stream",
-                             headers={"Content-Disposition": f'attachment; filename="{f.file_name}"'})
+                             headers=attachment_headers(f.file_name))
 
 
 @router.delete("/workspaces/{wid}/files/{fid}")

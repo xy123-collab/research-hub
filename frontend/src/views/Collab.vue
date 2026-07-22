@@ -125,7 +125,7 @@ function downloadSkill(s: any) {
       </button>
     </div>
 
-    <div v-if="showNewSection" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showNewSection=false">
+    <div v-if="showNewSection" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
         <h3 class="text-lg mb-3">发起其他类型协作（新建分区）</h3>
         <input v-model="secForm.name_zh" class="input mb-2" placeholder="分区名称（如：数据清洗协作 / 文献共读）" />
@@ -173,7 +173,7 @@ function downloadSkill(s: any) {
     </template>
 
     <!-- 发起 Skill 弹窗 -->
-    <div v-if="showSkill" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showSkill=false">
+    <div v-if="showSkill" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
         <h3 class="text-lg mb-3">发起 Skill</h3>
         <input v-model="skillForm.name_zh" class="input mb-2" placeholder="名称 *" />
@@ -192,7 +192,7 @@ function downloadSkill(s: any) {
     </div>
 
     <!-- Skill 详情 + 评论 -->
-    <div v-if="skillModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="skillModal=null">
+    <div v-if="skillModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-2xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
         <div class="flex items-center justify-between">
           <h3 class="text-lg">{{ skillModal.name_zh }}</h3>

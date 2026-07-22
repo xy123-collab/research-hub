@@ -5,7 +5,8 @@ from .common import ORMModel, validate_http_url
 
 # -------- group --------
 class GroupIn(BaseModel):
-    slug: str; name_zh: str; name_en: str | None = None
+    # slug 不再手填：留空由后端自动生成（grp-xxxxxxxx）；仍兼容旧调用显式传入
+    slug: str | None = None; name_zh: str; name_en: str | None = None
     desc_zh: str | None = None; desc_en: str | None = None
     icon: str | None = None; discoverable: bool = True
 
@@ -18,7 +19,8 @@ class GroupOut(ORMModel):
 
 # -------- dataset --------
 class DatasetIn(BaseModel):
-    slug: str; name_zh: str; name_en: str | None = None
+    # slug 不再手填：留空由后端自动生成（ds-xxxxxxxx）；仍兼容旧调用显式传入
+    slug: str | None = None; name_zh: str; name_en: str | None = None
     desc_zh: str | None = None; desc_en: str | None = None
     icon: str | None = None
     # 联系方式不再手填：数据集「负责人」及邮箱一律取当前总管理员的注册邮箱（自动、随转让更新）。
