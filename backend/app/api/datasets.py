@@ -42,6 +42,12 @@ def _get_ds(db, slug) -> Dataset:
     return d
 
 
+def _ensure_ds_visible(db: Session, d: Dataset, user: User) -> None:
+    """非公开数据集仅数据集成员可查看，平台身份不越权。"""
+    if not d.is_public and not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "该数据集仅已加入成员可见；请联系数据集管理员加入后再访问")
+
+
 def _ds_card(db, d, user):
     """首页/发现页用的数据集卡片：带课题组、当前版本、协作活跃度信号（只读）。"""
     n = db.query(DatasetMember).filter_by(dataset_id=d.id).count()
@@ -72,7 +78,10 @@ def search_datasets(q: str = "", limit: int = 10, db: Session = Depends(get_db),
     """按名称或 ID 检索数据集（用于发帖时关联数据集的自动匹配）。"""
     from sqlalchemy import or_
     q = (q or "").strip()
-    query = db.query(Dataset).filter_by(is_deleted=False)
+    member_ids = [m.dataset_id for m in db.query(DatasetMember).filter_by(user_id=user.id).all()]
+    query = db.query(Dataset).filter(
+        Dataset.is_deleted == False,
+        or_(Dataset.is_public == True, Dataset.id.in_(member_ids or [-1])))
     if q:
         conds = [Dataset.name_zh.ilike(f"%{q}%")]
         if q.isdigit():
@@ -140,6 +149,7 @@ def dataset_activity(slug: str, kind: str = "all", db: Session = Depends(get_db)
                      user: User = Depends(get_current_user)):
     """更新记录时间线：版本发布 / 勘误 / 处理代码，可用 kind 过滤（all|version|bug|code）。"""
     d = _get_ds(db, slug)
+    _ensure_ds_visible(db, d, user)
     items = []
     if kind in ("all", "version"):
         for v in db.query(DataVersion).filter_by(dataset_id=d.id).all():
@@ -152,7 +162,12 @@ def dataset_activity(slug: str, kind: str = "all", db: Session = Depends(get_db)
                           "detail": b.description_zh or "", "ref": b.id,
                           "at": str(b.reviewed_at) if b.reviewed_at else None, "sort": b.id})
     if kind in ("all", "code"):
+        from ..models.extras import ContentTombstone
+        deleted_code_ids = {r.content_id for r in db.query(ContentTombstone).filter_by(
+            content_type="code").all()}
         for c in db.query(CodeScript).filter_by(dataset_id=d.id).all():
+            if c.id in deleted_code_ids:
+                continue
             items.append({"type": "code", "title": f"处理代码 {c.filename}",
                           "detail": c.title_zh or "", "ref": c.id, "at": None, "sort": c.id})
     items.sort(key=lambda x: (x["at"] is not None, x["at"] or "", x["sort"]), reverse=True)
@@ -199,6 +214,7 @@ def detach_request(slug: str, db: Session = Depends(get_db),
 @router.get("/datasets/{slug}")
 def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     d = _get_ds(db, slug)
+    _ensure_ds_visible(db, d, user)
     member = is_dataset_member(db, d.id, user)
     cur = db.query(DataVersion).filter_by(dataset_id=d.id, is_current=True).first()
     lead_id = dataset_lead_id(db, d.id)
@@ -235,6 +251,7 @@ def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_cu
     return {
         "id": d.id, "slug": d.slug, "name_zh": d.name_zh, "name_en": d.name_en,
         "desc_zh": d.desc_zh, "icon": d.icon, "is_sensitive": d.is_sensitive,
+        "is_public": d.is_public,
         "group": ({"slug": grp.slug, "name_zh": grp.name_zh} if grp else None),
         "pending_group_request": ({"kind": pend.kind, "group_name": pend_group.name_zh
                                    if pend_group else "", "status": pend.status}
@@ -264,6 +281,7 @@ def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_cu
 @router.get("/datasets/{slug}/variables")
 def variables(slug: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     d = _get_ds(db, slug)
+    _ensure_ds_visible(db, d, user)
     vs = db.query(Variable).filter_by(dataset_id=d.id, enabled=True).all()
     return [{"id": v.id, "var_name": v.var_name, "group_code": v.group_code,
              "label_zh": v.label_zh, "label_en": v.label_en} for v in vs]
@@ -274,6 +292,7 @@ def variables(slug: str, db: Session = Depends(get_db), user: User = Depends(get
 def list_versions(slug: str, db: Session = Depends(get_db),
                   user: User = Depends(get_current_user)):
     d = _get_ds(db, slug)
+    _ensure_ds_visible(db, d, user)
     vs = db.query(DataVersion).filter_by(dataset_id=d.id).order_by(
         DataVersion.id.desc()).all()
     aux_by_ver = {}
@@ -403,7 +422,7 @@ def edit_dataset(slug: str, body: dict, db: Session = Depends(get_db),
     if not is_dataset_admin(db, d.id, user):
         raise HTTPException(403, "仅发起人/管理员可编辑")
     allowed = {"name_zh", "name_en", "desc_zh", "desc_en", "icon",
-               "founder_contact", "is_sensitive"}
+               "founder_contact", "is_sensitive", "is_public"}
     if "name_zh" in body and normalize_name(body["name_zh"]) != normalize_name(d.name_zh):
         ensure_unique(db, Dataset, "name_zh", body["name_zh"], "数据集名称",
                       exclude_id=d.id, extra_filter={"is_deleted": False})
@@ -413,6 +432,27 @@ def edit_dataset(slug: str, body: dict, db: Session = Depends(get_db),
     write_audit(db, user.id, "dataset.edit", "dataset", d.id)
     db.commit()
     return {"ok": True}
+
+
+@router.delete("/datasets/{slug}")
+def delete_dataset(slug: str, body: dict, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """数据集总管理员永久下架数据集。
+
+    公开页面与下载入口立即失效；版本、勘误、文献和贡献链仍作审计保留。
+    """
+    d = _get_ds(db, slug)
+    if not is_dataset_lead(db, d.id, user):
+        raise HTTPException(403, "仅数据集总管理员可删除数据集")
+    if (body.get("confirmation") or "").strip() != (d.name_zh or "").strip():
+        raise HTTPException(400, "二次确认失败：请完整输入数据集名称")
+    d.is_public = False
+    d.is_deleted = True
+    get_settings(db, d.id).is_closed = True
+    write_audit(db, user.id, "dataset.delete", "dataset", d.id,
+                {"confirmation": "name_matched", "artifacts_retained_for_audit": True})
+    db.commit()
+    return {"ok": True, "detail": "数据集已永久下架，版本/勘误/文献审计链保留"}
 
 
 @router.patch("/datasets/{slug}/versions/{vid}")

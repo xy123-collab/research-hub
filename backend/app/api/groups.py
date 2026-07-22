@@ -66,6 +66,8 @@ def group_detail(slug: str, user: User = Depends(get_current_user),
     is_member = db.query(GroupMember).filter_by(
         group_id=g.id, user_id=user.id, status="active").first() is not None
     datasets = db.query(Dataset).filter_by(group_id=g.id, is_deleted=False).all()
+    if not is_member:
+        datasets = [d for d in datasets if d.is_public]
     charter = db.query(Charter).filter_by(scope="group", ref_id=g.id).order_by(
         Charter.version.desc()).first()
     lead_id = group_lead_id(db, g.id)
@@ -153,6 +155,26 @@ def update_group(slug: str, body: GroupIn, user: User = Depends(get_current_user
     write_audit(db, user.id, "group.edit", "group", g.id)
     db.commit()
     return {"ok": True}
+
+
+@router.delete("/groups/{slug}")
+def delete_group(slug: str, body: dict, user: User = Depends(get_current_user),
+                 db: Session = Depends(get_db)):
+    """课题组总管理员可永久下架空课题组；关联数据集必须先处理。"""
+    g = _get_group(db, slug)
+    if not is_group_lead(db, g.id, user):
+        raise HTTPException(403, "仅课题组总管理员可删除课题组")
+    if (body.get("confirmation") or "").strip() != (g.name_zh or "").strip():
+        raise HTTPException(400, "二次确认失败：请完整输入课题组名称")
+    linked = db.query(Dataset).filter_by(group_id=g.id, is_deleted=False).count()
+    if linked:
+        raise HTTPException(409, f"该课题组仍有 {linked} 个有效数据集；请先在各数据集申请移出或单独删除")
+    g.discoverable = False
+    g.is_deleted = True
+    write_audit(db, user.id, "group.delete", "group", g.id,
+                {"confirmation": "name_matched"})
+    db.commit()
+    return {"ok": True, "detail": "课题组已永久下架，审计记录保留"}
 
 
 def _get_group(db, slug):

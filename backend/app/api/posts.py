@@ -269,21 +269,9 @@ def del_post(pid: int, db: Session = Depends(get_db), user: User = Depends(get_c
         raise HTTPException(404, "帖子不存在")
     if p.author_id != user.id and not is_super_admin(user):
         raise HTTPException(403, "无权删除")
-    # 连带清理评论/评论点赞/点赞/标签/附件/关注（附件文件也删）
-    cids = [c.id for c in db.query(PostComment.id).filter_by(post_id=pid).all()]
-    if cids:
-        db.query(PostCommentReaction).filter(
-            PostCommentReaction.comment_id.in_(cids)).delete(synchronize_session=False)
-    db.query(PostComment).filter_by(post_id=pid).delete()
-    db.query(PostReaction).filter_by(post_id=pid).delete()
-    db.query(PostTag).filter_by(post_id=pid).delete()
-    db.query(PostFollow).filter_by(post_id=pid).delete()
-    for a in db.query(PostAttachment).filter_by(post_id=pid).all():
-        from ..core.storage import storage
-        try: storage.delete(a.file_path)
-        except Exception: pass
-        db.delete(a)
-    db.delete(p); db.commit()
+    from ..services.content_deletion import delete_post_record
+    delete_post_record(db, p)
+    db.commit()
     return {"ok": True}
 
 

@@ -13,9 +13,21 @@ from ..models.dataset import Dataset
 from ..models.code import CodeScript, CodeBug, CodeWriteup
 from ..models.curation import CodeVersion, CodeGrant, CodeComment
 from ..models.correction import CorrectionReview, CorrectionFinal
+from ..models.extras import ContentTombstone
 from ..schemas.models import CodeIn, CodeBugIn, ReviewIn, FinalizeIn
 
 router = APIRouter(tags=["code"])
+
+
+def _code_deleted(db: Session, cid: int) -> bool:
+    return db.query(ContentTombstone).filter_by(content_type="code", content_id=cid).first() is not None
+
+
+def _get_code(db: Session, cid: int) -> CodeScript:
+    c = db.get(CodeScript, cid)
+    if not c or _code_deleted(db, cid):
+        raise HTTPException(404, "代码不存在或已删除")
+    return c
 
 
 def _code_perm(db, c: CodeScript, user, kind: str) -> bool:
@@ -38,7 +50,12 @@ def _ds(db, slug):
 @router.get("/datasets/{slug}/code")
 def list_code(slug: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     d = _ds(db, slug)
-    cs = db.query(CodeScript).filter_by(dataset_id=d.id).all()
+    if not d.is_public and not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "该数据集仅已加入成员可见")
+    deleted_ids = {r.content_id for r in db.query(ContentTombstone).filter_by(
+        content_type="code").all()}
+    cs = [c for c in db.query(CodeScript).filter_by(dataset_id=d.id).all()
+          if c.id not in deleted_ids]
     return [{"id": c.id, "filename": c.filename, "lang": c.lang, "title_zh": c.title_zh,
              "author_id": c.author_id, "reuse_count": c.reuse_count} for c in cs]
 
@@ -59,9 +76,7 @@ def add_code(slug: str, body: CodeIn, db: Session = Depends(get_db),
 
 @router.get("/code/{cid}")
 def get_code(cid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    c = db.get(CodeScript, cid)
-    if not c:
-        raise HTTPException(404, "代码不存在")
+    c = _get_code(db, cid)
     author = db.get(User, c.author_id)
     versions = db.query(CodeVersion).filter_by(script_id=cid).order_by(
         CodeVersion.id.desc()).all()
@@ -74,6 +89,7 @@ def get_code(cid: int, db: Session = Depends(get_db), user: User = Depends(get_c
             "can_edit": _code_perm(db, c, user, "edit"),
             "can_publish": _code_perm(db, c, user, "publish"),
             "can_grant": (c.author_id == user.id or is_dataset_admin(db, c.dataset_id, user)),
+            "can_delete": is_dataset_admin(db, c.dataset_id, user),
             "versions": [{"id": v.id, "version_label": v.version_label, "filename": v.filename,
                           "changelog": v.changelog, "is_current": v.is_current,
                           "created_at": str(v.created_at)[:10] if v.created_at else ""}
@@ -85,9 +101,7 @@ def get_code(cid: int, db: Session = Depends(get_db), user: User = Depends(get_c
 @router.patch("/code/{cid}")
 def edit_code(cid: int, body: dict, db: Session = Depends(get_db),
               user: User = Depends(get_current_user)):
-    c = db.get(CodeScript, cid)
-    if not c:
-        raise HTTPException(404, "代码不存在")
+    c = _get_code(db, cid)
     if not _code_perm(db, c, user, "edit"):
         raise HTTPException(403, "无修改权限（需作者授予或为数据集管理员）")
     for k in ("title_zh", "desc_zh", "source_code", "lang"):
@@ -98,14 +112,39 @@ def edit_code(cid: int, body: dict, db: Session = Depends(get_db),
     return {"ok": True}
 
 
+@router.delete("/code/{cid}")
+def delete_code(cid: int, body: dict, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    """数据集管理员永久下架代码；勘误/评论作审计记录保留。"""
+    c = _get_code(db, cid)
+    if not is_dataset_admin(db, c.dataset_id, user):
+        raise HTTPException(403, "仅所属数据集管理员可删除代码")
+    expected = (c.title_zh or c.filename or f"code-{c.id}").strip()
+    if (body.get("confirmation") or "").strip() != expected:
+        raise HTTPException(400, f"二次确认失败：请完整输入“{expected}”")
+    for version in db.query(CodeVersion).filter_by(script_id=cid).all():
+        if version.file_path:
+            try:
+                storage.delete(version.file_path)
+            except Exception:
+                pass
+        version.file_path = None
+        version.source_code = None
+    c.source_code = None
+    db.add(ContentTombstone(content_type="code", content_id=cid, deleted_by=user.id,
+                            reason="dataset_admin_confirmed"))
+    write_audit(db, user.id, "code.delete", "code", cid,
+                {"confirmation": "title_matched", "audit_relations_retained": True})
+    db.commit()
+    return {"ok": True, "detail": "代码已永久下架，勘误与评论审计记录保留"}
+
+
 # -------- 代码版本迭代（发布新版本需写修改内容）--------
 @router.post("/code/{cid}/versions")
 def publish_code_version(cid: int, version_label: str = Form(...), changelog: str = Form(...),
                          file: UploadFile | None = File(None), source_code: str = Form(""),
                          db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    c = db.get(CodeScript, cid)
-    if not c:
-        raise HTTPException(404, "代码不存在")
+    c = _get_code(db, cid)
     if not _code_perm(db, c, user, "publish"):
         raise HTTPException(403, "无重新发布权限（需作者授予或为数据集管理员）")
     if not changelog.strip():
@@ -148,9 +187,7 @@ def publish_code_version(cid: int, version_label: str = Form(...), changelog: st
 def download_code(cid: int, vid: int | None = None, db: Session = Depends(get_db),
                   user: User = Depends(get_current_user)):
     """数据集成员默认可下载代码文件（当前版本或指定版本）。"""
-    c = db.get(CodeScript, cid)
-    if not c:
-        raise HTTPException(404, "代码不存在")
+    c = _get_code(db, cid)
     if not is_dataset_member(db, c.dataset_id, user):
         raise HTTPException(403, "需为数据集成员")
     filename = c.filename or f"code_{cid}.txt"
@@ -190,9 +227,7 @@ def download_code(cid: int, vid: int | None = None, db: Session = Depends(get_db
 def grant_code(cid: int, user_id: int = Form(...), can_edit: bool = Form(False),
                can_publish: bool = Form(False), db: Session = Depends(get_db),
                user: User = Depends(get_current_user)):
-    c = db.get(CodeScript, cid)
-    if not c:
-        raise HTTPException(404, "代码不存在")
+    c = _get_code(db, cid)
     if not (c.author_id == user.id or is_dataset_admin(db, c.dataset_id, user)):
         raise HTTPException(403, "仅代码作者或数据集管理员可授权")
     if not is_dataset_member(db, c.dataset_id, db.get(User, user_id)):
@@ -211,6 +246,7 @@ def grant_code(cid: int, user_id: int = Form(...), can_edit: bool = Form(False),
 @router.get("/code/{cid}/comments")
 def list_code_comments(cid: int, db: Session = Depends(get_db),
                        user: User = Depends(get_current_user)):
+    _get_code(db, cid)
     rows = db.query(CodeComment).filter_by(script_id=cid).order_by(CodeComment.id.desc()).all()
     out = []
     for cm in rows:
@@ -225,9 +261,7 @@ def list_code_comments(cid: int, db: Session = Depends(get_db),
 def add_code_comment(cid: int, content: str = Form(...), is_correction: bool = Form(False),
                      mentions: str = Form(""),
                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    c = db.get(CodeScript, cid)
-    if not c:
-        raise HTTPException(404, "代码不存在")
+    c = _get_code(db, cid)
     if not is_dataset_member(db, c.dataset_id, user):
         raise HTTPException(403, "需为数据集成员")
     cm = CodeComment(script_id=cid, user_id=user.id, content=content,
@@ -251,9 +285,7 @@ def add_code_comment(cid: int, content: str = Form(...), is_correction: bool = F
 @router.post("/code/{cid}/writeup")
 def writeup(cid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """一键生成数据处理说明（论文数据附录写法草稿）。"""
-    c = db.get(CodeScript, cid)
-    if not c:
-        raise HTTPException(404, "代码不存在")
+    c = _get_code(db, cid)
     sys = "你是学术写作助手，把数据处理代码转写为论文'数据来源与处理'段落草稿。"
     body = ai_client.complete(f"代码({c.lang}):\n{c.source_code}\n\n生成数据处理说明：", sys)
     w = CodeWriteup(script_id=cid, body_zh=body, ai_model=ai_client.provider,
@@ -264,6 +296,7 @@ def writeup(cid: int, db: Session = Depends(get_db), user: User = Depends(get_cu
 
 @router.get("/code/{cid}/bugs")
 def list_code_bugs(cid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    _get_code(db, cid)
     bs = db.query(CodeBug).filter_by(script_id=cid).all()
     return [{"id": b.id, "line_ref": b.line_ref, "description_zh": b.description_zh,
              "status": b.status, "reporter_id": b.reporter_id} for b in bs]
@@ -272,9 +305,7 @@ def list_code_bugs(cid: int, db: Session = Depends(get_db), user: User = Depends
 @router.post("/code/{cid}/bugs")
 def add_code_bug(cid: int, body: CodeBugIn, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
-    c = db.get(CodeScript, cid)
-    if not c:
-        raise HTTPException(404, "代码不存在")
+    c = _get_code(db, cid)
     if not is_dataset_member(db, c.dataset_id, user):
         raise HTTPException(403, "需为数据集成员")
     b = CodeBug(script_id=cid, reporter_id=user.id, status="pending", **body.model_dump())
@@ -301,7 +332,7 @@ def finalize_code_bug(bid: int, body: FinalizeIn, db: Session = Depends(get_db),
     b = db.get(CodeBug, bid)
     if not b:
         raise HTTPException(404, "代码勘误不存在")
-    c = db.get(CodeScript, b.script_id)
+    c = _get_code(db, b.script_id)
     if not is_dataset_admin(db, c.dataset_id, user):
         raise HTTPException(403, "仅数据集管理员可终审")
     db.add(CorrectionFinal(target_type="code_bug", target_id=bid, decided_by=user.id,

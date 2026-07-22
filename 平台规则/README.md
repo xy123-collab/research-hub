@@ -19,3 +19,4 @@
 | `11-研究讨论区规则.md` | 统一帖子系统、可见范围、评论回复点赞、未读计数 | `api/posts.py`、`components/PostCard.vue` |
 | `12-贡献度规则.md` | 各类行为计分、本人看明细他人看汇总 | `services/scoring.py`、`core/audit.py` |
 | `13-@提及与历史下载规则.md` | 所有评论处@数据集/课题组及成员（关键词检索、按权限校验、被@进新消息）、跨位置历史下载统一留痕与双入口 | `services/mentions.py`、`services/downloads.py`、`components/MentionInput.vue` |
+| `14-删除与账号注销规则.md` | 公共研究成果的删除边界、二次确认、管理责任交接、账号匿名化与可选删帖 | `api/users.py`、`services/content_deletion.py`、`api/groups.py`、`api/datasets.py`、`api/code.py`、`api/skills.py` |

@@ -33,6 +33,13 @@ async function createSection() {
     load()
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
+async function deleteSection(s: any) {
+  if (!confirm('删除协作分区前必须先逐项处理其中的内容，不会级联删除。是否继续？')) return
+  const confirmation = prompt(`请完整输入分区名称以二次确认：\n${s.name_zh}`, '')
+  if (confirmation === null) return
+  try { await api.delete(`/collab/sections/${s.id}`, { data: { confirmation } }); await load() }
+  catch (e: any) { alert(e.response?.data?.detail || '删除失败') }
+}
 
 // ================= Skill 协作 =================
 const skills = ref<any[]>([]); const recos = ref<any[]>([])
@@ -78,10 +85,13 @@ function scopeLabel(v: string) { return SCOPE_LABELS[v] || v }
 
 // Skill 详情 + 评论（含评论的评论）
 const skillModal = ref<any>(null)
+const skillVisibility = ref<{ scope: string; scope_ref_ids: number[] }>({ scope: 'public', scope_ref_ids: [] })
 const comments = ref<any[]>([])
 const cInput = ref(''); const replyTo = ref<any>(null); const cMentions = ref<any[]>([])
 async function openSkill(s: any) {
   skillModal.value = (await api.get(`/skills/${s.id}`)).data
+  skillVisibility.value = { scope: skillModal.value.scope,
+    scope_ref_ids: [...(skillModal.value.scope_ref_ids || [])] }
   loadComments()
 }
 async function loadComments() {
@@ -103,6 +113,22 @@ async function delComment(c: any) {
 function downloadSkill(s: any) {
   downloadFile(`/skills/${s.id}/download`, s.file_name || `skill_${s.id}`)
 }
+async function saveSkillVisibility() {
+  try {
+    await api.patch(`/skills/${skillModal.value.id}/visibility`, skillVisibility.value)
+    skillModal.value = (await api.get(`/skills/${skillModal.value.id}`)).data
+    await loadSkills()
+  } catch (e: any) { alert(e.response?.data?.detail || '可见范围保存失败') }
+}
+async function deleteSkill() {
+  if (!confirm('Skill 文件与内容将永久下架，评论审计记录保留。是否继续？')) return
+  const confirmation = prompt(`请完整输入 Skill 名称以二次确认：\n${skillModal.value.name_zh}`, '')
+  if (confirmation === null) return
+  try {
+    await api.delete(`/skills/${skillModal.value.id}`, { data: { confirmation } })
+    skillModal.value = null; await loadSkills(); alert('Skill 已永久下架')
+  } catch (e: any) { alert(e.response?.data?.detail || '删除失败') }
+}
 </script>
 <template>
   <!-- ========== 分区总览 ========== -->
@@ -115,14 +141,16 @@ function downloadSkill(s: any) {
       <button class="btn-primary" @click="showNewSection=true">＋发起其他类型协作</button>
     </div>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <button v-for="s in sections" :key="s.id" class="card text-left hover:shadow-md transition"
+      <div v-for="s in sections" :key="s.id" class="card text-left hover:shadow-md transition cursor-pointer relative"
         @click="openSection(s)">
-        <h3 class="flex items-center gap-2">
+        <h3 class="flex items-center gap-2 pr-12">
           <Icon :name="s.kind==='skill'?'puzzle':'users'" class="ico text-accent" /> {{ s.name_zh }}
         </h3>
         <p class="text-sm text-gray-500 mt-1">{{ s.desc_zh || '协作分区' }}</p>
         <div class="text-xs text-gray-400 mt-2">{{ s.item_count }} 项 · {{ s.kind==='skill'?'内置':'自定义' }}</div>
-      </button>
+        <button v-if="s.can_manage" class="absolute top-3 right-3 text-xs text-red-600"
+          @click.stop="deleteSection(s)">删除</button>
+      </div>
     </div>
 
     <div v-if="showNewSection" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
@@ -207,6 +235,16 @@ function downloadSkill(s: any) {
         <div class="flex items-center gap-3 mt-3 text-sm">
           <button v-if="skillModal.has_file" class="btn-ghost text-xs" @click="downloadSkill(skillModal)">
             <Icon name="clip" class="ico" style="width:12px;height:12px" /> 下载 {{ skillModal.file_name }}</button>
+        </div>
+
+        <div v-if="skillModal.can_edit" class="mt-4 border-t border-line pt-4">
+          <div class="label-cap mb-2">管理 Skill</div>
+          <ScopeSelector v-model="skillVisibility" />
+          <div class="flex justify-between items-center mt-3">
+            <button class="text-red-600 text-xs" @click="deleteSkill">删除 Skill</button>
+            <button class="btn-primary text-xs" @click="saveSkillVisibility">保存可见范围</button>
+          </div>
+          <p class="text-[11px] text-gray-400 mt-2">删除仅下架 Skill 内容与文件，不删除已形成的评论审计记录。</p>
         </div>
 
         <!-- 评论区（含评论的评论）-->

@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from ..core.db import get_db
 from ..core.permissions import (get_current_user, is_super_admin, is_group_member,
                                 is_dataset_member)
-from ..core.audit import record_contribution
+from ..core.audit import record_contribution, write_audit
 from ..models.user import User
 from ..models.skill import Skill, SkillMember, GithubSkillReco
 from ..models.extras import CollabSection, SkillMeta, SkillComment, SKILL_SCOPES
@@ -36,10 +36,13 @@ def list_sections(db: Session = Depends(get_db), user: User = Depends(get_curren
     rows = db.query(CollabSection).order_by(CollabSection.seq, CollabSection.id).all()
     out = []
     for s in rows:
-        n = db.query(SkillMeta).filter_by(section_id=s.id).count()
+        n = (db.query(SkillMeta).join(Skill, Skill.id == SkillMeta.skill_id)
+             .filter(SkillMeta.section_id == s.id, Skill.is_deleted == False).count())
         out.append({"id": s.id, "key": s.key, "name_zh": s.name_zh, "name_en": s.name_en,
                     "desc_zh": s.desc_zh, "kind": s.kind, "item_count": n,
-                    "created_by": s.created_by})
+                    "created_by": s.created_by,
+                    "can_manage": bool(s.kind != "skill" and
+                                       (s.created_by == user.id or is_super_admin(user)))})
     return out
 
 
@@ -66,6 +69,27 @@ def create_section(body: SectionIn, db: Session = Depends(get_db),
                       desc_zh=body.desc_zh, kind="generic", created_by=user.id, seq=seq)
     db.add(s); db.commit(); db.refresh(s)
     return {"id": s.id, "key": s.key}
+
+
+@router.delete("/collab/sections/{section_id}")
+def delete_section(section_id: int, body: dict, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    section = db.get(CollabSection, section_id)
+    if not section:
+        raise HTTPException(404, "协作分区不存在")
+    if section.kind == "skill":
+        raise HTTPException(400, "内置 Skill 协作分区不可删除")
+    if section.created_by != user.id and not is_super_admin(user):
+        raise HTTPException(403, "仅分区创建者或平台管理员可删除")
+    if (body.get("confirmation") or "").strip() != (section.name_zh or "").strip():
+        raise HTTPException(400, "二次确认失败：请完整输入分区名称")
+    count = (db.query(SkillMeta).join(Skill, Skill.id == SkillMeta.skill_id)
+             .filter(SkillMeta.section_id == section.id, Skill.is_deleted == False).count())
+    if count:
+        raise HTTPException(409, f"分区中仍有 {count} 项协作内容；请先逐项处理，不支持级联删除")
+    write_audit(db, user.id, "collab_section.delete", "collab_section", section.id)
+    db.delete(section); db.commit()
+    return {"ok": True}
 
 
 # ======================= Skill 可见性 =======================
@@ -161,13 +185,71 @@ def get_skill(sid: int, db: Session = Depends(get_db), user: User = Depends(get_
     if not _can_see_skill(db, s, m, user):
         raise HTTPException(403, "无权查看该 Skill")
     fu = db.get(User, s.founder_id)
+    from ..core.scopes import scope_summary
+    scope_info = scope_summary(db, "skill", s.id)
     return {"id": s.id, "name_zh": s.name_zh, "desc_zh": s.desc_zh,
             "github_url": s.github_url, "founder_id": s.founder_id,
             "founder_name": fu.display_name if fu else "",
-            "scope": (m.scope if m else "public"),
+            "scope": (m.scope if m else "public"), "scope_ref_ids": scope_info["ref_ids"],
             "body_text": (m.body_text if m else None),
             "has_file": bool(m and m.file_path), "file_name": (m.file_name if m else None),
             "can_edit": (s.founder_id == user.id or is_super_admin(user))}
+
+
+class SkillVisibilityIn(BaseModel):
+    scope: str
+    scope_ref_ids: list[int] = []
+
+
+@router.patch("/skills/{sid}/visibility")
+def update_skill_visibility(sid: int, body: SkillVisibilityIn,
+                            db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    s = db.get(Skill, sid)
+    if not s or s.is_deleted:
+        raise HTTPException(404, "Skill 不存在")
+    if s.founder_id != user.id and not is_super_admin(user):
+        raise HTTPException(403, "仅 Skill 创建者或平台管理员可修改可见范围")
+    from ..core.scopes import set_scope
+    try:
+        set_scope(db, "skill", sid, body.scope, body.scope_ref_ids, user)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    m = db.get(SkillMeta, sid)
+    if m:
+        m.scope = body.scope
+        m.scope_ref_id = body.scope_ref_ids[0] if body.scope_ref_ids else None
+    s.is_public = body.scope == "public"
+    write_audit(db, user.id, "skill.visibility", "skill", sid, {"scope": body.scope})
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/skills/{sid}")
+def delete_skill(sid: int, body: dict, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    s = db.get(Skill, sid)
+    if not s or s.is_deleted:
+        raise HTTPException(404, "Skill 不存在")
+    if s.founder_id != user.id and not is_super_admin(user):
+        raise HTTPException(403, "仅 Skill 创建者或平台管理员可删除")
+    if (body.get("confirmation") or "").strip() != (s.name_zh or "").strip():
+        raise HTTPException(400, "二次确认失败：请完整输入 Skill 名称")
+    m = db.get(SkillMeta, sid)
+    if m and m.file_path:
+        from ..core.storage import storage
+        try:
+            storage.delete(m.file_path)
+        except Exception:
+            pass
+        m.file_path = None
+        m.file_name = None
+    s.is_public = False
+    s.is_deleted = True
+    write_audit(db, user.id, "skill.delete", "skill", sid,
+                {"comments_retained_for_audit": True})
+    db.commit()
+    return {"ok": True, "detail": "Skill 已永久下架，评论审计记录保留"}
 
 
 @router.get("/skills/{sid}/download")
@@ -203,6 +285,12 @@ class SkillCommentIn(BaseModel):
 
 @router.get("/skills/{sid}/comments")
 def skill_comments(sid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    s = db.get(Skill, sid)
+    if not s or s.is_deleted:
+        raise HTTPException(404, "Skill 不存在")
+    meta = db.get(SkillMeta, sid)
+    if not _can_see_skill(db, s, meta, user):
+        raise HTTPException(403, "无权查看该 Skill 评论")
     cs = db.query(SkillComment).filter_by(skill_id=sid).order_by(SkillComment.id).all()
     out = []
     for c in cs:

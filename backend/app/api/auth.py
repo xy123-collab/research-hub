@@ -95,6 +95,8 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
     u = db.query(User).filter_by(username=body.username).first()
     if not u or not verify_password(body.password, u.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账号名或密码错误")
+    if u.status == "left":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账号已注销，无法再次登录")
     write_audit(db, u.id, "login"); db.commit()
     return TokenOut(access_token=create_access_token(u.id),
                     refresh_token=create_refresh_token(u.id))
@@ -106,6 +108,9 @@ def refresh(body: RefreshIn, db: Session = Depends(get_db)):
     if not payload or payload.get("type") != "refresh":
         raise HTTPException(401, "refresh 令牌无效")
     uid = int(payload["sub"])
+    u = db.get(User, uid)
+    if not u or u.status == "left":
+        raise HTTPException(401, "账号已注销或不存在，请重新登录")
     return TokenOut(access_token=create_access_token(uid),
                     refresh_token=create_refresh_token(uid))
 

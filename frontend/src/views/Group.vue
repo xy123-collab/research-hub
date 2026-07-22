@@ -70,6 +70,15 @@ function openEdit() {
 async function saveEdit() {
   await api.patch(`/groups/${slug()}`, editForm.value); showEdit.value = false; load()
 }
+async function deleteGroup() {
+  if (!confirm('删除后课题组将从全部页面永久下架，且不能仍有关联数据集。是否继续？')) return
+  const confirmation = prompt(`请完整输入课题组名称以二次确认：\n${g.value.name_zh}`, '')
+  if (confirmation === null) return
+  try {
+    await api.delete(`/groups/${slug()}`, { data: { confirmation } })
+    alert('课题组已永久下架'); router.push('/groups')
+  } catch (e: any) { alert(e.response?.data?.detail || '删除失败') }
+}
 function roleLabel(m: any) { return m.is_lead ? '总管理员' : (m.is_admin ? '管理员' : '成员') }
 async function transferLead(uid: number) {
   if (!confirm('确认把「课题组总管理员」转让给该成员？你将降为普通管理员。')) return
@@ -119,6 +128,7 @@ function goActivity(e: any) { const l = activityLink(e); if (l) router.push(l) }
       </div>
       <div class="flex gap-2">
         <button v-if="g.is_admin" class="btn-ghost" @click="openEdit">编辑课题组</button>
+        <button v-if="g.is_lead" class="btn-ghost text-red-600" @click="deleteGroup">删除课题组</button>
         <button v-if="!g.is_member" class="btn-ghost" @click="join">{{ t('home.join') }}</button>
       </div>
     </div>
@@ -288,7 +298,8 @@ function goActivity(e: any) { const l = activityLink(e); if (l) router.push(l) }
         <h3 class="text-lg mb-3">编辑课题组</h3>
         <input v-model="editForm.name_zh" class="input mb-2" placeholder="课题组名称" />
         <textarea v-model="editForm.desc_zh" class="input mb-2" placeholder="简介"></textarea>
-        <label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" v-model="editForm.discoverable" /> 公开可被发现</label>
+        <label class="flex items-center gap-2 text-sm mb-1"><input type="checkbox" v-model="editForm.discoverable" /> 公开可被发现</label>
+        <p class="text-xs text-gray-400 mb-3">关闭后仅已加入成员可在“我的课题组”看到，不会删除任何内容。</p>
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showEdit=false">取消</button>
           <button class="btn-primary" @click="saveEdit">保存</button>

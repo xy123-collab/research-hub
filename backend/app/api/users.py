@@ -4,8 +4,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from pydantic import BaseModel
 from ..core.db import get_db
-from ..core.permissions import get_current_user
-from ..models.user import User
+from ..core.permissions import (get_current_user, group_lead_id, dataset_lead_id,
+                                is_super_admin)
+from ..core.security import verify_password, hash_password
+from ..models.user import User, Role
 from ..models.resume import Resume, ResumeBlock
 from ..models.community import Post, Project
 from ..models.extras import UserProfile
@@ -98,6 +100,161 @@ def patch_me(body: ProfilePatch, user: User = Depends(get_current_user),
         setattr(user, k, v)
     db.commit()
     return {"ok": True}
+
+
+# -------- 账号注销（保留公共研究成果，清除个人身份信息）--------
+class AccountDeactivateIn(BaseModel):
+    password: str
+    confirmation: str
+    delete_own_posts: bool = False
+
+
+def _primary_super_admin_uid(db: Session) -> int | None:
+    """与平台管理页一致：优先读显式设置，未设置时取最早的超级管理员。"""
+    from ..models.extras import PlatformSetting
+    row = db.get(PlatformSetting, "primary_super_admin_uid")
+    try:
+        if row and row.value:
+            return int(row.value)
+    except (TypeError, ValueError):
+        pass
+    role = db.query(Role).filter_by(code="super_admin").first()
+    if not role:
+        return None
+    first = db.query(User).filter_by(role_id=role.id, status="active").order_by(User.id).first()
+    return first.id if first else None
+
+
+def _deactivation_blockers(db: Session, user: User) -> list[dict]:
+    """仅“最高管理责任”阻止注销，普通管理员身份不阻止。"""
+    from ..models.group import ResearchGroup
+    from ..models.dataset import Dataset
+    blockers = []
+    if is_super_admin(user) and _primary_super_admin_uid(db) == user.id:
+        blockers.append({"type": "platform", "id": None, "name": "平台最高管理员",
+                         "advice": "请先在平台管理页把最高管理员转让给他人"})
+    for group in db.query(ResearchGroup).filter_by(is_deleted=False).all():
+        if group_lead_id(db, group.id) == user.id:
+            blockers.append({"type": "group", "id": group.id, "name": group.name_zh,
+                             "slug": group.slug,
+                             "advice": "请先在课题组成员管理中转让总管理员"})
+    for dataset in db.query(Dataset).filter_by(is_deleted=False).all():
+        if dataset_lead_id(db, dataset.id) == user.id:
+            blockers.append({"type": "dataset", "id": dataset.id, "name": dataset.name_zh,
+                             "slug": dataset.slug,
+                             "advice": "请先在数据集成员与权限中转让总管理员"})
+    return blockers
+
+
+def _retained_content_counts(db: Session, uid: int) -> dict:
+    """注销时不级联删除的公共或共同创作记录。"""
+    from ..models.community import (PostComment, Project, ProjectComment)
+    from ..models.code import CodeScript, CodeBug
+    from ..models.correction import Bug
+    from ..models.literature import LitRef
+    from ..models.skill import Skill
+    from ..models.extras import SkillComment
+    from ..models.curation import CodeComment
+    from ..models.mapping import FileCorrection
+    return {
+        "projects": db.query(Project).filter_by(author_id=uid).count(),
+        "code_scripts": db.query(CodeScript).filter_by(author_id=uid).count(),
+        "skills": db.query(Skill).filter_by(founder_id=uid, is_deleted=False).count(),
+        "comments": (db.query(PostComment).filter_by(user_id=uid).count()
+                     + db.query(ProjectComment).filter_by(user_id=uid).count()
+                     + db.query(SkillComment).filter_by(user_id=uid).count()
+                     + db.query(CodeComment).filter_by(user_id=uid).count()),
+        "corrections": (db.query(Bug).filter_by(reporter_id=uid).count()
+                        + db.query(CodeBug).filter_by(reporter_id=uid).count()
+                        + db.query(FileCorrection).filter_by(reporter_id=uid).count()),
+        "literature": db.query(LitRef).filter_by(added_by=uid).count(),
+    }
+
+
+@router.get("/me/deactivation-check")
+def deactivation_check(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    blockers = _deactivation_blockers(db, user)
+    return {
+        "eligible": not blockers,
+        "blockers": blockers,
+        "own_posts": db.query(Post).filter_by(author_id=user.id).count(),
+        "retained": _retained_content_counts(db, user.id),
+        "rules": [
+            "数据集、课题组、代码、Skill 等不随账号一键删除，需到原位置单独处理",
+            "已发布的勘误、文献与在他人内容下的评论保留，作者显示为已注销用户",
+            "可选择同时删除自己发布的帖子；不选则帖子匿名保留",
+        ],
+    }
+
+
+@router.post("/me/deactivate")
+def deactivate_account(body: AccountDeactivateIn,
+                       user: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
+    if body.confirmation.strip() != "注销账号":
+        raise HTTPException(400, "请完整输入“注销账号”以确认不可撤销的操作")
+    if not verify_password(body.password, user.password_hash):
+        raise HTTPException(400, "当前账号密码不正确；请核对后重试")
+    blockers = _deactivation_blockers(db, user)
+    if blockers:
+        raise HTTPException(409, detail={
+            "message": "尚有未交接的最高管理责任，暂时不能注销",
+            "blockers": blockers,
+        })
+
+    if body.delete_own_posts:
+        from ..services.content_deletion import delete_post_record
+        for post in db.query(Post).filter_by(author_id=user.id).all():
+            delete_post_record(db, post)
+
+    # 移除非负责人成员关系，但不删除任何研究产品或共同创作记录。
+    from ..models.group import GroupMember
+    from ..models.dataset import DatasetMember
+    from ..models.skill import SkillMember
+    db.query(GroupMember).filter_by(user_id=user.id).delete(synchronize_session=False)
+    db.query(DatasetMember).filter_by(user_id=user.id).delete(synchronize_session=False)
+    db.query(SkillMember).filter_by(user_id=user.id).delete(synchronize_session=False)
+
+    # 清理本人可识别信息和账号凭据，外键仍指向同一匿名用户 ID。
+    from ..models.resume import ResumeBlock
+    from ..models.extras import (EmailEvent, PasswordResetToken, NotificationState)
+    from ..models.notify import NotificationPreference, EmailDelivery
+    resume_rows = db.query(Resume).filter_by(user_id=user.id).all()
+    for resume in resume_rows:
+        db.query(ResumeBlock).filter_by(resume_id=resume.id).delete(synchronize_session=False)
+        db.delete(resume)
+    profile_extra = db.get(UserProfile, user.id)
+    if profile_extra:
+        db.delete(profile_extra)
+    db.query(PasswordResetToken).filter_by(user_id=user.id).delete(synchronize_session=False)
+    db.query(NotificationPreference).filter_by(user_id=user.id).delete(synchronize_session=False)
+    db.query(NotificationState).filter_by(user_id=user.id).delete(synchronize_session=False)
+    for event in db.query(EmailEvent).filter_by(user_id=user.id).all():
+        event.to_email = None; event.subject = "[账号已注销]"; event.body = None; event.meta = {}
+    for delivery in db.query(EmailDelivery).filter_by(recipient_user_id=user.id).all():
+        delivery.recipient_email = None; delivery.subject = "[账号已注销]"; delivery.body = None
+
+    if user.avatar and "?k=" in user.avatar:
+        from urllib.parse import unquote
+        from ..core.storage import storage
+        avatar_key = unquote(user.avatar.split("?k=", 1)[1])
+        if avatar_key.startswith("avatar/"):
+            try:
+                storage.delete(avatar_key)
+            except Exception:
+                pass
+
+    member_role = db.query(Role).filter_by(code="member").first()
+    old_uid = user.id
+    user.username = f"deactivated_{old_uid}"
+    user.email = None
+    user.password_hash = hash_password(f"disabled-{old_uid}")
+    user.display_name = f"已注销用户 #{old_uid}"
+    user.avatar = None; user.bio_zh = None; user.bio_en = None; user.contact = None
+    user.role_id = member_role.id if member_role else None
+    user.status = "left"
+    db.commit()
+    return {"ok": True, "detail": "账号已注销，个人身份信息已清除"}
 
 
 # -------- 注册邮箱（账号邮箱）：本人查看 / 修改 / 发测试信 --------

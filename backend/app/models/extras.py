@@ -159,6 +159,18 @@ class AppliedFix(Base):
     note = Column(Text)
 
 
+# ---------- 已发布内容的删除墓碑 ----------
+class ContentTombstone(Base):
+    """对需保留关联勘误/评论审计链的内容做前台永久下架。"""
+    __tablename__ = "content_tombstones"
+    id = Column(Integer, primary_key=True)
+    content_type = Column(String(30))
+    content_id = Column(Integer)
+    deleted_by = Column(Integer, ForeignKey("users.id"))
+    reason = Column(Text)
+    deleted_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ---------- 消息中心未读游标（已读到哪个时间点）----------
 class NotificationState(Base):
     """每用户一行：last_read_at 之后产生的消息计为未读。

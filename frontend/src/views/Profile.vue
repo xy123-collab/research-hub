@@ -532,6 +532,35 @@ async function removeWsMember(m: any) {
     openWs(wsModal.value.id)
   } catch (e: any) { alert(e.response?.data?.detail || '移除失败') }
 }
+
+// ==================== 账号注销 ====================
+const showDeactivate = ref(false); const deactivationCheck = ref<any>(null)
+const deactivateForm = ref({ password: '', confirmation: '', delete_own_posts: false })
+const deactivating = ref(false)
+async function openDeactivate() {
+  deactivateForm.value = { password: '', confirmation: '', delete_own_posts: false }
+  try {
+    deactivationCheck.value = (await api.get('/me/deactivation-check')).data
+    showDeactivate.value = true
+  } catch (e: any) { alert(e.response?.data?.detail || '无法检查注销条件') }
+}
+async function deactivateAccount() {
+  if (!deactivationCheck.value?.eligible) { alert('请先完成全部最高管理责任交接'); return }
+  if (deactivateForm.value.confirmation !== '注销账号') {
+    alert('请完整输入“注销账号”'); return
+  }
+  if (!deactivateForm.value.password) { alert('请输入当前账号密码'); return }
+  if (!confirm('这是最后一次确认：注销不可撤销，注册邮箱、头像、简历等个人信息将被清除。确定继续？')) return
+  deactivating.value = true
+  try {
+    await api.post('/me/deactivate', deactivateForm.value)
+    alert('账号已注销，个人身份信息已清除')
+    auth.logout()
+  } catch (e: any) {
+    alert(e.response?.data?.detail || '注销失败')
+    try { deactivationCheck.value = (await api.get('/me/deactivation-check')).data } catch {}
+  } finally { deactivating.value = false }
+}
 </script>
 <template>
   <div v-if="profile">
@@ -563,6 +592,8 @@ async function removeWsMember(m: any) {
               @click="showDownloads=true">历史下载</button>
             <button class="text-xs bg-white/15 hover:bg-white/25 rounded px-3 py-1.5"
               @click="openNotifySettings">通知设置</button>
+            <button class="text-xs bg-white/15 hover:bg-red-500/40 rounded px-3 py-1.5"
+              @click="openDeactivate">注销账号</button>
           </div>
           <div class="text-right">
             <div class="text-3xl font-serif leading-none">{{ profile.contribution }}</div>
@@ -1022,6 +1053,57 @@ async function removeWsMember(m: any) {
 
     <!-- ============ 历史下载 ============ -->
     <DownloadHistoryModal :open="showDownloads" @close="showDownloads=false" />
+
+    <!-- ============ 注销账号 ============ -->
+    <div v-if="showDeactivate" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-xl max-h-[88vh] overflow-y-auto m-4">
+        <div class="flex items-center px-5 py-3 border-b border-line">
+          <h3 class="text-base font-medium">注销账号</h3>
+          <button class="ml-auto text-gray-400" @click="showDeactivate=false">✕</button>
+        </div>
+        <div class="p-5 text-sm space-y-4">
+          <div class="rounded bg-amber-50 border border-amber-200 p-3 text-amber-900">
+            注销是删除账号与个人可识别信息，不是一键撤回公共研究成果。已发布的勘误、文献、在别人内容下的评论会保留，作者显示为“已注销用户”。
+          </div>
+          <div v-if="deactivationCheck?.blockers?.length">
+            <div class="font-medium text-red-700 mb-2">当前不能注销：请先交接以下最高管理责任</div>
+            <div v-for="b in deactivationCheck.blockers" :key="`${b.type}-${b.id}`" class="border border-red-200 rounded p-2 mb-2">
+              <div>{{ b.name }}</div><div class="text-xs text-gray-500 mt-1">{{ b.advice }}</div>
+              <router-link v-if="b.type==='group'" :to="`/groups/${b.slug}`" class="text-xs text-accent">前往课题组 →</router-link>
+              <router-link v-if="b.type==='dataset'" :to="`/datasets/${b.slug}?tab=access`" class="text-xs text-accent">前往数据集权限 →</router-link>
+              <router-link v-if="b.type==='platform'" to="/admin" class="text-xs text-accent">前往平台管理 →</router-link>
+            </div>
+          </div>
+          <template v-else>
+            <div>
+              <div class="font-medium mb-1">不随注销删除的内容</div>
+              <ul class="list-disc pl-5 text-gray-600 text-xs space-y-1">
+                <li v-for="rule in deactivationCheck?.rules || []" :key="rule">{{ rule }}</li>
+              </ul>
+              <p class="text-xs text-gray-400 mt-2">保留统计：项目 {{ deactivationCheck?.retained?.projects || 0 }}、代码 {{ deactivationCheck?.retained?.code_scripts || 0 }}、Skill {{ deactivationCheck?.retained?.skills || 0 }}、评论 {{ deactivationCheck?.retained?.comments || 0 }}、勘误 {{ deactivationCheck?.retained?.corrections || 0 }}、文献 {{ deactivationCheck?.retained?.literature || 0 }}。</p>
+            </div>
+            <label class="flex items-start gap-2 rounded border border-line p-3">
+              <input type="checkbox" v-model="deactivateForm.delete_own_posts" class="mt-0.5" />
+              <span>同时删除我自己发布的 {{ deactivationCheck?.own_posts || 0 }} 篇帖子
+                <span class="block text-xs text-gray-400">不勾选则帖子匿名保留；这不会删除你在别人帖子下的评论。</span></span>
+            </label>
+            <div>
+              <label class="label-cap">当前账号密码</label>
+              <input v-model="deactivateForm.password" type="password" class="input" autocomplete="current-password" />
+            </div>
+            <div>
+              <label class="label-cap">请输入“注销账号”</label>
+              <input v-model="deactivateForm.confirmation" class="input" placeholder="注销账号" />
+            </div>
+          </template>
+        </div>
+        <div class="px-5 py-3 border-t border-line flex justify-end gap-2">
+          <button class="btn-ghost" @click="showDeactivate=false">取消</button>
+          <button v-if="deactivationCheck?.eligible" class="btn-primary bg-red-700"
+            :disabled="deactivating" @click="deactivateAccount">{{ deactivating ? '注销中…' : '确认注销' }}</button>
+        </div>
+      </div>
+    </div>
 
     <!-- ============ 通知设置 ============ -->
     <div v-if="showNotify" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
