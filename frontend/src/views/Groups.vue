@@ -1,95 +1,82 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useI18n } from 'vue-i18n'
 import api from '../api'
 
-const { t } = useI18n(); const router = useRouter()
-const mine = ref<any[]>([]); const discover = ref<any[]>([]); const q = ref('')
-const showCreate = ref(false); const form = ref({ name_zh: '', desc_zh: '' })
+const router = useRouter()
+const projects = ref<any[]>([])
+const q = ref('')
+const showCreate = ref(false)
+const form = ref({ name_zh: '', desc_zh: '' })
+const saving = ref(false)
 
 onMounted(load)
 async function load() {
-  const g = (await api.get('/groups')).data
-  mine.value = g.mine; discover.value = g.discover
+  projects.value = (await api.get('/groups')).data.mine || []
 }
-function matchG(g: any) {
+const shown = computed(() => {
   const kw = q.value.trim().toLowerCase()
-  if (!kw) return true
-  return [g.id, g.slug, g.name_zh, g.desc_zh].map((x: any) => String(x ?? '').toLowerCase()).some(s => s.includes(kw))
+  if (!kw) return projects.value
+  return projects.value.filter((p: any) =>
+    [p.id, p.slug, p.name_zh, p.desc_zh].some(x => String(x || '').toLowerCase().includes(kw)))
+})
+function roleName(role: string) {
+  return role === 'group_owner' ? 'Owner' : role === 'group_admin' ? 'Admin' : 'Member'
 }
-const mineShown = computed(() => mine.value.filter(matchG))
-const discoverShown = computed(() => discover.value.filter(matchG))
-async function createGroup() {
-  if (!form.value.name_zh) { alert('请填写课题组名称'); return }
+async function createProject() {
+  if (!form.value.name_zh.trim()) return alert('请填写研究项目名称')
+  saving.value = true
   try {
-    await api.post('/groups', form.value); showCreate.value = false
-    form.value = { name_zh: '', desc_zh: '' }; load()
-  } catch (e: any) { alert(e.response?.data?.detail || '创建失败') }
-}
-async function joinGroup(slug: string) {
-  await api.post(`/groups/${slug}/join-requests`); alert('已提交申请，等待课题组管理员审批')
+    const res = await api.post('/groups', form.value)
+    showCreate.value = false
+    form.value = { name_zh: '', desc_zh: '' }
+    router.push(`/groups/${res.data.slug}`)
+  } catch (e: any) {
+    alert(e.response?.data?.detail || '创建失败')
+  } finally { saving.value = false }
 }
 </script>
 
 <template>
-  <div class="flex items-end justify-between mb-6">
+  <div class="flex items-end justify-between mb-6 gap-4">
     <div>
-      <p class="text-[11px] uppercase tracking-[0.18em] text-gray-400">Research Groups</p>
-      <h1 class="text-2xl mt-1">{{ t('nav.groups') }}</h1>
-      <p class="text-sm text-gray-500 mt-1">{{ t('home.groupsHint') }}</p>
+      <p class="eyebrow">Private Research Workspace</p>
+      <h1 class="text-2xl mt-1">研究项目</h1>
+      <p class="text-sm text-gray-500 mt-1">仅展示你参与的私密项目，用于共享进展、资料与关键问题。</p>
     </div>
-    <button class="btn-primary" @click="showCreate = true">{{ t('home.createGroup') }}</button>
+    <button class="btn-primary shrink-0" @click="showCreate=true">＋ 创建 Project</button>
   </div>
 
-  <div class="mb-6">
-    <input v-model="q" class="input" :placeholder="t('home.searchGroup')" />
+  <input v-model="q" class="input mb-6" placeholder="搜索我的 Project" />
+
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <article v-for="p in shown" :key="p.id" class="card cursor-pointer group"
+             @click="router.push(`/groups/${p.slug}`)">
+      <div class="flex items-start justify-between gap-3">
+        <h2 class="text-base group-hover:text-accent transition">{{ p.name_zh }}</h2>
+        <span class="tag">{{ roleName(p.my_role) }}</span>
+      </div>
+      <p class="text-xs text-gray-300 mt-1">PROJECT ID {{ p.id }}</p>
+      <p class="text-sm text-gray-500 mt-2 line-clamp-3">{{ p.desc_zh || '暂无项目介绍' }}</p>
+      <div class="mt-4 pt-3 border-t border-line text-xs text-gray-400 flex gap-4">
+        <span>{{ p.member_count }} 位成员</span>
+        <span>{{ p.dataset_count }} 个内部数据集</span>
+      </div>
+    </article>
   </div>
-
-  <section class="mb-8">
-    <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line">{{ t('home.myGroups') }}</h2>
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div v-for="g in mineShown" :key="g.id" class="card cursor-pointer group"
-           @click="router.push(`/groups/${g.slug}`)">
-        <div class="flex items-center justify-between">
-          <h3 class="text-base group-hover:text-accent transition">{{ g.name_zh }}</h3>
-          <span v-if="g.my_role" class="tag">{{ g.my_role }}</span>
-        </div>
-        <p class="text-xs text-gray-300 mt-1">ID {{ g.id }}</p>
-        <p class="text-sm text-gray-500 mt-1 line-clamp-2">{{ g.desc_zh }}</p>
-        <div class="mt-4 pt-3 border-t border-line text-xs text-gray-400 flex gap-4">
-          <span>{{ g.member_count }} {{ t('home.members') }}</span>
-          <span>{{ g.dataset_count }} {{ t('home.datasets') }}</span>
-        </div>
-      </div>
-      <p v-if="!mineShown.length" class="text-gray-400 text-sm">{{ t('home.noGroups') }}</p>
-    </div>
-  </section>
-
-  <section>
-    <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line">{{ t('home.discover') }}</h2>
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div v-for="g in discoverShown" :key="g.id" class="card">
-        <h3 class="text-base">{{ g.name_zh }}</h3>
-        <p class="text-xs text-gray-300 mt-1">ID {{ g.id }}</p>
-        <p class="text-sm text-gray-500 mt-1 line-clamp-2">{{ g.desc_zh }}</p>
-        <div class="mt-4 pt-3 border-t border-line flex items-center justify-between">
-          <span class="text-xs text-gray-400">{{ g.member_count }} {{ t('home.members') }}</span>
-          <button class="btn-ghost text-xs" @click="joinGroup(g.slug)">{{ t('home.join') }}</button>
-        </div>
-      </div>
-      <p v-if="!discoverShown.length" class="text-gray-400 text-sm">—</p>
-    </div>
-  </section>
+  <div v-if="!shown.length" class="card text-center text-gray-400 py-12">
+    {{ q ? '没有匹配的 Project。' : '你还没有参与 Project。创建一个，或等待 Owner/Admin 邀请。' }}
+  </div>
 
   <div v-if="showCreate" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
     <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
-      <h3 class="text-lg mb-3">{{ t('home.createGroup') }}</h3>
-      <input v-model="form.name_zh" class="input mb-2" placeholder="课题组名称" />
-      <textarea v-model="form.desc_zh" class="input mb-3" placeholder="简介"></textarea>
+      <h3 class="text-lg mb-1">创建研究项目</h3>
+      <p class="text-xs text-gray-500 mb-4">Project 默认私密，创建后你自动成为 Owner。</p>
+      <input v-model="form.name_zh" class="input mb-2" placeholder="项目名称" />
+      <textarea v-model="form.desc_zh" class="input mb-3" rows="4" placeholder="项目介绍、研究问题或协作目标"></textarea>
       <div class="flex justify-end gap-2">
-        <button class="btn-ghost" @click="showCreate=false">{{ t('common.cancel') }}</button>
-        <button class="btn-primary" @click="createGroup">{{ t('common.confirm') }}</button>
+        <button class="btn-ghost" @click="showCreate=false">取消</button>
+        <button class="btn-primary" :disabled="saving" @click="createProject">{{ saving ? '创建中…' : '创建' }}</button>
       </div>
     </div>
   </div>

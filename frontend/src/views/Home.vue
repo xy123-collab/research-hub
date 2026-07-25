@@ -27,6 +27,8 @@ function matchDs(d: any) {
     .map((x: any) => String(x ?? '').toLowerCase()).some(s => s.includes(kw))
 }
 const mineShown = computed(() => mineDs.value.filter(matchDs))
+const platformMine = computed(() => mineShown.value.filter((d:any) => !d.group_id))
+const projectMine = computed(() => mineShown.value.filter((d:any) => !!d.group_id))
 const discoverDs = computed(() => allDs.value.filter((d: any) => !mineIds.value.has(d.id) && matchDs(d)))
 const isEmpty = computed(() => !mineDs.value.length)
 
@@ -47,7 +49,7 @@ async function createDs() {
     alert('数据集名称为必填'); return
   }
   const grp = resolveGroup()
-  if (grp === false) { alert('未找到你所在的课题组（可按名称或 ID 填写；只能归属到你已加入的课题组）'); return }
+  if (grp === false) { alert('未找到你所在的 Project（可按名称或 ID 填写；只能选择你已加入的 Project）'); return }
   const body = { name_zh: dsForm.value.name_zh, desc_zh: dsForm.value.desc_zh,
                  is_sensitive: dsForm.value.is_sensitive }
   try {
@@ -57,7 +59,7 @@ async function createDs() {
   } catch (e: any) { alert(e.response?.data?.detail || '创建失败') }
 }
 async function createGroup() {
-  if (!gForm.value.name_zh) { alert('请填写课题组名称'); return }
+  if (!gForm.value.name_zh) { alert('请填写研究项目名称'); return }
   try {
     await api.post('/groups', gForm.value); showGroup.value = false
     gForm.value = { name_zh: '', desc_zh: '' }; router.push('/groups')
@@ -121,11 +123,11 @@ const evColor = (x: string) => x === 'version' ? '#2d4a7c' : '#7c2d3a'
     </div>
   </section>
 
-  <!-- 我参与的数据集 -->
+  <!-- 我参与的数据集：明确区分 Platform / Project 两类 -->
   <section class="mb-8" v-if="mineShown.length">
-    <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line">{{ t('home.myDatasets') }}</h2>
+    <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line">我的 Platform Dataset</h2>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div v-for="d in mineShown" :key="d.id" class="card cursor-pointer group flex flex-col"
+      <div v-for="d in platformMine" :key="d.id" class="card cursor-pointer group flex flex-col"
            @click="router.push(`/datasets/${d.slug}`)">
         <div class="flex items-start justify-between">
           <h3 class="text-base group-hover:text-accent transition">{{ d.name_zh }}</h3>
@@ -150,6 +152,20 @@ const evColor = (x: string) => x === 'version' ? '#2d4a7c' : '#7c2d3a'
           <span v-if="d.pending_bugs" class="text-accent2">{{ d.pending_bugs }} {{ t('home.pendingBugs') }}</span>
           <span v-if="d.open_flags" class="text-accent2">{{ d.open_flags }} {{ t('home.openFlags') }}</span>
         </div>
+      </div>
+      <p v-if="!platformMine.length" class="text-gray-400 text-sm">暂无参与的 Platform Dataset。</p>
+    </div>
+  </section>
+
+  <section class="mb-8" v-if="projectMine.length">
+    <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line">我的 Project Dataset</h2>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div v-for="d in projectMine" :key="d.id" class="card cursor-pointer group flex flex-col"
+           @click="router.push(`/datasets/${d.slug}`)">
+        <div class="flex items-start justify-between"><h3 class="text-base group-hover:text-accent transition">{{ d.name_zh }}</h3><span class="tag">{{ d.my_role || 'Project Member' }}</span></div>
+        <p class="text-xs text-gray-400 mt-1">ID {{ d.id }} · {{ d.group_name }} · 私密</p>
+        <p class="text-sm text-gray-500 mt-1.5 line-clamp-2 flex-1">{{ d.desc_zh }}</p>
+        <div class="mt-3 pt-3 border-t border-line text-xs text-gray-400"><span v-if="d.current_version" class="chip-ver mr-2">{{ d.current_version }}</span>{{ d.member_count }} 位 Dataset 成员</div>
       </div>
     </div>
   </section>
@@ -182,7 +198,7 @@ const evColor = (x: string) => x === 'version' ? '#2d4a7c' : '#7c2d3a'
     </div>
   </section>
 
-  <!-- 创建数据集（可选归属课题组）-->
+  <!-- 创建数据集（可选归属 Project）-->
   <div v-if="showDs" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
     <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
       <h3 class="text-lg mb-1">{{ t('home.createDataset') }}</h3>
@@ -202,12 +218,13 @@ const evColor = (x: string) => x === 'version' ? '#2d4a7c' : '#7c2d3a'
     </div>
   </div>
 
-  <!-- 创建课题组 -->
+  <!-- 创建 Project -->
   <div v-if="showGroup" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
     <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
       <h3 class="text-lg mb-3">{{ t('home.createGroup2') }}</h3>
-      <input v-model="gForm.name_zh" class="input mb-2" placeholder="课题组名称" />
-      <textarea v-model="gForm.desc_zh" class="input mb-3" placeholder="简介"></textarea>
+      <p class="text-xs text-gray-500 mb-3">Project 默认私密，仅受邀成员可访问。</p>
+      <input v-model="gForm.name_zh" class="input mb-2" placeholder="研究项目名称" />
+      <textarea v-model="gForm.desc_zh" class="input mb-3" placeholder="项目介绍"></textarea>
       <div class="flex justify-end gap-2">
         <button class="btn-ghost" @click="showGroup=false">{{ t('common.cancel') }}</button>
         <button class="btn-primary" @click="createGroup">{{ t('common.confirm') }}</button>

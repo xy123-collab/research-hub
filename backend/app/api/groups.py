@@ -1,5 +1,6 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..core.permissions import (get_current_user, is_super_admin, is_group_admin,
@@ -9,7 +10,9 @@ from ..core.permissions import (get_current_user, is_super_admin, is_group_admin
 from ..core.audit import write_audit
 from ..core.naming import ensure_unique, normalize_name, gen_slug
 from ..models.user import User
-from ..models.group import ResearchGroup, GroupMember, GroupJoinRequest, Charter
+from ..models.group import (ResearchGroup, GroupMember, GroupJoinRequest, Charter,
+                            ProjectResourceLink, ProjectTimelineEntry, ProjectFile,
+                            ProjectDiscussion)
 from ..models.dataset import Dataset, DatasetMember, DatasetGroupRequest
 from ..models.version import DataVersion
 from ..models.community import Post
@@ -22,6 +25,7 @@ router = APIRouter(tags=["groups"])
 def list_groups(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     mine_ids = {m.group_id for m in db.query(GroupMember)
                 .filter_by(user_id=user.id, status="active").all()}
+    # Project 是私密空间：列表只返回当前用户已参与的项目，不再提供“发现/申请加入”。
     all_groups = db.query(ResearchGroup).filter_by(is_deleted=False).all()
 
     def card(g):
@@ -32,8 +36,7 @@ def list_groups(user: User = Depends(get_current_user), db: Session = Depends(ge
                 "dataset_count": n_datasets, "my_role": group_role(db, g.id, user.id)}
 
     mine = [card(g) for g in all_groups if g.id in mine_ids]
-    discover = [card(g) for g in all_groups if g.id not in mine_ids and g.discoverable]
-    return {"mine": mine, "discover": discover}
+    return {"mine": mine, "discover": []}
 
 
 @router.post("/groups")
@@ -45,6 +48,7 @@ def create_group(body: GroupIn, user: User = Depends(get_current_user),
     ensure_unique(db, ResearchGroup, "name_zh", body.name_zh, "课题组名称",
                   extra_filter={"is_deleted": False})
     data = body.model_dump(); data["slug"] = slug
+    data["discoverable"] = False
     g = ResearchGroup(**data, created_by=user.id)
     db.add(g); db.flush()
     # 创建者成为课题组总管理员（group_owner）
@@ -65,9 +69,9 @@ def group_detail(slug: str, user: User = Depends(get_current_user),
         raise HTTPException(404, "课题组不存在")
     is_member = db.query(GroupMember).filter_by(
         group_id=g.id, user_id=user.id, status="active").first() is not None
-    datasets = db.query(Dataset).filter_by(group_id=g.id, is_deleted=False).all()
     if not is_member:
-        datasets = [d for d in datasets if d.is_public]
+        raise HTTPException(403, "该研究项目为私密空间，仅受邀成员可访问")
+    datasets = db.query(Dataset).filter_by(group_id=g.id, is_deleted=False).all()
     charter = db.query(Charter).filter_by(scope="group", ref_id=g.id).order_by(
         Charter.version.desc()).first()
     lead_id = group_lead_id(db, g.id)
@@ -83,41 +87,52 @@ def group_detail(slug: str, user: User = Depends(get_current_user),
                            "version": charter.version} if charter else None),
               "datasets": [{"id": d.id, "slug": d.slug, "name_zh": d.name_zh,
                             "icon": d.icon} for d in datasets]}
-    # 非成员只见公开信息 + 成员数，不见成员名单明细
-    # 原则一：总管理员不因平台身份自动查看课题组内部（此处不给 super_admin 开口子）
+    # 平台管理员也不绕过 Project 私密边界。
     n_members = db.query(GroupMember).filter_by(group_id=g.id, status="active").count()
     result["member_count"] = n_members
-    if is_member:
-        members = db.query(GroupMember).filter_by(group_id=g.id, status="active").all()
-        result["members"] = [{"user_id": m.user_id, "group_role": m.group_role,
-                              "is_lead": m.user_id == lead_id,
-                              "is_admin": m.group_role in GROUP_ADMIN_ROLES,
-                              "name": (db.get(User, m.user_id).display_name
-                                       if db.get(User, m.user_id) else "")}
-                             for m in members]
-    if result["is_admin"]:
-        pend = db.query(GroupJoinRequest).filter_by(group_id=g.id, status="pending").all()
-        result["join_requests"] = [
-            {"id": r.id, "user_id": r.user_id, "message": r.message,
-             "name": (db.get(User, r.user_id).display_name
-                      if db.get(User, r.user_id) else "")} for r in pend]
+    members = db.query(GroupMember).filter_by(group_id=g.id, status="active").all()
+    result["members"] = [{"user_id": m.user_id, "group_role": m.group_role,
+                          "is_lead": m.user_id == lead_id,
+                          "is_admin": m.group_role in GROUP_ADMIN_ROLES,
+                          "name": (db.get(User, m.user_id).display_name
+                                   if db.get(User, m.user_id) else "")}
+                         for m in members]
+    result["links"] = [{
+        "id": x.id, "title": x.title, "url": x.url, "created_by": x.created_by
+    } for x in db.query(ProjectResourceLink).filter_by(group_id=g.id)
+        .order_by(ProjectResourceLink.id.desc()).all()]
+    result["timeline"] = [{
+        "id": x.id, "category": x.category, "title": x.title, "body": x.body,
+        "file_name": x.file_name, "has_file": bool(x.file_path),
+        "created_by": x.created_by,
+        "author_name": (db.get(User, x.created_by).display_name
+                        if db.get(User, x.created_by) else ""),
+        "created_at": str(x.created_at) if x.created_at else None
+    } for x in db.query(ProjectTimelineEntry).filter_by(group_id=g.id)
+        .order_by(ProjectTimelineEntry.created_at.desc(),
+                  ProjectTimelineEntry.id.desc()).all()]
+    result["files"] = [{
+        "id": x.id, "file_name": x.file_name, "size": x.size,
+        "created_by": x.created_by,
+        "author_name": (db.get(User, x.created_by).display_name
+                        if db.get(User, x.created_by) else ""),
+        "created_at": str(x.created_at) if x.created_at else None
+    } for x in db.query(ProjectFile).filter_by(group_id=g.id)
+        .order_by(ProjectFile.id.desc()).all()]
+    result["discussions"] = [{
+        "id": x.id, "title": x.title, "body": x.body, "created_by": x.created_by,
+        "author_name": (db.get(User, x.created_by).display_name
+                        if db.get(User, x.created_by) else ""),
+        "created_at": str(x.created_at) if x.created_at else None
+    } for x in db.query(ProjectDiscussion).filter_by(group_id=g.id)
+        .order_by(ProjectDiscussion.id.desc()).all()]
     return result
 
 
 @router.post("/groups/{slug}/join-requests")
 def join_group(slug: str, message: str = "", user: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
-    g = db.query(ResearchGroup).filter_by(slug=slug, is_deleted=False).first()
-    if not g:
-        raise HTTPException(404, "课题组不存在")
-    if db.query(GroupMember).filter_by(group_id=g.id, user_id=user.id).first():
-        raise HTTPException(400, "已是成员")
-    if db.query(GroupJoinRequest).filter_by(group_id=g.id, user_id=user.id,
-                                            status="pending").first():
-        raise HTTPException(400, "已提交申请，等待审批")
-    req = GroupJoinRequest(group_id=g.id, user_id=user.id, message=message, status="pending")
-    db.add(req); db.commit()
-    return {"id": req.id, "status": "pending"}
+    raise HTTPException(410, "Project 不开放申请加入，请联系 Project Owner/Admin 邀请")
 
 
 @router.post("/group-join/{rid}/decide")
@@ -152,6 +167,7 @@ def update_group(slug: str, body: GroupIn, user: User = Depends(get_current_user
                       exclude_id=g.id, extra_filter={"is_deleted": False})
     for k, v in body.model_dump(exclude={"slug"}).items():
         setattr(g, k, v)
+    g.discoverable = False
     write_audit(db, user.id, "group.edit", "group", g.id)
     db.commit()
     return {"ok": True}
@@ -271,6 +287,177 @@ def remove_group_member(slug: str, uid: int, user: User = Depends(get_current_us
     return {"ok": True}
 
 
+@router.post("/groups/{slug}/invite/{uid}")
+def invite_project_member(slug: str, uid: int, user: User = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    """Project Owner/Admin 从全平台检索后直接邀请；不再存在公开申请加入。"""
+    g = _get_group(db, slug)
+    if not is_group_admin(db, g.id, user):
+        raise HTTPException(403, "仅 Project Owner/Admin 可邀请成员")
+    target = db.get(User, uid)
+    if not target or target.status == "left":
+        raise HTTPException(404, "用户不存在或账号已停用")
+    m = db.query(GroupMember).filter_by(group_id=g.id, user_id=uid).first()
+    if m:
+        m.status = "active"
+        m.group_role = m.group_role or "member"
+        m.joined_at = m.joined_at or datetime.utcnow()
+        m.approved_by = user.id
+    else:
+        db.add(GroupMember(group_id=g.id, user_id=uid, group_role="member",
+                           status="active", joined_at=datetime.utcnow(),
+                           approved_by=user.id))
+    write_audit(db, user.id, "project.member.invite", "group", g.id, {"user": uid})
+    db.commit()
+    return {"ok": True}
+
+
+def _project_member_guard(db: Session, slug: str, user: User) -> ResearchGroup:
+    g = _get_group(db, slug)
+    if not is_group_member(db, g.id, user):
+        raise HTTPException(403, "仅 Project 成员可访问")
+    return g
+
+
+@router.post("/groups/{slug}/links")
+def add_project_link(slug: str, title: str = Form(...), url: str = Form(...),
+                     user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    g = _project_member_guard(db, slug, user)
+    title, url = title.strip(), url.strip()
+    if not title or not (url.startswith("https://") or url.startswith("http://")):
+        raise HTTPException(400, "请填写标题及有效的 http(s) 链接")
+    row = ProjectResourceLink(group_id=g.id, title=title, url=url, created_by=user.id)
+    db.add(row); db.commit()
+    return {"id": row.id}
+
+
+@router.patch("/groups/{slug}/links/{lid}")
+def edit_project_link(slug: str, lid: int, body: dict,
+                      user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    g = _project_member_guard(db, slug, user)
+    row = db.get(ProjectResourceLink, lid)
+    if not row or row.group_id != g.id:
+        raise HTTPException(404, "链接不存在")
+    title = (body.get("title") or "").strip()
+    url = (body.get("url") or "").strip()
+    if not title or not (url.startswith("https://") or url.startswith("http://")):
+        raise HTTPException(400, "请填写标题及有效的 http(s) 链接")
+    row.title, row.url = title, url
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/groups/{slug}/links/{lid}")
+def delete_project_link(slug: str, lid: int, user: User = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    g = _project_member_guard(db, slug, user)
+    row = db.get(ProjectResourceLink, lid)
+    if row and row.group_id == g.id:
+        db.delete(row); db.commit()
+    return {"ok": True}
+
+
+@router.post("/groups/{slug}/timeline")
+def add_project_timeline(slug: str, category: str = Form("progress"),
+                         title: str = Form(""), body: str = Form(""),
+                         file: UploadFile | None = File(None),
+                         user: User = Depends(get_current_user),
+                         db: Session = Depends(get_db)):
+    g = _project_member_guard(db, slug, user)
+    if category not in {"progress", "discussion", "chart", "todo", "other"}:
+        category = "other"
+    if not title.strip() and not body.strip() and not getattr(file, "filename", ""):
+        raise HTTPException(400, "请至少填写标题、内容或上传附件")
+    meta = {}
+    if file and file.filename:
+        from ..services.uploads import save_upload
+        meta = save_upload(file, f"project/{g.id}/timeline")
+    row = ProjectTimelineEntry(group_id=g.id, category=category,
+                               title=title.strip() or None, body=body.strip() or None,
+                               created_by=user.id, **meta)
+    db.add(row); db.commit()
+    return {"id": row.id}
+
+
+@router.get("/groups/{slug}/timeline/{eid}/file")
+def project_timeline_file(slug: str, eid: int, user: User = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    g = _project_member_guard(db, slug, user)
+    row = db.get(ProjectTimelineEntry, eid)
+    if not row or row.group_id != g.id or not row.file_path:
+        raise HTTPException(404, "附件不存在")
+    from ..services.uploads import open_stored_file, attachment_headers
+    return StreamingResponse(open_stored_file(row.file_path),
+                             media_type=row.mime or "application/octet-stream",
+                             headers=attachment_headers(row.file_name))
+
+
+@router.post("/groups/{slug}/files")
+def upload_project_file(slug: str, file: UploadFile = File(...),
+                        user: User = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    g = _project_member_guard(db, slug, user)
+    from ..services.uploads import save_upload
+    row = ProjectFile(group_id=g.id, created_by=user.id,
+                      **save_upload(file, f"project/{g.id}/files"))
+    db.add(row); db.commit()
+    return {"id": row.id, "file_name": row.file_name}
+
+
+@router.get("/groups/{slug}/files/{fid}/download")
+def download_project_file(slug: str, fid: int, user: User = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    g = _project_member_guard(db, slug, user)
+    row = db.get(ProjectFile, fid)
+    if not row or row.group_id != g.id:
+        raise HTTPException(404, "文件不存在")
+    from ..services.uploads import open_stored_file, attachment_headers
+    return StreamingResponse(open_stored_file(row.file_path),
+                             media_type=row.mime or "application/octet-stream",
+                             headers=attachment_headers(row.file_name))
+
+
+@router.delete("/groups/{slug}/files/{fid}")
+def delete_project_file(slug: str, fid: int, user: User = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    g = _project_member_guard(db, slug, user)
+    row = db.get(ProjectFile, fid)
+    if row and row.group_id == g.id:
+        from ..core.storage import storage
+        try:
+            storage.delete(row.file_path)
+        except Exception:
+            pass
+        db.delete(row); db.commit()
+    return {"ok": True}
+
+
+@router.post("/groups/{slug}/discussions")
+def add_project_discussion(slug: str, body: dict,
+                           user: User = Depends(get_current_user),
+                           db: Session = Depends(get_db)):
+    g = _project_member_guard(db, slug, user)
+    title, content = (body.get("title") or "").strip(), (body.get("body") or "").strip()
+    if not title or not content:
+        raise HTTPException(400, "标题和内容均为必填")
+    row = ProjectDiscussion(group_id=g.id, title=title, body=content, created_by=user.id)
+    db.add(row); db.commit()
+    return {"id": row.id}
+
+
+@router.delete("/groups/{slug}/discussions/{did}")
+def delete_project_discussion(slug: str, did: int, user: User = Depends(get_current_user),
+                              db: Session = Depends(get_db)):
+    g = _project_member_guard(db, slug, user)
+    row = db.get(ProjectDiscussion, did)
+    if not row or row.group_id != g.id:
+        raise HTTPException(404, "讨论不存在")
+    if row.created_by != user.id and not is_group_admin(db, g.id, user):
+        raise HTTPException(403, "仅作者或 Project 管理员可删除")
+    db.delete(row); db.commit()
+    return {"ok": True}
+
+
 @router.post("/groups/{slug}/datasets")
 def create_dataset(slug: str, body: DatasetIn, user: User = Depends(get_current_user),
                    db: Session = Depends(get_db)):
@@ -279,8 +466,8 @@ def create_dataset(slug: str, body: DatasetIn, user: User = Depends(get_current_
         raise HTTPException(404, "课题组不存在")
     role = group_role(db, g.id, user.id)
     # 原则一 + 二：仅本组成员/管理员可在组内发起数据集；总管理员不因平台身份获得此权
-    if role not in ("group_admin", "member"):
-        raise HTTPException(403, "需先加入课题组")
+    if role not in ("group_owner", "group_admin", "member"):
+        raise HTTPException(403, "需先加入 Project")
     ds_slug = (body.slug or "").strip() or gen_slug(db, Dataset, "ds")
     if db.query(Dataset).filter_by(slug=ds_slug).first():
         raise HTTPException(400, "数据集 slug 已存在")
@@ -289,7 +476,7 @@ def create_dataset(slug: str, body: DatasetIn, user: User = Depends(get_current_
     data = body.model_dump()
     data["slug"] = ds_slug
     data["founder_contact"] = data.get("founder_contact") or ""  # 列非空；联系方式已改为自动取总管理员邮箱
-    d = Dataset(group_id=g.id, founder_id=user.id, **data)
+    d = Dataset(group_id=g.id, founder_id=user.id, is_public=False, **data)
     db.add(d); db.flush()
     # 发起人成为 founder
     db.add(DatasetMember(dataset_id=d.id, user_id=user.id, ds_role="founder",
@@ -310,6 +497,8 @@ def group_activity(slug: str, user: User = Depends(get_current_user),
     g = db.query(ResearchGroup).filter_by(slug=slug, is_deleted=False).first()
     if not g:
         raise HTTPException(404, "课题组不存在")
+    if not is_group_member(db, g.id, user):
+        raise HTTPException(403, "该研究项目为私密空间，仅受邀成员可访问")
     member_ids = [m.user_id for m in db.query(GroupMember)
                   .filter_by(group_id=g.id, status="active").all()]
     ds = db.query(Dataset).filter_by(group_id=g.id, is_deleted=False).all()

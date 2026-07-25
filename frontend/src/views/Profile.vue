@@ -604,7 +604,7 @@ async function deactivateAccount() {
     </div>
 
     <div class="flex gap-1 border-b border-line mt-5 text-sm">
-      <button v-for="[k,l] in [['projects','在做的项目'],['discuss','我的讨论'],['contrib','我的贡献'],['resume','个人简历'],['ws','项目工作台']]"
+      <button v-for="[k,l] in [['projects','在做的项目'],['discuss','我的讨论'],['contrib','我的贡献'],['resume','个人简历']]"
         :key="k" @click="tab=k as string" :class="['px-3 py-2', tab===k?'border-b-2 border-accent text-accent':'text-gray-500']">
         {{ l }}
       </button>

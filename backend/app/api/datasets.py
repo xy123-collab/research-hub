@@ -10,7 +10,7 @@ from ..core.permissions import (get_current_user, is_super_admin, is_dataset_mem
                                 is_dataset_admin, dataset_membership, has_dataset_perm,
                                 count_dataset_admins, get_settings, active_grants,
                                 DS_ADMIN_ROLES, DS_LEAD_ROLES, dataset_lead_id,
-                                is_dataset_lead)
+                                is_dataset_lead, is_group_member)
 from ..core.audit import write_audit, record_contribution
 from ..core.naming import ensure_unique, normalize_name, gen_slug
 from ..models.user import User
@@ -43,8 +43,9 @@ def _get_ds(db, slug) -> Dataset:
 
 
 def _ensure_ds_visible(db: Session, d: Dataset, user: User) -> None:
-    """非公开数据集仅数据集成员可查看，平台身份不越权。"""
-    if not d.is_public and not is_dataset_member(db, d.id, user):
+    """Project Dataset 对所属 Project 全体成员可见，但不赋予 Dataset 管理权限。"""
+    project_member = bool(d.group_id and is_group_member(db, d.group_id, user))
+    if not d.is_public and not is_dataset_member(db, d.id, user) and not project_member:
         raise HTTPException(403, "该数据集仅已加入成员可见；请联系数据集管理员加入后再访问")
 
 
@@ -75,13 +76,24 @@ def wall(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
 @router.get("/datasets/search")
 def search_datasets(q: str = "", limit: int = 10, db: Session = Depends(get_db),
                     user: User = Depends(get_current_user)):
-    """按名称或 ID 检索数据集（用于发帖时关联数据集的自动匹配）。"""
+    """检索可关联的数据集。
+
+    Platform Dataset 可公开检索；Project Dataset 只对所属 Project 成员返回，
+    因而不会进入其他用户的公共搜索结果。
+    """
     from sqlalchemy import or_
+    from ..models.group import GroupMember
     q = (q or "").strip()
     member_ids = [m.dataset_id for m in db.query(DatasetMember).filter_by(user_id=user.id).all()]
+    project_ids = [m.group_id for m in db.query(GroupMember).filter_by(
+        user_id=user.id, status="active").all()]
     query = db.query(Dataset).filter(
         Dataset.is_deleted == False,
-        or_(Dataset.is_public == True, Dataset.id.in_(member_ids or [-1])))
+        or_(
+            (Dataset.group_id.is_(None) &
+             or_(Dataset.is_public == True, Dataset.id.in_(member_ids or [-1]))),
+            Dataset.group_id.in_(project_ids or [-1])
+        ))
     if q:
         conds = [Dataset.name_zh.ilike(f"%{q}%")]
         if q.isdigit():
@@ -108,12 +120,21 @@ def _recent_events(db, d):
 @router.get("/datasets/mine")
 def my_datasets(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """我参与（成员/维护者/发起人）的数据集，按待办协作量排序，供首页直达协作。"""
-    ds_ids = [m.dataset_id for m in
-              db.query(DatasetMember).filter_by(user_id=user.id).all()]
+    from ..models.group import GroupMember
+    ds_ids = {m.dataset_id for m in
+              db.query(DatasetMember).filter_by(user_id=user.id).all()}
+    project_ids = {m.group_id for m in db.query(GroupMember).filter_by(
+        user_id=user.id, status="active").all()}
     cards = []
-    for d in db.query(Dataset).filter(Dataset.id.in_(ds_ids or [-1]),
-                                       Dataset.is_deleted == False).all():
+    rows = db.query(Dataset).filter(
+        Dataset.is_deleted == False,
+        ((Dataset.id.in_(ds_ids or {-1})) |
+         (Dataset.group_id.in_(project_ids or {-1})))
+    ).all()
+    for d in rows:
         card = _ds_card(db, d, user)
+        card["dataset_type"] = "project" if d.group_id else "platform"
+        card["project_member_access"] = bool(d.group_id in project_ids and d.id not in ds_ids)
         card["recent"] = _recent_events(db, d)
         cards.append(card)
     cards.sort(key=lambda c: (c["pending_bugs"] + c["open_flags"]), reverse=True)

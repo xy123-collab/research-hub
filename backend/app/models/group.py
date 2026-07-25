@@ -1,3 +1,4 @@
+from datetime import datetime
 from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Text, DateTime
 from ..core.db import Base
 
@@ -53,3 +54,49 @@ class CharterAck(Base):
     charter_id = Column(Integer, ForeignKey("charters.id"))
     charter_version = Column(Integer)
     acked_at = Column(DateTime)
+
+
+# Project 重构采用兼容式演进：ResearchGroup/GroupMember 保留原表名，避免线上数据迁移；
+# 以下均为 Project 私密空间的新资源表，由 create_all() 自动创建。
+class ProjectResourceLink(Base):
+    __tablename__ = "project_resource_links"
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey("research_groups.id"), nullable=False)
+    title = Column(String(200), nullable=False)
+    url = Column(String(800), nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ProjectTimelineEntry(Base):
+    __tablename__ = "project_timeline_entries"
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey("research_groups.id"), nullable=False)
+    category = Column(String(30), default="progress")  # progress|discussion|chart|todo|other
+    title = Column(String(240))
+    body = Column(Text)
+    file_path = Column(String(500)); file_name = Column(String(240))
+    mime = Column(String(120)); size = Column(Integer)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ProjectFile(Base):
+    __tablename__ = "project_files"
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey("research_groups.id"), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    file_name = Column(String(240), nullable=False)
+    mime = Column(String(120)); size = Column(Integer)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ProjectDiscussion(Base):
+    __tablename__ = "project_discussions"
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey("research_groups.id"), nullable=False)
+    title = Column(String(240), nullable=False)
+    body = Column(Text, nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

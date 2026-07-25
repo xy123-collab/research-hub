@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..core.permissions import get_current_user, DS_ADMIN_ROLES, GROUP_ADMIN_ROLES
 from ..models.user import User
-from ..models.group import ResearchGroup, GroupMember, GroupJoinRequest
+from ..models.group import (ResearchGroup, GroupMember, GroupJoinRequest,
+                            ProjectTimelineEntry, ProjectFile)
 from ..models.dataset import Dataset, DatasetMember, JoinRequest, DatasetGroupRequest
 from ..models.access import DownloadRequest
 from ..models.correction import Bug
@@ -189,6 +190,42 @@ def build_notifications(db: Session, user: User) -> dict:
             title="你是课题组管理员",
             subtitle=f"「{g.name_zh if g else ''}」",
             link=f"/groups/{g.slug}" if g else "/", sort=m.group_id)
+
+    # Project 成员变化、Timeline 与文件更新。新表带真实时间，可纳入统一未读游标。
+    my_project_ids = [m.group_id for m in db.query(GroupMember).filter_by(
+        user_id=user.id, status="active").all()]
+    for m in db.query(GroupMember).filter(
+            GroupMember.group_id.in_(my_project_ids or [-1]),
+            GroupMember.status == "active",
+            GroupMember.user_id != user.id,
+            GroupMember.joined_at.isnot(None)).order_by(
+            GroupMember.joined_at.desc()).limit(12).all():
+        g = db.get(ResearchGroup, m.group_id)
+        add(type="project_member_change", level="info", category="access",
+            title="Project 有新成员",
+            subtitle=f"{uname(m.user_id)} 加入「{g.name_zh if g else ''}」",
+            link=f"/groups/{g.slug}" if g else "/",
+            at_dt=m.joined_at, sort=100000 + m.group_id * 1000 + m.user_id)
+    for e in db.query(ProjectTimelineEntry).filter(
+            ProjectTimelineEntry.group_id.in_(my_project_ids or [-1]),
+            ProjectTimelineEntry.created_by != user.id).order_by(
+            ProjectTimelineEntry.created_at.desc()).limit(15).all():
+        g = db.get(ResearchGroup, e.group_id)
+        add(type="project_timeline", level="info", category="collab",
+            title="Project 时间线有更新",
+            subtitle=f"{uname(e.created_by)} 在「{g.name_zh if g else ''}」记录了：{e.title or e.category}",
+            link=f"/groups/{g.slug}" if g else "/",
+            at_dt=e.created_at, sort=200000 + e.id)
+    for f in db.query(ProjectFile).filter(
+            ProjectFile.group_id.in_(my_project_ids or [-1]),
+            ProjectFile.created_by != user.id).order_by(
+            ProjectFile.created_at.desc()).limit(15).all():
+        g = db.get(ResearchGroup, f.group_id)
+        add(type="project_file", level="info", category="collab",
+            title="Project 有新文件",
+            subtitle=f"{uname(f.created_by)} 在「{g.name_zh if g else ''}」上传了 {f.file_name}",
+            link=f"/groups/{g.slug}" if g else "/",
+            at_dt=f.created_at, sort=300000 + f.id)
 
     # ===== interact：我的帖子被评论/回复/点赞/关注 =====
     my_posts = db.query(Post).filter_by(author_id=user.id).all()

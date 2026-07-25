@@ -1,310 +1,169 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useI18n } from 'vue-i18n'
-import { useAuth } from '../stores/auth'
 import api from '../api'
-import CharterModal from '../components/CharterModal.vue'
-import PostCard from '../components/PostCard.vue'
-import PostComposer from '../components/PostComposer.vue'
+import { downloadFile } from '../utils/download'
+import { useAuth } from '../stores/auth'
 
-const route = useRoute(); const router = useRouter(); const { t } = useI18n(); const auth = useAuth()
-const g = ref<any>(null)
-const activity = ref<any[]>([]); const requests = ref<any[]>([])
-const gPosts = ref<any[]>([])
-const gComposerOpen = ref(false); const gEditing = ref<any>(null)
-async function loadGroupPosts() {
-  try { gPosts.value = (await api.get('/posts', { params: { group_id: g.value.id } })).data } catch {}
-}
-function openGCompose() { gEditing.value = null; gComposerOpen.value = true }
-function onGPostEdit(post: any) { gEditing.value = post; gComposerOpen.value = true }
-function onGPostDeleted(id: number) { gPosts.value = gPosts.value.filter((p: any) => p.id !== id) }
-const showDs = ref(false); const dsForm = ref({ name_zh: '', desc_zh: '', founder_contact: '' })
-const showEdit = ref(false); const editForm = ref<any>({})
-
+const route = useRoute(); const router = useRouter()
+const auth = useAuth()
+const g = ref<any>(null); const tab = ref('overview')
+const tabs = [['overview','概览'],['members','成员'],['datasets','数据集'],['links','Overleaf / 链接'],
+  ['timeline','时间线'],['files','文件'],['discussion','内部讨论']]
 const slug = () => route.params.slug as string
-onMounted(load)
-watch(() => route.params.slug, load)
+const showEdit = ref(false); const editForm = ref<any>({})
+const showDataset = ref(false); const dsForm = ref({ name_zh:'', desc_zh:'' })
+const inviteQ = ref(''); const inviteResults = ref<any[]>([])
+const linkForm = ref({ title:'', url:'' })
+const timelineForm = ref({ category:'progress', title:'', body:'' }); const timelineFile = ref<File|null>(null)
+const projectFile = ref<File|null>(null)
+const discussionForm = ref({ title:'', body:'' })
+
+onMounted(load); watch(() => route.params.slug, load)
 async function load() {
-  g.value = (await api.get(`/groups/${slug()}`)).data
-  activity.value = (await api.get(`/groups/${slug()}/activity`)).data
-  loadGroupPosts()
-  if (g.value.is_admin) {
-    try { requests.value = (await api.get(`/groups/${slug()}/dataset-requests`)).data } catch {}
-  }
+  try { g.value = (await api.get(`/groups/${slug()}`)).data }
+  catch (e: any) { alert(e.response?.data?.detail || '无法访问该 Project'); router.push('/groups') }
 }
-async function createDs() {
-  if (!dsForm.value.name_zh) { alert('数据集名称为必填'); return }
-  try {
-    await api.post(`/groups/${slug()}/datasets`, dsForm.value)
-    showDs.value = false; load()
-  } catch (e: any) { alert(e.response?.data?.detail || '创建失败') }
-}
-async function join() {
-  try { await api.post(`/groups/${slug()}/join-requests`); alert('已提交申请，等待管理员审批') }
-  catch (e: any) { alert(e.response?.data?.detail || '失败') }
-}
-async function decideReq(id: number, approve: boolean) {
-  await api.post(`/dataset-group-requests/${id}/decide`, null, { params: { approve } }); load()
-}
-// 加入申请审批
-async function decideJoin(id: number, approve: boolean) {
-  await api.post(`/group-join/${id}/decide`, null, { params: { approve } }); load()
-}
-// 成员/管理员管理
-async function addAdmin(uid: number) { await api.post(`/groups/${slug()}/admins/${uid}`); load() }
-async function removeAdmin(uid: number) {
-  try { await api.delete(`/groups/${slug()}/admins/${uid}`); load() }
-  catch (e: any) { alert(e.response?.data?.detail || '失败') }
-}
-async function removeMember(uid: number) {
-  if (!confirm('确认移除该成员？')) return
-  try { await api.delete(`/groups/${slug()}/members/${uid}`); load() }
-  catch (e: any) { alert(e.response?.data?.detail || '失败') }
-}
+function roleLabel(m: any) { return m.is_lead ? 'Owner' : m.is_admin ? 'Admin' : 'Member' }
 function openEdit() {
-  editForm.value = { slug: g.value.slug, name_zh: g.value.name_zh, name_en: g.value.name_en,
-    desc_zh: g.value.desc_zh, icon: g.value.icon, discoverable: g.value.discoverable }
+  editForm.value = { name_zh:g.value.name_zh, name_en:g.value.name_en,
+    desc_zh:g.value.desc_zh, desc_en:g.value.desc_en, icon:g.value.icon, discoverable:false }
   showEdit.value = true
 }
-async function saveEdit() {
-  await api.patch(`/groups/${slug()}`, editForm.value); showEdit.value = false; load()
-}
-async function deleteGroup() {
-  if (!confirm('删除后课题组将从全部页面永久下架，且不能仍有关联数据集。是否继续？')) return
-  const confirmation = prompt(`请完整输入课题组名称以二次确认：\n${g.value.name_zh}`, '')
+async function saveEdit() { await api.patch(`/groups/${slug()}`, editForm.value); showEdit.value=false; load() }
+async function deleteProject() {
+  if (!confirm('删除 Project 后将永久下架，且必须先处理内部数据集。是否继续？')) return
+  const confirmation = prompt(`请输入完整项目名称确认：${g.value.name_zh}`)
   if (confirmation === null) return
-  try {
-    await api.delete(`/groups/${slug()}`, { data: { confirmation } })
-    alert('课题组已永久下架'); router.push('/groups')
-  } catch (e: any) { alert(e.response?.data?.detail || '删除失败') }
+  try { await api.delete(`/groups/${slug()}`, { data:{ confirmation } }); router.push('/groups') }
+  catch (e:any) { alert(e.response?.data?.detail || '删除失败') }
 }
-function roleLabel(m: any) { return m.is_lead ? '总管理员' : (m.is_admin ? '管理员' : '成员') }
-async function transferLead(uid: number) {
-  if (!confirm('确认把「课题组总管理员」转让给该成员？你将降为普通管理员。')) return
-  try { await api.post(`/groups/${slug()}/transfer-lead/${uid}`); load() }
-  catch (e: any) { alert(e.response?.data?.detail || '失败') }
+async function searchUsers() {
+  inviteResults.value = (await api.get('/users/search', { params:{ q:inviteQ.value, limit:20 } })).data
+    .filter((u:any) => !(g.value.members || []).some((m:any) => m.user_id === u.id))
 }
-const showCharterEdit = ref(false); const charterForm = ref({ body_zh: '' })
-function openCharterEdit() { charterForm.value = { body_zh: g.value.charter?.body_zh || '' }; showCharterEdit.value = true }
-async function saveCharter() {
-  await api.put(`/charters/${g.value.charter.id}`, charterForm.value); showCharterEdit.value = false; load()
+async function invite(uid:number) {
+  try { await api.post(`/groups/${slug()}/invite/${uid}`); inviteQ.value=''; inviteResults.value=[]; load() }
+  catch(e:any){ alert(e.response?.data?.detail || '邀请失败') }
 }
-// 全部成员弹窗 + 检索
-const showMembers = ref(false); const memberQ = ref('')
-const filteredMembers = computed(() => {
-  const q = memberQ.value.trim().toLowerCase()
-  const list = g.value?.members || []
-  if (!q) return list
-  return list.filter((m: any) => (m.name || '').toLowerCase().includes(q) || String(m.user_id).includes(q))
-})
-const evColor = (x: string) => x === 'version' ? '#2d4a7c' : x === 'post' ? '#4b5563' : '#7c2d3a'
-const evLabel = (x: string) => x === 'version' ? '版本' : x === 'post' ? '发帖' : '勘误'
-// 组内动态：版本→数据集；发帖→研究讨论区的该帖；勘误→数据集勘误页
-function activityLink(e: any): string | null {
-  if (!e.ref) return null
-  if (e.type === 'version') return `/datasets/${e.ref}`
-  if (e.type === 'post') return `/feed?post=${e.ref}`
-  if (e.type === 'bug' || e.type === 'correction') return `/datasets/${e.ref}?tab=bugs`
-  return null
+async function addAdmin(uid:number){ await api.post(`/groups/${slug()}/admins/${uid}`); load() }
+async function removeAdmin(uid:number){ await api.delete(`/groups/${slug()}/admins/${uid}`); load() }
+async function removeMember(uid:number){ if(confirm('确认移除该成员？')){ await api.delete(`/groups/${slug()}/members/${uid}`); load() } }
+async function transferLead(uid:number){ if(confirm('确认移交 Owner？你将变为 Admin。')){ await api.post(`/groups/${slug()}/transfer-lead/${uid}`); load() } }
+async function createDataset(){
+  if(!dsForm.value.name_zh.trim()) return alert('请填写数据集名称')
+  try { const r=await api.post(`/groups/${slug()}/datasets`,dsForm.value); showDataset.value=false; router.push(`/datasets/${r.data.slug}`) }
+  catch(e:any){ alert(e.response?.data?.detail || '创建失败') }
 }
-function goActivity(e: any) { const l = activityLink(e); if (l) router.push(l) }
+async function addLink(){
+  const fd=new FormData(); fd.append('title',linkForm.value.title); fd.append('url',linkForm.value.url)
+  try { await api.post(`/groups/${slug()}/links`,fd); linkForm.value={title:'',url:''}; load() }
+  catch(e:any){ alert(e.response?.data?.detail || '保存失败') }
+}
+async function editLink(x:any){
+  const title=prompt('链接标题',x.title); if(title===null)return
+  const url=prompt('链接地址',x.url); if(url===null)return
+  await api.patch(`/groups/${slug()}/links/${x.id}`,{title,url}); load()
+}
+async function delLink(id:number){ if(confirm('删除该链接？')){await api.delete(`/groups/${slug()}/links/${id}`);load()} }
+async function addTimeline(){
+  const fd=new FormData(); Object.entries(timelineForm.value).forEach(([k,v])=>fd.append(k,v))
+  if(timelineFile.value)fd.append('file',timelineFile.value)
+  try { await api.post(`/groups/${slug()}/timeline`,fd); timelineForm.value={category:'progress',title:'',body:''};timelineFile.value=null;load() }
+  catch(e:any){alert(e.response?.data?.detail || '记录失败')}
+}
+async function uploadFile(){
+  if(!projectFile.value)return alert('请选择文件')
+  const fd=new FormData();fd.append('file',projectFile.value)
+  try{await api.post(`/groups/${slug()}/files`,fd);projectFile.value=null;load()}catch(e:any){alert(e.response?.data?.detail||'上传失败')}
+}
+async function delFile(id:number){if(confirm('删除该文件？')){await api.delete(`/groups/${slug()}/files/${id}`);load()}}
+async function addDiscussion(){
+  try{await api.post(`/groups/${slug()}/discussions`,discussionForm.value);discussionForm.value={title:'',body:''};load()}
+  catch(e:any){alert(e.response?.data?.detail||'发布失败')}
+}
+async function delDiscussion(id:number){if(confirm('删除该讨论？')){await api.delete(`/groups/${slug()}/discussions/${id}`);load()}}
+const canInvite = computed(()=>!!g.value?.is_admin)
+const categoryName:Record<string,string>={progress:'重大进展',discussion:'讨论记录',chart:'图表结果',todo:'待办',other:'其他'}
 </script>
 
 <template>
   <div v-if="g">
-    <CharterModal v-if="g.is_member" scope="group" :refId="g.id" />
-
-    <div class="flex items-start justify-between">
+    <div class="flex items-start justify-between gap-4">
       <div>
-        <p class="eyebrow">Research Group · ID {{ g.id }}</p>
+        <p class="eyebrow">Private Research Project · ID {{ g.id }}</p>
         <h1 class="text-2xl mt-1">{{ g.name_zh }}</h1>
-        <p class="text-gray-500 mt-1">{{ g.desc_zh }}</p>
-        <p v-if="g.founder" class="text-sm mt-2">
-          总管理员：<router-link :to="`/users/${g.founder.id}`" class="text-accent hover:underline">{{ g.founder.name }}</router-link>
-          <span v-if="g.founder.contact"> · 邮箱：{{ g.founder.contact }}</span>
-        </p>
-        <div class="mt-2 text-xs text-gray-400">{{ g.member_count }} {{ t('home.members') }}</div>
+        <p class="text-gray-500 mt-1">{{ g.desc_zh || '暂无项目介绍' }}</p>
+        <p class="text-xs text-gray-400 mt-2">仅 {{ g.member_count }} 位受邀成员可见 · Project 权限不等于 Dataset 管理权限</p>
       </div>
       <div class="flex gap-2">
-        <button v-if="g.is_admin" class="btn-ghost" @click="openEdit">编辑课题组</button>
-        <button v-if="g.is_lead" class="btn-ghost text-red-600" @click="deleteGroup">删除课题组</button>
-        <button v-if="!g.is_member" class="btn-ghost" @click="join">{{ t('home.join') }}</button>
+        <button v-if="g.is_admin" class="btn-ghost" @click="openEdit">编辑 Project</button>
+        <button v-if="g.is_lead" class="btn-ghost text-red-600" @click="deleteProject">删除</button>
       </div>
     </div>
 
-    <!-- 加入申请审批（仅课题组管理员）-->
-    <section v-if="g.is_admin && g.join_requests?.length" class="mt-6">
-      <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line">加入申请审批</h2>
+    <div class="mt-6 flex gap-1 overflow-x-auto border-b border-line">
+      <button v-for="[key,label] in tabs" :key="key" class="px-3 py-2 text-sm whitespace-nowrap border-b-2"
+        :class="tab===key?'border-accent text-accent':'border-transparent text-gray-500'" @click="tab=key">{{ label }}</button>
+    </div>
+
+    <section v-if="tab==='overview'" class="mt-6 grid md:grid-cols-3 gap-4">
+      <div class="card md:col-span-2"><div class="label-cap">项目介绍</div><p class="mt-2 whitespace-pre-wrap">{{ g.desc_zh || '暂无项目介绍。Owner/Admin 可在右上角编辑。' }}</p></div>
+      <div class="card"><div class="label-cap">项目负责人</div><p class="mt-2">{{ g.founder?.name }}</p><p class="text-sm text-gray-500">{{ g.founder?.contact }}</p></div>
+      <div class="card"><div class="text-2xl">{{ g.members.length }}</div><div class="text-xs text-gray-400 mt-1">项目成员</div></div>
+      <div class="card"><div class="text-2xl">{{ g.datasets.length }}</div><div class="text-xs text-gray-400 mt-1">Project Dataset</div></div>
+      <div class="card"><div class="text-2xl">{{ g.timeline.length }}</div><div class="text-xs text-gray-400 mt-1">时间线记录</div></div>
+    </section>
+
+    <section v-if="tab==='members'" class="mt-6">
+      <div v-if="canInvite" class="card mb-4">
+        <div class="label-cap">邀请平台成员</div>
+        <div class="flex gap-2 mt-2"><input v-model="inviteQ" class="input" placeholder="姓名、用户名或 ID" @keyup.enter="searchUsers"><button class="btn-primary" @click="searchUsers">检索</button></div>
+        <div v-if="inviteResults.length" class="mt-2 divide-y divide-line">
+          <div v-for="u in inviteResults" :key="u.id" class="py-2 flex items-center gap-2 text-sm"><span>{{ u.display_name }}</span><span class="text-gray-400">@{{ u.username }} · ID {{ u.id }}</span><button class="btn-ghost text-xs ml-auto" @click="invite(u.id)">邀请</button></div>
+        </div>
+      </div>
       <div class="rounded-lg border border-line bg-white divide-y divide-line">
-        <div v-for="r in g.join_requests" :key="r.id" class="flex items-center gap-3 px-4 py-3 text-sm">
-          <router-link :to="`/users/${r.user_id}`" class="text-accent hover:underline">{{ r.name }}</router-link>
-          <span class="text-gray-400 truncate">{{ r.message }}</span>
-          <div class="ml-auto flex gap-2">
-            <button class="btn-primary text-xs" @click="decideJoin(r.id, true)">通过</button>
-            <button class="btn-ghost text-xs" @click="decideJoin(r.id, false)">拒绝</button>
+        <div v-for="m in g.members" :key="m.user_id" class="px-4 py-3 flex items-center gap-2 text-sm">
+          <router-link :to="`/users/${m.user_id}`" class="text-accent">{{ m.name }}</router-link><span class="tag">{{ roleLabel(m) }}</span>
+          <div class="ml-auto flex gap-2" v-if="!m.is_lead">
+            <button v-if="g.is_lead && !m.is_admin" class="btn-ghost text-xs" @click="addAdmin(m.user_id)">设为 Admin</button>
+            <button v-if="g.is_lead && m.is_admin" class="btn-ghost text-xs" @click="removeAdmin(m.user_id)">取消 Admin</button>
+            <button v-if="g.is_lead" class="btn-ghost text-xs" @click="transferLead(m.user_id)">移交 Owner</button>
+            <button v-if="g.is_admin && (!m.is_admin || g.is_lead)" class="text-xs text-accent2" @click="removeMember(m.user_id)">移除</button>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- 公约（放在成员上方）-->
-    <div v-if="g.charter" class="card mt-5">
-      <div class="label-cap">{{ t('grp.charter') }} · v{{ g.charter.version }}</div>
-      <pre class="whitespace-pre-wrap bg-white text-ink border border-line mt-2">{{ g.charter.body_zh }}</pre>
-      <button v-if="g.is_admin" class="btn-ghost text-xs mt-2" @click="openCharterEdit">编辑公约</button>
-    </div>
-
-    <!-- 成员（默认显示3个，点标题看全部/检索）-->
-    <section v-if="g.is_member && g.members?.length" class="mt-6">
-      <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line flex items-center gap-2">
-        <button class="hover:text-accent" @click="showMembers=true">成员（{{ g.members.length }}）</button>
-        <span class="text-xs text-gray-400 font-normal">点击查看全部</span>
-      </h2>
-      <div class="rounded-lg border border-line bg-white divide-y divide-line">
-        <div v-for="m in g.members.slice(0,3)" :key="m.user_id" class="flex items-center gap-2 px-4 py-2.5 text-sm">
-          <router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link>
-          <span class="text-gray-400 text-xs">ID {{ m.user_id }}</span>
-          <span class="tag" :class="m.is_lead ? 'border-accent text-accent' : ''">{{ roleLabel(m) }}</span>
-        </div>
-        <button v-if="g.members.length>3" class="w-full text-center text-xs text-accent py-2 hover:bg-paper" @click="showMembers=true">查看全部 {{ g.members.length }} 名成员 →</button>
-      </div>
+    <section v-if="tab==='datasets'" class="mt-6">
+      <div class="flex justify-between items-center mb-3"><div><h2>Project Dataset</h2><p class="text-xs text-gray-500">仅本 Project 成员可见；创建者自动成为 Dataset Owner。</p></div><button class="btn-primary" @click="showDataset=true">＋新建数据集</button></div>
+      <div class="grid md:grid-cols-3 gap-4"><div v-for="d in g.datasets" :key="d.id" class="card cursor-pointer hover:text-accent" @click="router.push(`/datasets/${d.slug}`)">{{ d.name_zh }}</div></div>
+      <p v-if="!g.datasets.length" class="text-gray-400 text-sm">暂无内部数据集。</p>
     </section>
 
-    <!-- 数据集归属申请（仅课题组管理员可见） -->
-    <section v-if="g.is_admin && requests.length" class="mt-6">
-      <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line">{{ t('grp.requests') }}</h2>
-      <div class="rounded-lg border border-line bg-white divide-y divide-line">
-        <div v-for="r in requests" :key="r.id" class="flex items-center gap-3 px-4 py-3 text-sm">
-          <span class="tag">{{ r.kind === 'attach' ? t('grp.attachReq') : t('grp.detachReq') }}</span>
-          <span class="font-medium">{{ r.dataset_name }}</span>
-          <span class="text-gray-400">· {{ r.requested_by }}</span>
-          <div class="ml-auto flex gap-2">
-            <button class="btn-primary text-xs" @click="decideReq(r.id, true)">{{ t('grp.approve') }}</button>
-            <button class="btn-ghost text-xs" @click="decideReq(r.id, false)">{{ t('grp.reject') }}</button>
-          </div>
-        </div>
-      </div>
+    <section v-if="tab==='links'" class="mt-6">
+      <div class="card mb-4"><div class="label-cap">新增 Overleaf / 研究链接</div><div class="grid md:grid-cols-[1fr_2fr_auto] gap-2 mt-2"><input v-model="linkForm.title" class="input" placeholder="显示标题"><input v-model="linkForm.url" class="input" placeholder="https://..."><button class="btn-primary" @click="addLink">保存</button></div></div>
+      <div class="space-y-2"><div v-for="x in g.links" :key="x.id" class="card py-3 flex items-center gap-3"><a :href="x.url" target="_blank" rel="noopener" class="text-accent hover:underline">{{ x.title }} ↗</a><div class="ml-auto flex gap-2"><button class="btn-ghost text-xs" @click="editLink(x)">修改</button><button class="text-xs text-accent2" @click="delLink(x.id)">删除</button></div></div></div>
     </section>
 
-    <div class="grid md:grid-cols-3 gap-6 mt-6">
-      <!-- 数据集网格 -->
-      <section class="md:col-span-2">
-        <div class="flex items-center justify-between mb-3 pb-2 border-b border-line">
-          <h2 class="text-base text-gray-500 font-normal">{{ t('grp.datasets') }}</h2>
-          <button v-if="g.is_member" class="btn-ghost text-xs" @click="showDs=true">＋ {{ t('ds.overview') }}</button>
-        </div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div v-for="d in g.datasets" :key="d.id" class="card cursor-pointer group"
-               @click="router.push(`/datasets/${d.slug}`)">
-            <h3 class="text-base group-hover:text-accent transition">{{ d.name_zh }}</h3>
-          </div>
-          <p v-if="!g.datasets.length" class="text-gray-400 text-sm">本组暂无数据集。</p>
-        </div>
-      </section>
+    <section v-if="tab==='timeline'" class="mt-6 grid md:grid-cols-[320px_1fr] gap-5">
+      <div class="card h-fit"><div class="label-cap">记录研究进展</div><select v-model="timelineForm.category" class="input mt-2"><option v-for="(v,k) in categoryName" :key="k" :value="k">{{ v }}</option></select><input v-model="timelineForm.title" class="input mt-2" placeholder="标题"><textarea v-model="timelineForm.body" class="input mt-2" rows="5" placeholder="进展、关键问题、讨论结论或待办"></textarea><input type="file" class="text-xs mt-2" @change="timelineFile=($event.target as HTMLInputElement).files?.[0]||null"><button class="btn-primary w-full mt-3" @click="addTimeline">添加到时间线</button></div>
+      <div class="space-y-3"><article v-for="e in g.timeline" :key="e.id" class="card"><div class="flex gap-2"><span class="tag">{{ categoryName[e.category]||e.category }}</span><span class="text-xs text-gray-400 ml-auto">{{ (e.created_at||'').slice(0,16) }}</span></div><h3 class="mt-2">{{ e.title }}</h3><p class="text-sm text-gray-600 whitespace-pre-wrap mt-1">{{ e.body }}</p><button v-if="e.has_file" class="text-xs text-accent mt-2" @click="downloadFile(`/groups/${slug()}/timeline/${e.id}/file`,e.file_name)">下载附件 · {{ e.file_name }}</button><p class="text-xs text-gray-400 mt-2">{{ e.author_name }}</p></article><p v-if="!g.timeline.length" class="text-gray-400 text-sm">暂无时间线记录。</p></div>
+    </section>
 
-      <!-- 组内动态 -->
-      <section>
-        <h2 class="text-base text-gray-500 font-normal mb-3 pb-2 border-b border-line">{{ t('grp.activity') }}</h2>
-        <div class="rounded-lg border border-line bg-white divide-y divide-line">
-          <div v-for="(e,i) in activity" :key="i"
-               class="px-4 py-2.5 text-sm flex items-start gap-2"
-               :class="activityLink(e) ? 'cursor-pointer hover:bg-paper' : ''"
-               @click="goActivity(e)">
-            <span class="dot mt-1.5" :style="{ background: evColor(e.type) }"></span>
-            <div class="min-w-0 flex-1">
-              <div class="text-gray-800 truncate">{{ e.title }}</div>
-              <div class="text-xs text-gray-400">{{ evLabel(e.type) }} · {{ e.who }}<span v-if="e.at"> · {{ (e.at||'').slice(0,10) }}</span></div>
-            </div>
-            <span v-if="activityLink(e)" class="text-accent text-xs shrink-0 mt-0.5">查看 →</span>
-          </div>
-          <p v-if="!activity.length" class="px-4 py-3 text-gray-400 text-sm">{{ t('grp.noActivity') }}</p>
-        </div>
-      </section>
+    <section v-if="tab==='files'" class="mt-6">
+      <div class="card mb-4 flex items-center gap-3"><input type="file" class="text-sm" @change="projectFile=($event.target as HTMLInputElement).files?.[0]||null"><button class="btn-primary ml-auto" @click="uploadFile">上传文件</button></div>
+      <div class="rounded-lg border border-line bg-white divide-y divide-line"><div v-for="f in g.files" :key="f.id" class="px-4 py-3 flex items-center gap-3 text-sm"><button class="text-accent hover:underline" @click="downloadFile(`/groups/${slug()}/files/${f.id}/download`,f.file_name)">{{ f.file_name }}</button><span class="text-gray-400">{{ f.author_name }} · {{ (f.created_at||'').slice(0,10) }}</span><button class="text-xs text-accent2 ml-auto" @click="delFile(f.id)">删除</button></div></div>
+      <p v-if="!g.files.length" class="text-gray-400 text-sm mt-3">暂无共享文件。</p>
+    </section>
 
-      <!-- 组内讨论（与研究讨论区同一套帖子系统，默认关联本课题组）-->
-      <section>
-        <div class="flex items-center justify-between mb-3 pb-2 border-b border-line">
-          <h2 class="text-base text-gray-500 font-normal">组内讨论</h2>
-          <button v-if="g.is_member || g.is_admin" class="btn-primary text-sm" @click="openGCompose">＋发布讨论</button>
-        </div>
-        <PostCard v-for="p in gPosts" :key="p.id" :post="p" :current-user-id="auth.user?.id"
-          @edit="onGPostEdit" @deleted="onGPostDeleted" @changed="loadGroupPosts" />
-        <p v-if="!gPosts.length" class="text-gray-400 text-sm">本组还没有讨论，来发起第一条。</p>
-      </section>
-    </div>
+    <section v-if="tab==='discussion'" class="mt-6 grid md:grid-cols-[320px_1fr] gap-5">
+      <div class="card h-fit"><div class="label-cap">发起内部讨论</div><input v-model="discussionForm.title" class="input mt-2" placeholder="讨论标题"><textarea v-model="discussionForm.body" class="input mt-2" rows="6" placeholder="关键问题、方案分歧或需要成员反馈的事项"></textarea><button class="btn-primary w-full mt-3" @click="addDiscussion">发布</button><p class="text-xs text-gray-400 mt-2">讨论仅存在于本 Project，不会进入研究讨论区。</p></div>
+      <div class="space-y-3"><article v-for="d in g.discussions" :key="d.id" class="card"><div class="flex"><h3>{{ d.title }}</h3><button v-if="d.created_by===auth.user?.id || g.is_admin" class="text-xs text-accent2 ml-auto" @click="delDiscussion(d.id)">删除</button></div><p class="text-sm text-gray-600 whitespace-pre-wrap mt-2">{{ d.body }}</p><p class="text-xs text-gray-400 mt-3">{{ d.author_name }} · {{ (d.created_at||'').slice(0,16) }}</p></article><p v-if="!g.discussions.length" class="text-gray-400 text-sm">暂无内部讨论。</p></div>
+    </section>
 
-    <PostComposer v-if="gComposerOpen" :edit="gEditing"
-      :context="{ groupId: g.id, groupName: g.name_zh }"
-      @close="gComposerOpen=false" @saved="loadGroupPosts" />
-
-    <div v-if="showDs" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
-        <h3 class="text-lg mb-3">发起新数据集</h3>
-        <input v-model="dsForm.name_zh" class="input mb-2" placeholder="数据集名称" />
-        <textarea v-model="dsForm.desc_zh" class="input mb-3" placeholder="简介"></textarea>
-        <div class="flex justify-end gap-2">
-          <button class="btn-ghost" @click="showDs=false">{{ t('common.cancel') }}</button>
-          <button class="btn-primary" @click="createDs">{{ t('common.confirm') }}</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 全部成员弹窗（检索栏在最上方，可下拉滚动）-->
-    <div v-if="showMembers" class="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-16">
-      <div class="bg-white rounded-lg max-w-lg w-full m-4 max-h-[75vh] flex flex-col">
-        <div class="p-4 border-b border-line">
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-lg">全部成员（{{ g.members.length }}）</h3>
-            <button class="text-gray-400" @click="showMembers=false">×</button>
-          </div>
-          <input v-model="memberQ" class="input" placeholder="按姓名或 ID 检索成员" autofocus />
-        </div>
-        <div class="overflow-y-auto divide-y divide-line">
-          <div v-for="m in filteredMembers" :key="m.user_id" class="flex items-center gap-2 px-4 py-2.5 text-sm">
-            <router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link>
-            <span class="text-gray-400 text-xs">ID {{ m.user_id }}</span>
-            <span class="tag" :class="m.is_lead ? 'border-accent text-accent' : ''">{{ roleLabel(m) }}</span>
-            <div class="ml-auto flex gap-2 flex-wrap">
-              <template v-if="g.is_lead && !m.is_lead">
-                <button v-if="!m.is_admin" class="btn-ghost text-xs" @click="addAdmin(m.user_id)">设为管理员</button>
-                <button v-else class="btn-ghost text-xs" @click="removeAdmin(m.user_id)">取消管理员</button>
-                <button class="btn-ghost text-xs" @click="transferLead(m.user_id)">转让</button>
-              </template>
-              <button v-if="g.is_admin && !m.is_lead && (!m.is_admin || g.is_lead)" class="text-xs text-accent2" @click="removeMember(m.user_id)">移除</button>
-            </div>
-          </div>
-          <p v-if="!filteredMembers.length" class="px-4 py-6 text-center text-gray-400 text-sm">没有匹配的成员。</p>
-        </div>
-      </div>
-    </div>
-
-    <!-- 编辑课题组公约 -->
-    <div v-if="showCharterEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
-        <h3 class="text-lg mb-1">编辑课题组公约</h3>
-        <p class="text-xs text-gray-500 mb-3">保存后版本号 +1，成员需重新确认。</p>
-        <textarea v-model="charterForm.body_zh" class="input font-mono text-sm" rows="10"></textarea>
-        <div class="flex justify-end gap-2 mt-3">
-          <button class="btn-ghost" @click="showCharterEdit=false">取消</button>
-          <button class="btn-primary" @click="saveCharter">保存</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 编辑课题组 -->
-    <div v-if="showEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
-        <h3 class="text-lg mb-3">编辑课题组</h3>
-        <input v-model="editForm.name_zh" class="input mb-2" placeholder="课题组名称" />
-        <textarea v-model="editForm.desc_zh" class="input mb-2" placeholder="简介"></textarea>
-        <label class="flex items-center gap-2 text-sm mb-1"><input type="checkbox" v-model="editForm.discoverable" /> 公开可被发现</label>
-        <p class="text-xs text-gray-400 mb-3">关闭后仅已加入成员可在“我的课题组”看到，不会删除任何内容。</p>
-        <div class="flex justify-end gap-2">
-          <button class="btn-ghost" @click="showEdit=false">取消</button>
-          <button class="btn-primary" @click="saveEdit">保存</button>
-        </div>
-      </div>
-    </div>
+    <div v-if="showDataset" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50"><div class="bg-white rounded-lg max-w-md w-full p-6 m-4"><h3 class="text-lg">新建 Project Dataset</h3><p class="text-xs text-gray-500 mb-3">创建后仅 Project 成员可见，你将成为 Dataset Owner。</p><input v-model="dsForm.name_zh" class="input mb-2" placeholder="数据集名称"><textarea v-model="dsForm.desc_zh" class="input mb-3" placeholder="简介"></textarea><div class="flex justify-end gap-2"><button class="btn-ghost" @click="showDataset=false">取消</button><button class="btn-primary" @click="createDataset">创建</button></div></div></div>
+    <div v-if="showEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50"><div class="bg-white rounded-lg max-w-md w-full p-6 m-4"><h3 class="text-lg mb-3">编辑 Project</h3><input v-model="editForm.name_zh" class="input mb-2" placeholder="项目名称"><textarea v-model="editForm.desc_zh" class="input mb-3" rows="5" placeholder="项目介绍"></textarea><div class="flex justify-end gap-2"><button class="btn-ghost" @click="showEdit=false">取消</button><button class="btn-primary" @click="saveEdit">保存</button></div></div></div>
   </div>
 </template>
