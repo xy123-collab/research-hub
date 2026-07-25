@@ -14,13 +14,16 @@ from ..models.group import (ResearchGroup, GroupMember, GroupJoinRequest,
                             ProjectTimelineEntry, ProjectFile)
 from ..models.dataset import Dataset, DatasetMember, JoinRequest
 from ..models.version import DataVersion, DownloadLog
-from ..models.correction import Bug
+from ..models.correction import Bug, CorrectionFinal
 from ..models.code import CodeScript
-from ..models.community import Post, PostComment
+from ..models.community import Post, PostComment, PostReaction
 from ..models.governance import AuditLog, ContributionEvent
 from ..models.governance import FeedbackTicket
 from ..models.access import DownloadRequest
 from ..models.notify import DownloadHistory
+from ..models.curation import CodeVersion
+from ..models.skill import Skill
+from ..models.extras import CollabSection, SkillComment, PasswordResetToken
 from ..services.scoring import leaderboard, by_dataset
 
 router = APIRouter(tags=["admin"])
@@ -332,64 +335,105 @@ def platform_analytics(db: Session = Depends(get_db),
         return (db.query(func.count(func.distinct(AuditLog.user_id)))
                 .filter(AuditLog.created_at >= cutoff, AuditLog.user_id.isnot(None)).scalar() or 0)
 
-    # 标题与前台现有功能保持一致；数值直接来自 audit_log，不生成模拟数据。
-    module_specs = [
-        ("account", "账号与安全", [
-            ("登录", ("login",)),
-            ("注册", ("account.register",)),
-            ("注销账号", ("account.deactivate",)),
-            ("修改密码", ("account.password.reset",)),
-        ]),
-        ("datasets", "数据集", [
-            ("创建数据集", ("dataset.create", "dataset.create_standalone")),
-            ("版本库 · 发布数据版本", ("version.publish",)),
-            ("版本库 · 下载数据", ("download",)),
-            ("原始数据勘误 · 提交勘误", ("bug.submit", "bug.submit.batch")),
-            ("原始数据勘误 · 终审勘误", ("bug.finalize", "bug.item.finalize")),
-            ("处理代码库 · 提交代码", ("code.add", "code.upload")),
-            ("处理代码库 · 发布代码版本", ("code.version.publish",)),
-            ("处理代码库 · 下载代码", ("code.download",)),
-            ("成员与权限 · 权限管理", ("dataset.grant", "dataset.revoke",
-                                  "dataset.admin.add", "dataset.admin.remove")),
-        ]),
-        ("projects", "研究项目", [
-            ("创建研究项目", ("group.create",)),
-            ("成员 · 邀请与管理", ("project.member.invite", "group.member.remove",
-                              "group.admin.add", "group.admin.remove")),
-            ("数据集 · 新建内部数据集", ("project.dataset.create",)),
-            ("Overleaf / 链接 · 上传链接", ("project.link.add",)),
-            ("时间线 · 上传时间线", ("project.timeline.add",)),
-            ("文件 · 上传文件", ("project.file.upload",)),
-            ("内部讨论", ("project.discussion.post.create",
-                      "project.discussion.comment.create")),
-        ]),
-        ("discussion", "研究讨论区", [
-            ("发布讨论", ("discussion.post.create",)),
-            ("编辑或删除讨论", ("discussion.post.edit", "discussion.post.delete")),
-            ("评论与点赞", ("discussion.comment.create", "discussion.reaction")),
-        ]),
-        ("collab", "其他协作", [
-            ("Skill 共享 · 所有操作", ("skill.create", "skill.download", "skill.comment",
-                                  "skill.visibility", "skill.delete")),
-            ("自建协作分区 · 所有操作", ("collab_section.create",
-                                  "collab_section.delete")),
-        ]),
-        ("feedback", "帮助与反馈", [
-            ("提交反馈", ("feedback.submit",)),
-            ("处理工单", ("feedback.update",)),
-        ]),
-    ]
-
     def exact_action_count(actions, cutoff):
         return db.query(AuditLog).filter(
             AuditLog.created_at >= cutoff, AuditLog.action.in_(actions)).count()
 
+    def from_query(name, query, time_col):
+        return {"name": name,
+                "week": query.filter(time_col >= week).count(),
+                "month": query.filter(time_col >= month).count(),
+                "source": "业务记录"}
+
+    def from_audit(name, actions):
+        return {"name": name, "week": exact_action_count(actions, week),
+                "month": exact_action_count(actions, month), "source": "审计日志"}
+
+    def combined(name, parts):
+        return {"name": name, "week": sum(x["week"] for x in parts),
+                "month": sum(x["month"] for x in parts),
+                "source": "业务记录/审计日志" if any(
+                    x["source"] == "审计日志" for x in parts) else "业务记录"}
+
+    public_posts = db.query(Post).filter(Post.group_id.is_(None))
+    public_post_ids = [x.id for x in public_posts.all()]
+    internal_posts = db.query(Post).filter(Post.group_id.isnot(None))
+    internal_post_ids = [x.id for x in internal_posts.all()]
+    skill_parts = [
+        from_query("", db.query(Skill), Skill.created_at),
+        from_query("", db.query(SkillComment), SkillComment.created_at),
+        from_query("", db.query(DownloadHistory).filter(
+            DownloadHistory.source == "skill"), DownloadHistory.downloaded_at),
+        from_audit("", ("skill.visibility", "skill.delete")),
+    ]
+    collab_parts = [
+        from_query("", db.query(CollabSection).filter(
+            CollabSection.kind == "generic"), CollabSection.created_at),
+        from_audit("", ("collab_section.delete",)),
+    ]
+    modules_data = [
+        ("account", "账号与安全", [
+            from_audit("登录", ("login",)),
+            from_query("注册", db.query(User), User.created_at),
+            from_query("注销账号", db.query(User).filter(User.status == "left"), User.updated_at),
+            from_query("修改密码", db.query(PasswordResetToken).filter(
+                PasswordResetToken.used == True), PasswordResetToken.updated_at),
+        ]),
+        ("datasets", "数据集", [
+            from_query("创建数据集", db.query(Dataset).filter(Dataset.group_id.is_(None)),
+                       Dataset.created_at),
+            from_query("版本库 · 发布数据版本", db.query(DataVersion), DataVersion.release_date),
+            from_query("版本库 · 下载数据", db.query(DownloadHistory).filter(
+                DownloadHistory.source == "dataset_version"), DownloadHistory.downloaded_at),
+            from_query("原始数据勘误 · 提交勘误", db.query(Bug), Bug.created_at),
+            from_query("原始数据勘误 · 终审勘误", db.query(CorrectionFinal),
+                       CorrectionFinal.decided_at),
+            from_query("处理代码库 · 提交代码", db.query(CodeScript), CodeScript.created_at),
+            from_query("处理代码库 · 发布代码版本", db.query(CodeVersion), CodeVersion.created_at),
+            from_query("处理代码库 · 下载代码", db.query(DownloadHistory).filter(
+                DownloadHistory.source == "code"), DownloadHistory.downloaded_at),
+            from_audit("成员与权限 · 权限管理", ("dataset.grant", "dataset.revoke",
+                       "dataset.admin.add", "dataset.admin.remove")),
+        ]),
+        ("projects", "研究项目", [
+            from_query("创建研究项目", db.query(ResearchGroup), ResearchGroup.created_at),
+            from_audit("成员 · 邀请与管理", ("project.member.invite", "group.member.remove",
+                       "group.admin.add", "group.admin.remove")),
+            from_query("数据集 · 新建内部数据集", db.query(Dataset).filter(
+                Dataset.group_id.isnot(None)), Dataset.created_at),
+            from_query("Overleaf / 链接 · 上传链接", db.query(ProjectResourceLink),
+                       ProjectResourceLink.created_at),
+            from_query("时间线 · 上传时间线", db.query(ProjectTimelineEntry),
+                       ProjectTimelineEntry.created_at),
+            from_query("文件 · 上传文件", db.query(ProjectFile), ProjectFile.created_at),
+            combined("内部讨论", [
+                from_query("", internal_posts, Post.created_at),
+                from_query("", db.query(PostComment).filter(
+                    PostComment.post_id.in_(internal_post_ids or [-1])), PostComment.created_at),
+            ]),
+        ]),
+        ("discussion", "研究讨论区", [
+            from_query("发布讨论", public_posts, Post.created_at),
+            from_audit("编辑或删除讨论", ("discussion.post.edit", "discussion.post.delete")),
+            combined("评论与点赞", [
+                from_query("", db.query(PostComment).filter(
+                    PostComment.post_id.in_(public_post_ids or [-1])), PostComment.created_at),
+                from_query("", db.query(PostReaction).filter(
+                    PostReaction.post_id.in_(public_post_ids or [-1])), PostReaction.created_at),
+            ]),
+        ]),
+        ("collab", "其他协作", [
+            combined("Skill 共享 · 所有操作", skill_parts),
+            combined("自建协作分区 · 所有操作", collab_parts),
+        ]),
+        ("feedback", "帮助与反馈", [
+            from_query("提交反馈", db.query(FeedbackTicket), FeedbackTicket.created_at),
+            from_query("处理工单", db.query(FeedbackTicket).filter(
+                FeedbackTicket.handled_at.isnot(None)), FeedbackTicket.handled_at),
+        ]),
+    ]
     modules = []
-    for key, name, specs in module_specs:
-        children = [{"name": child_name,
-                     "week": exact_action_count(actions, week),
-                     "month": exact_action_count(actions, month)}
-                    for child_name, actions in specs]
+    for key, name, children in modules_data:
         modules.append({"key": key, "name": name, "features": children,
                         "week": sum(x["week"] for x in children),
                         "month": sum(x["month"] for x in children)})

@@ -211,18 +211,19 @@ function exportDownloads() {
     </section>
 
     <section class="mb-6">
-      <div class="flex flex-wrap items-center justify-between gap-3 mb-2">
-        <div><h2 class="text-base">文件下载历史</h2><p class="text-xs text-gray-400 mt-1">默认显示约5条高度，可在方框内滚动查看全部真实记录。</p></div>
-        <div class="flex flex-wrap gap-2">
-          <select v-model="downloadCategory" class="input w-40 text-xs whitespace-nowrap">
+      <div class="flex items-center justify-between gap-4 mb-1 overflow-x-auto pb-1">
+        <h2 class="text-base whitespace-nowrap">文件下载历史</h2>
+        <div class="flex items-center gap-1.5 whitespace-nowrap ml-auto">
+          <select v-model="downloadCategory" class="h-8 w-28 rounded border border-line bg-white px-2 text-xs">
             <option value="all">全部类别</option><option v-for="c in downloadCategories" :key="String(c)" :value="c">{{ c }}</option>
           </select>
-          <select v-model="downloadPeriod" class="input w-32 text-xs whitespace-nowrap">
+          <select v-model="downloadPeriod" class="h-8 w-24 rounded border border-line bg-white px-2 text-xs">
             <option value="all">不限日期</option><option value="month">近30天</option><option value="week">近7天</option>
           </select>
-          <button class="btn-ghost text-xs whitespace-nowrap" @click="exportDownloads">导出全部 Excel</button>
+          <button class="h-8 rounded border border-line bg-white px-2.5 text-xs text-gray-600 hover:border-accent hover:text-accent" @click="exportDownloads">导出 Excel</button>
         </div>
       </div>
+      <p class="text-xs text-gray-400 mb-2">默认显示约5条高度，可在方框内滚动查看全部真实记录。</p>
       <div class="card p-0 overflow-x-auto">
         <div class="max-h-[270px] overflow-y-auto">
         <table class="w-full min-w-[760px] text-xs">
@@ -314,7 +315,7 @@ function exportDownloads() {
   <div v-if="sel?.kind==='platform'">
     <section v-if="analytics" class="mb-6">
       <h2 class="text-lg mb-2">平台运营总览</h2>
-      <p class="text-xs text-gray-500 mb-3">以下是数据库中的真实记录，不是模拟数据。功能活跃度来自审计日志，未埋点的单纯页面浏览不会被计入；不读取私有研究内容。</p>
+      <p class="text-xs text-gray-500 mb-3">以下是数据库中的真实记录，不是模拟数据。优先按用户、版本、下载、讨论等业务表统计；只有编辑、删除和权限变更等不保留独立记录的动作使用审计日志。单纯页面浏览不计入。</p>
       <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
         <div v-for="[k,l] in [['users','用户'],['projects','研究项目'],['datasets','数据集'],['wau','周活用户'],['mau','月活用户'],['open_feedback','待处理反馈']]"
           :key="k" class="card"><div class="label-cap">{{ l }}</div><p class="text-2xl mt-1">{{ analytics.overview[k] }}</p></div>
@@ -336,7 +337,7 @@ function exportDownloads() {
               @click="analyticsModule=m.key">{{ m.name }} <span class="font-mono ml-1">{{ m[analyticsPeriod] }}</span></button>
           </div>
           <div v-for="f in platformFeatures" :key="f.module+f.name" class="grid grid-cols-[minmax(240px,330px)_1fr_52px] items-center gap-3 mb-3 text-xs">
-            <span class="leading-5" :title="`${f.module} · ${f.name}`"><span class="text-gray-400">{{ f.module }} · </span>{{ f.name }}</span>
+            <span class="leading-5" :title="`${f.module} · ${f.name}（${f.source}）`"><span class="text-gray-400">{{ f.module }} · </span>{{ f.name }}</span>
             <div class="h-4 rounded bg-gray-100 overflow-hidden"><div class="h-full bg-accent rounded" :style="{width: (f[analyticsPeriod]/maxFeature*100)+'%'}"></div></div>
             <span class="text-right font-mono whitespace-nowrap">{{ f[analyticsPeriod] }} 次</span>
           </div>
