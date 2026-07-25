@@ -10,15 +10,12 @@ def _super(client):
 # 原则一：平台总管理员 ≠ 数据管理员，不自动接触数据集内容
 def test_super_admin_not_dataset_member(client):
     H = _super(client)
-    d = client.get("/api/datasets/cod", headers=H).json()
-    assert d["is_member"] is False and d["is_admin"] is False
-    # 不能提交勘误 / 不能看成员名单 / 不能下载原始数据
+    # 平台总管理员也不能绕过研究项目边界查看内部数据集。
+    assert client.get("/api/datasets/cod", headers=H).status_code == 403
     assert client.post("/api/datasets/cod/bugs",
                        json={"description_zh": "x"}, headers=H).status_code == 403
     assert client.get("/api/datasets/cod/members", headers=H).status_code == 403
-    vid = client.get("/api/datasets/cod/versions", headers=H).json()[0]["id"]
-    assert client.get(f"/api/datasets/cod/versions/{vid}/download?file=data",
-                      headers=H).status_code == 403
+    assert client.get("/api/datasets/cod/versions", headers=H).status_code == 403
 
 
 # 原则三：加入数据集 ≠ 下载权。审批后下载策略下需单独批准

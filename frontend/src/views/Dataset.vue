@@ -59,7 +59,7 @@ const tabs = computed(() => {
   const base: string[][] = [
     ['overview', 'ds.overview'], ['activity', 'ds.activity'], ['dashboard', 'ds.dashboard'],
     ['versions', 'ds.versions'], ['bugs', 'ds.bugs'], ['code', 'ds.code'],
-    ['literature', 'ds.literature'], ['feed', 'ds.feed']
+    ['literature', 'ds.literature'], ['feed', d.value?.group ? 'ds.internalFeed' : 'ds.feed']
   ]
   if (d.value?.is_admin) base.push(['access', 'ds.access'])
   return base
@@ -1218,11 +1218,12 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
       </div>
 
-      <!-- feed 研究讨论区（全站同一套帖子系统，默认关联本数据集）-->
+      <!-- 公开数据集进入研究讨论区；内部数据集强制为研究项目内部讨论 -->
       <div v-else-if="tab==='feed'">
         <div class="flex items-center justify-between mb-3">
-          <p class="text-xs text-gray-400">与全站研究讨论区共用同一套讨论系统，这里默认展示并关联本数据集的讨论。</p>
-          <button v-if="d.is_member" class="btn-primary text-sm" @click="openDsCompose">＋发布讨论</button>
+          <p v-if="d.group" class="text-xs text-gray-400">内部讨论仅所属研究项目成员可见，不进入全站研究讨论区；支持点赞、评论和回复评论。</p>
+          <p v-else class="text-xs text-gray-400">与全站研究讨论区共用同一套讨论系统，这里默认展示并关联本数据集的讨论。</p>
+          <button v-if="d.is_member || d.is_project_member" class="btn-primary text-sm" @click="openDsCompose">＋发布讨论</button>
         </div>
         <PostCard v-for="p in posts" :key="p.id" :post="p" :current-user-id="auth.user?.id"
           @edit="onDsPostEdit" @deleted="onDsPostDeleted" @changed="loadTab('feed')" />
@@ -1810,7 +1811,8 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 
     <!-- 发布/编辑讨论（默认关联本数据集）-->
     <PostComposer v-if="dsComposerOpen" :edit="dsEditing"
-      :context="{ datasetId: d.id, datasetName: d.name_zh }"
+      :context="{ datasetId: d.id, datasetName: d.name_zh,
+        groupId: d.group?.id, groupName: d.group?.name_zh, internal: !!d.group }"
       @close="dsComposerOpen=false" @saved="onDsPostSaved" />
 
     <!-- 历史下载（数据集内入口，与个人主页共用同一视图/接口）-->

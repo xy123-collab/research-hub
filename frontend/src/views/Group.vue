@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 import { downloadFile } from '../utils/download'
 import { useAuth } from '../stores/auth'
+import PostCard from '../components/PostCard.vue'
+import PostComposer from '../components/PostComposer.vue'
 
 const route = useRoute(); const router = useRouter()
 const auth = useAuth()
@@ -17,12 +19,15 @@ const inviteQ = ref(''); const inviteResults = ref<any[]>([])
 const linkForm = ref({ title:'', url:'' })
 const timelineForm = ref({ category:'progress', title:'', body:'' }); const timelineFile = ref<File|null>(null)
 const projectFile = ref<File|null>(null)
-const discussionForm = ref({ title:'', body:'' })
+const projectPosts = ref<any[]>([]); const composerOpen = ref(false); const editingPost = ref<any>(null)
 
 onMounted(load); watch(() => route.params.slug, load)
 async function load() {
-  try { g.value = (await api.get(`/groups/${slug()}`)).data }
-  catch (e: any) { alert(e.response?.data?.detail || '无法访问该 Project'); router.push('/groups') }
+  try {
+    g.value = (await api.get(`/groups/${slug()}`)).data
+    projectPosts.value = (await api.get('/posts', { params:{ group_id:g.value.id } })).data
+  }
+  catch (e: any) { alert(e.response?.data?.detail || '无法访问该研究项目'); router.push('/groups') }
 }
 function roleLabel(m: any) { return m.is_lead ? 'Owner' : m.is_admin ? 'Admin' : 'Member' }
 function openEdit() {
@@ -32,7 +37,7 @@ function openEdit() {
 }
 async function saveEdit() { await api.patch(`/groups/${slug()}`, editForm.value); showEdit.value=false; load() }
 async function deleteProject() {
-  if (!confirm('删除 Project 后将永久下架，且必须先处理内部数据集。是否继续？')) return
+  if (!confirm('删除研究项目后将永久下架，且必须先处理内部数据集。是否继续？')) return
   const confirmation = prompt(`请输入完整项目名称确认：${g.value.name_zh}`)
   if (confirmation === null) return
   try { await api.delete(`/groups/${slug()}`, { data:{ confirmation } }); router.push('/groups') }
@@ -78,11 +83,9 @@ async function uploadFile(){
   try{await api.post(`/groups/${slug()}/files`,fd);projectFile.value=null;load()}catch(e:any){alert(e.response?.data?.detail||'上传失败')}
 }
 async function delFile(id:number){if(confirm('删除该文件？')){await api.delete(`/groups/${slug()}/files/${id}`);load()}}
-async function addDiscussion(){
-  try{await api.post(`/groups/${slug()}/discussions`,discussionForm.value);discussionForm.value={title:'',body:''};load()}
-  catch(e:any){alert(e.response?.data?.detail||'发布失败')}
-}
-async function delDiscussion(id:number){if(confirm('删除该讨论？')){await api.delete(`/groups/${slug()}/discussions/${id}`);load()}}
+function newDiscussion(){ editingPost.value=null; composerOpen.value=true }
+function editDiscussion(p:any){ editingPost.value=p; composerOpen.value=true }
+function postDeleted(id:number){ projectPosts.value=projectPosts.value.filter((p:any)=>p.id!==id) }
 const canInvite = computed(()=>!!g.value?.is_admin)
 const categoryName:Record<string,string>={progress:'重大进展',discussion:'讨论记录',chart:'图表结果',todo:'待办',other:'其他'}
 </script>
@@ -91,13 +94,13 @@ const categoryName:Record<string,string>={progress:'重大进展',discussion:'�
   <div v-if="g">
     <div class="flex items-start justify-between gap-4">
       <div>
-        <p class="eyebrow">Private Research Project · ID {{ g.id }}</p>
+        <p class="eyebrow">私密研究项目 · ID {{ g.id }}</p>
         <h1 class="text-2xl mt-1">{{ g.name_zh }}</h1>
         <p class="text-gray-500 mt-1">{{ g.desc_zh || '暂无项目介绍' }}</p>
-        <p class="text-xs text-gray-400 mt-2">仅 {{ g.member_count }} 位受邀成员可见 · Project 权限不等于 Dataset 管理权限</p>
+        <p class="text-xs text-gray-400 mt-2">仅 {{ g.member_count }} 位受邀成员可见 · 研究项目权限不等于数据集管理权限</p>
       </div>
       <div class="flex gap-2">
-        <button v-if="g.is_admin" class="btn-ghost" @click="openEdit">编辑 Project</button>
+        <button v-if="g.is_admin" class="btn-ghost" @click="openEdit">编辑研究项目</button>
         <button v-if="g.is_lead" class="btn-ghost text-red-600" @click="deleteProject">删除</button>
       </div>
     </div>
@@ -111,7 +114,7 @@ const categoryName:Record<string,string>={progress:'重大进展',discussion:'�
       <div class="card md:col-span-2"><div class="label-cap">项目介绍</div><p class="mt-2 whitespace-pre-wrap">{{ g.desc_zh || '暂无项目介绍。Owner/Admin 可在右上角编辑。' }}</p></div>
       <div class="card"><div class="label-cap">项目负责人</div><p class="mt-2">{{ g.founder?.name }}</p><p class="text-sm text-gray-500">{{ g.founder?.contact }}</p></div>
       <div class="card"><div class="text-2xl">{{ g.members.length }}</div><div class="text-xs text-gray-400 mt-1">项目成员</div></div>
-      <div class="card"><div class="text-2xl">{{ g.datasets.length }}</div><div class="text-xs text-gray-400 mt-1">Project Dataset</div></div>
+      <div class="card"><div class="text-2xl">{{ g.datasets.length }}</div><div class="text-xs text-gray-400 mt-1">内部数据集</div></div>
       <div class="card"><div class="text-2xl">{{ g.timeline.length }}</div><div class="text-xs text-gray-400 mt-1">时间线记录</div></div>
     </section>
 
@@ -137,7 +140,7 @@ const categoryName:Record<string,string>={progress:'重大进展',discussion:'�
     </section>
 
     <section v-if="tab==='datasets'" class="mt-6">
-      <div class="flex justify-between items-center mb-3"><div><h2>Project Dataset</h2><p class="text-xs text-gray-500">仅本 Project 成员可见；创建者自动成为 Dataset Owner。</p></div><button class="btn-primary" @click="showDataset=true">＋新建数据集</button></div>
+      <div class="flex justify-between items-center mb-3"><div><h2>内部数据集</h2><p class="text-xs text-gray-500">仅本研究项目成员可见；创建者自动成为数据集总管理员。</p></div><button class="btn-primary" @click="showDataset=true">＋新建数据集</button></div>
       <div class="grid md:grid-cols-3 gap-4"><div v-for="d in g.datasets" :key="d.id" class="card cursor-pointer hover:text-accent" @click="router.push(`/datasets/${d.slug}`)">{{ d.name_zh }}</div></div>
       <p v-if="!g.datasets.length" class="text-gray-400 text-sm">暂无内部数据集。</p>
     </section>
@@ -158,12 +161,20 @@ const categoryName:Record<string,string>={progress:'重大进展',discussion:'�
       <p v-if="!g.files.length" class="text-gray-400 text-sm mt-3">暂无共享文件。</p>
     </section>
 
-    <section v-if="tab==='discussion'" class="mt-6 grid md:grid-cols-[320px_1fr] gap-5">
-      <div class="card h-fit"><div class="label-cap">发起内部讨论</div><input v-model="discussionForm.title" class="input mt-2" placeholder="讨论标题"><textarea v-model="discussionForm.body" class="input mt-2" rows="6" placeholder="关键问题、方案分歧或需要成员反馈的事项"></textarea><button class="btn-primary w-full mt-3" @click="addDiscussion">发布</button><p class="text-xs text-gray-400 mt-2">讨论仅存在于本 Project，不会进入研究讨论区。</p></div>
-      <div class="space-y-3"><article v-for="d in g.discussions" :key="d.id" class="card"><div class="flex"><h3>{{ d.title }}</h3><button v-if="d.created_by===auth.user?.id || g.is_admin" class="text-xs text-accent2 ml-auto" @click="delDiscussion(d.id)">删除</button></div><p class="text-sm text-gray-600 whitespace-pre-wrap mt-2">{{ d.body }}</p><p class="text-xs text-gray-400 mt-3">{{ d.author_name }} · {{ (d.created_at||'').slice(0,16) }}</p></article><p v-if="!g.discussions.length" class="text-gray-400 text-sm">暂无内部讨论。</p></div>
+    <section v-if="tab==='discussion'" class="mt-6">
+      <div class="flex items-center justify-between mb-4">
+        <div><h2>内部讨论</h2><p class="text-xs text-gray-500 mt-1">仅研究项目成员可见，不进入全站研究讨论区；支持点赞、评论和回复评论。</p></div>
+        <button class="btn-primary" @click="newDiscussion">＋发布内部讨论</button>
+      </div>
+      <PostCard v-for="p in projectPosts" :key="p.id" :post="p" :current-user-id="auth.user?.id"
+        @edit="editDiscussion" @deleted="postDeleted" @changed="load" />
+      <p v-if="!projectPosts.length" class="text-gray-400 text-sm">暂无内部讨论。</p>
     </section>
 
-    <div v-if="showDataset" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50"><div class="bg-white rounded-lg max-w-md w-full p-6 m-4"><h3 class="text-lg">新建 Project Dataset</h3><p class="text-xs text-gray-500 mb-3">创建后仅 Project 成员可见，你将成为 Dataset Owner。</p><input v-model="dsForm.name_zh" class="input mb-2" placeholder="数据集名称"><textarea v-model="dsForm.desc_zh" class="input mb-3" placeholder="简介"></textarea><div class="flex justify-end gap-2"><button class="btn-ghost" @click="showDataset=false">取消</button><button class="btn-primary" @click="createDataset">创建</button></div></div></div>
-    <div v-if="showEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50"><div class="bg-white rounded-lg max-w-md w-full p-6 m-4"><h3 class="text-lg mb-3">编辑 Project</h3><input v-model="editForm.name_zh" class="input mb-2" placeholder="项目名称"><textarea v-model="editForm.desc_zh" class="input mb-3" rows="5" placeholder="项目介绍"></textarea><div class="flex justify-end gap-2"><button class="btn-ghost" @click="showEdit=false">取消</button><button class="btn-primary" @click="saveEdit">保存</button></div></div></div>
+    <div v-if="showDataset" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50"><div class="bg-white rounded-lg max-w-md w-full p-6 m-4"><h3 class="text-lg">新建内部数据集</h3><p class="text-xs text-gray-500 mb-3">创建后仅研究项目成员可见，你将成为数据集总管理员。</p><input v-model="dsForm.name_zh" class="input mb-2" placeholder="数据集名称"><textarea v-model="dsForm.desc_zh" class="input mb-3" placeholder="简介"></textarea><div class="flex justify-end gap-2"><button class="btn-ghost" @click="showDataset=false">取消</button><button class="btn-primary" @click="createDataset">创建</button></div></div></div>
+    <div v-if="showEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50"><div class="bg-white rounded-lg max-w-md w-full p-6 m-4"><h3 class="text-lg mb-3">编辑研究项目</h3><input v-model="editForm.name_zh" class="input mb-2" placeholder="项目名称"><textarea v-model="editForm.desc_zh" class="input mb-3" rows="5" placeholder="项目介绍"></textarea><div class="flex justify-end gap-2"><button class="btn-ghost" @click="showEdit=false">取消</button><button class="btn-primary" @click="saveEdit">保存</button></div></div></div>
+    <PostComposer v-if="composerOpen" :edit="editingPost"
+      :context="{ groupId:g.id, groupName:g.name_zh, internal:true }"
+      @close="composerOpen=false" @saved="load" />
   </div>
 </template>

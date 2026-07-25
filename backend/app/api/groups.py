@@ -11,8 +11,7 @@ from ..core.audit import write_audit
 from ..core.naming import ensure_unique, normalize_name, gen_slug
 from ..models.user import User
 from ..models.group import (ResearchGroup, GroupMember, GroupJoinRequest, Charter,
-                            ProjectResourceLink, ProjectTimelineEntry, ProjectFile,
-                            ProjectDiscussion)
+                            ProjectResourceLink, ProjectTimelineEntry, ProjectFile)
 from ..models.dataset import Dataset, DatasetMember, DatasetGroupRequest
 from ..models.version import DataVersion
 from ..models.community import Post
@@ -119,20 +118,13 @@ def group_detail(slug: str, user: User = Depends(get_current_user),
         "created_at": str(x.created_at) if x.created_at else None
     } for x in db.query(ProjectFile).filter_by(group_id=g.id)
         .order_by(ProjectFile.id.desc()).all()]
-    result["discussions"] = [{
-        "id": x.id, "title": x.title, "body": x.body, "created_by": x.created_by,
-        "author_name": (db.get(User, x.created_by).display_name
-                        if db.get(User, x.created_by) else ""),
-        "created_at": str(x.created_at) if x.created_at else None
-    } for x in db.query(ProjectDiscussion).filter_by(group_id=g.id)
-        .order_by(ProjectDiscussion.id.desc()).all()]
     return result
 
 
 @router.post("/groups/{slug}/join-requests")
 def join_group(slug: str, message: str = "", user: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
-    raise HTTPException(410, "Project 不开放申请加入，请联系 Project Owner/Admin 邀请")
+    raise HTTPException(410, "研究项目不开放申请加入，请联系研究项目总管理员/管理员邀请")
 
 
 @router.post("/group-join/{rid}/decide")
@@ -293,7 +285,7 @@ def invite_project_member(slug: str, uid: int, user: User = Depends(get_current_
     """Project Owner/Admin 从全平台检索后直接邀请；不再存在公开申请加入。"""
     g = _get_group(db, slug)
     if not is_group_admin(db, g.id, user):
-        raise HTTPException(403, "仅 Project Owner/Admin 可邀请成员")
+        raise HTTPException(403, "仅研究项目总管理员/管理员可邀请成员")
     target = db.get(User, uid)
     if not target or target.status == "left":
         raise HTTPException(404, "用户不存在或账号已停用")
@@ -315,7 +307,7 @@ def invite_project_member(slug: str, uid: int, user: User = Depends(get_current_
 def _project_member_guard(db: Session, slug: str, user: User) -> ResearchGroup:
     g = _get_group(db, slug)
     if not is_group_member(db, g.id, user):
-        raise HTTPException(403, "仅 Project 成员可访问")
+        raise HTTPException(403, "仅研究项目成员可访问")
     return g
 
 
@@ -432,32 +424,6 @@ def delete_project_file(slug: str, fid: int, user: User = Depends(get_current_us
     return {"ok": True}
 
 
-@router.post("/groups/{slug}/discussions")
-def add_project_discussion(slug: str, body: dict,
-                           user: User = Depends(get_current_user),
-                           db: Session = Depends(get_db)):
-    g = _project_member_guard(db, slug, user)
-    title, content = (body.get("title") or "").strip(), (body.get("body") or "").strip()
-    if not title or not content:
-        raise HTTPException(400, "标题和内容均为必填")
-    row = ProjectDiscussion(group_id=g.id, title=title, body=content, created_by=user.id)
-    db.add(row); db.commit()
-    return {"id": row.id}
-
-
-@router.delete("/groups/{slug}/discussions/{did}")
-def delete_project_discussion(slug: str, did: int, user: User = Depends(get_current_user),
-                              db: Session = Depends(get_db)):
-    g = _project_member_guard(db, slug, user)
-    row = db.get(ProjectDiscussion, did)
-    if not row or row.group_id != g.id:
-        raise HTTPException(404, "讨论不存在")
-    if row.created_by != user.id and not is_group_admin(db, g.id, user):
-        raise HTTPException(403, "仅作者或 Project 管理员可删除")
-    db.delete(row); db.commit()
-    return {"ok": True}
-
-
 @router.post("/groups/{slug}/datasets")
 def create_dataset(slug: str, body: DatasetIn, user: User = Depends(get_current_user),
                    db: Session = Depends(get_db)):
@@ -467,7 +433,7 @@ def create_dataset(slug: str, body: DatasetIn, user: User = Depends(get_current_
     role = group_role(db, g.id, user.id)
     # 原则一 + 二：仅本组成员/管理员可在组内发起数据集；总管理员不因平台身份获得此权
     if role not in ("group_owner", "group_admin", "member"):
-        raise HTTPException(403, "需先加入 Project")
+        raise HTTPException(403, "需先加入研究项目")
     ds_slug = (body.slug or "").strip() or gen_slug(db, Dataset, "ds")
     if db.query(Dataset).filter_by(slug=ds_slug).first():
         raise HTTPException(400, "数据集 slug 已存在")

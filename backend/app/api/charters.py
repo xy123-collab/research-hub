@@ -2,12 +2,23 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from ..core.db import get_db
-from ..core.permissions import get_current_user, is_group_admin, is_dataset_admin
+from ..core.permissions import (get_current_user, is_group_admin, is_dataset_admin,
+                                is_group_member)
 from ..models.user import User
 from ..models.group import Charter, CharterAck
+from ..models.dataset import Dataset
 from ..schemas.models import CharterIn
 
 router = APIRouter(tags=["charters"])
+
+
+def _guard_charter_visible(db: Session, c: Charter, user: User) -> None:
+    if c.scope == "group" and not is_group_member(db, c.ref_id, user):
+        raise HTTPException(403, "该研究项目公约仅成员可见")
+    if c.scope == "dataset":
+        d = db.get(Dataset, c.ref_id)
+        if d and d.group_id and not is_group_member(db, d.group_id, user):
+            raise HTTPException(403, "该内部数据集公约仅所属研究项目成员可见")
 
 
 @router.get("/charters")
@@ -17,6 +28,7 @@ def get_charter(scope: str, ref: int, user: User = Depends(get_current_user),
          .order_by(Charter.version.desc()).first())
     if not c:
         return {"charter": None, "acked": True}
+    _guard_charter_visible(db, c, user)
     acked = db.query(CharterAck).filter_by(
         user_id=user.id, charter_id=c.id, charter_version=c.version).first() is not None
     return {"charter": {"id": c.id, "scope": c.scope, "ref_id": c.ref_id,
@@ -30,6 +42,7 @@ def ack_charter(cid: int, user: User = Depends(get_current_user),
     c = db.get(Charter, cid)
     if not c:
         raise HTTPException(404, "公约不存在")
+    _guard_charter_visible(db, c, user)
     exists = db.query(CharterAck).filter_by(
         user_id=user.id, charter_id=c.id, charter_version=c.version).first()
     if not exists:

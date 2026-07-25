@@ -202,7 +202,7 @@ def build_notifications(db: Session, user: User) -> dict:
             GroupMember.joined_at.desc()).limit(12).all():
         g = db.get(ResearchGroup, m.group_id)
         add(type="project_member_change", level="info", category="access",
-            title="Project 有新成员",
+            title="研究项目有新成员",
             subtitle=f"{uname(m.user_id)} 加入「{g.name_zh if g else ''}」",
             link=f"/groups/{g.slug}" if g else "/",
             at_dt=m.joined_at, sort=100000 + m.group_id * 1000 + m.user_id)
@@ -212,7 +212,7 @@ def build_notifications(db: Session, user: User) -> dict:
             ProjectTimelineEntry.created_at.desc()).limit(15).all():
         g = db.get(ResearchGroup, e.group_id)
         add(type="project_timeline", level="info", category="collab",
-            title="Project 时间线有更新",
+            title="研究项目时间线有更新",
             subtitle=f"{uname(e.created_by)} 在「{g.name_zh if g else ''}」记录了：{e.title or e.category}",
             link=f"/groups/{g.slug}" if g else "/",
             at_dt=e.created_at, sort=200000 + e.id)
@@ -222,7 +222,7 @@ def build_notifications(db: Session, user: User) -> dict:
             ProjectFile.created_at.desc()).limit(15).all():
         g = db.get(ResearchGroup, f.group_id)
         add(type="project_file", level="info", category="collab",
-            title="Project 有新文件",
+            title="研究项目有新文件",
             subtitle=f"{uname(f.created_by)} 在「{g.name_zh if g else ''}」上传了 {f.file_name}",
             link=f"/groups/{g.slug}" if g else "/",
             at_dt=f.created_at, sort=300000 + f.id)

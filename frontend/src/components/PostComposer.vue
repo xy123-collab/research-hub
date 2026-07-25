@@ -7,7 +7,7 @@ import Icon from './Icon.vue'
 import ScopeSelector from './ScopeSelector.vue'
 
 const props = defineProps<{
-  context?: { datasetId?: number; datasetName?: string; groupId?: number; groupName?: string }
+  context?: { datasetId?: number; datasetName?: string; groupId?: number; groupName?: string; internal?: boolean }
   edit?: any | null
 }>()
 const emit = defineEmits(['close', 'saved'])
@@ -56,7 +56,7 @@ onMounted(() => {
 
 async function submit() {
   if (!form.value.title.trim() && !form.value.content_zh.trim()) { alert('标题或正文至少填一项'); return }
-  if ((scope.value.scope === 'group' || scope.value.scope === 'dataset') && !scope.value.scope_ref_ids.length) {
+  if (!props.context?.internal && (scope.value.scope === 'group' || scope.value.scope === 'dataset') && !scope.value.scope_ref_ids.length) {
     alert('请勾选至少一个课题组/数据集作为可见范围'); return
   }
   saving.value = true
@@ -66,7 +66,9 @@ async function submit() {
       content_zh: form.value.content_zh.trim(),
       post_type: form.value.post_type,
       tags: form.value.tags ? form.value.tags.split(/[,，]/).map((s: string) => s.trim()).filter(Boolean) : [],
-      scope: scope.value.scope, scope_ref_ids: scope.value.scope_ref_ids,
+      scope: props.context?.internal ? 'group' : scope.value.scope,
+      scope_ref_ids: props.context?.internal && props.context?.groupId
+        ? [props.context.groupId] : scope.value.scope_ref_ids,
       dataset_id: dsLinked.value?.id || props.context?.datasetId || null,
       group_id: props.context?.groupId || null,
     }
@@ -106,7 +108,11 @@ async function submit() {
 
       <div class="grid md:grid-cols-2 gap-3">
         <div>
-          <ScopeSelector v-model="scope" />
+          <div v-if="context?.internal" class="rounded border border-line bg-paper px-3 py-2">
+            <div class="label-cap">可见范围</div>
+            <p class="text-sm mt-1">仅研究项目成员可见</p>
+          </div>
+          <ScopeSelector v-else v-model="scope" />
         </div>
         <div>
           <label class="label-cap">关联数据集（可选）</label>
@@ -123,7 +129,7 @@ async function submit() {
               </div>
             </template>
           </div>
-          <p v-if="context?.groupName" class="text-[11px] text-gray-400 mt-2">默认关联当前课题组：{{ context.groupName }}</p>
+          <p v-if="context?.groupName" class="text-[11px] text-gray-400 mt-2">关联当前研究项目：{{ context.groupName }}</p>
 
           <label class="label-cap mt-2">标签（逗号分隔）</label>
           <input v-model="form.tags" class="input" placeholder="如 COD, 因果推断" />

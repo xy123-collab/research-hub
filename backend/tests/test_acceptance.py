@@ -11,12 +11,11 @@ def test_three_level_permission_non_member_cannot_submit_bug(client, outsider):
     assert r.status_code == 403
 
 
-def test_non_member_download_blocked_but_codebook_ok(client, outsider):
-    # 非成员可看变量/codebook，但不能下载原始数据
-    assert client.get("/api/datasets/cod/variables", headers=outsider).status_code == 200
-    vid = client.get("/api/datasets/cod/versions", headers=outsider).json()[0]["id"]
-    r = client.get(f"/api/datasets/cod/versions/{vid}/download?file=data", headers=outsider)
-    assert r.status_code == 403
+def test_non_project_member_cannot_view_internal_dataset(client, outsider):
+    # 内部数据集的详情、变量和版本均只对所属研究项目成员开放。
+    assert client.get("/api/datasets/cod", headers=outsider).status_code == 403
+    assert client.get("/api/datasets/cod/variables", headers=outsider).status_code == 403
+    assert client.get("/api/datasets/cod/versions", headers=outsider).status_code == 403
 
 
 def test_version_not_overwritable(client, founder):
@@ -110,14 +109,14 @@ def test_scoring_review_full_chain_and_contribution(client, founder, member):
     assert after == before + 9   # 报告人按终审分加权 +9
 
 
-def test_charter_gate(client, outsider):
-    # 公约：进入数据集时可取公约且记录是否已确认
-    d = client.get("/api/datasets/cod", headers=outsider).json()
-    c = client.get("/api/charters", params={"scope": "dataset", "ref": d["id"]}, headers=outsider).json()
+def test_charter_gate(client, member):
+    # 研究项目成员进入内部数据集时可取公约且记录是否已确认
+    d = client.get("/api/datasets/cod", headers=member).json()
+    c = client.get("/api/charters", params={"scope": "dataset", "ref": d["id"]}, headers=member).json()
     assert c["charter"] is not None and c["acked"] is False
     cid = c["charter"]["id"]
-    assert client.post(f"/api/charters/{cid}/ack", headers=outsider).status_code == 200
-    c2 = client.get("/api/charters", params={"scope": "dataset", "ref": d["id"]}, headers=outsider).json()
+    assert client.post(f"/api/charters/{cid}/ack", headers=member).status_code == 200
+    c2 = client.get("/api/charters", params={"scope": "dataset", "ref": d["id"]}, headers=member).json()
     assert c2["acked"] is True
 
 

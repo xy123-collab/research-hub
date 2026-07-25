@@ -90,13 +90,3 @@ class ProjectFile(Base):
     mime = Column(String(120)); size = Column(Integer)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class ProjectDiscussion(Base):
-    __tablename__ = "project_discussions"
-    id = Column(Integer, primary_key=True)
-    group_id = Column(Integer, ForeignKey("research_groups.id"), nullable=False)
-    title = Column(String(240), nullable=False)
-    body = Column(Text, nullable=False)
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)

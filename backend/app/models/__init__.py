@@ -1,8 +1,7 @@
 # 汇总导入，确保 Alembic / Base.metadata 能发现全部表
 from .user import User, Role, Permission, RolePermission
 from .group import (ResearchGroup, GroupMember, GroupJoinRequest, Charter, CharterAck,
-                    ProjectResourceLink, ProjectTimelineEntry, ProjectFile,
-                    ProjectDiscussion)
+                    ProjectResourceLink, ProjectTimelineEntry, ProjectFile)
 from .dataset import Dataset, DatasetMember, JoinRequest, Variable, DatasetGroupRequest
 from .access import (DatasetGrant, DatasetSettings, DownloadRequest,
                      VersionCandidate, CodebookDraft)

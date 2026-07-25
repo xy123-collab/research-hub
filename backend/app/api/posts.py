@@ -46,6 +46,14 @@ def _hot_score(likes: int, comments: int, commenters: int, created_at) -> float:
 
 def _post_visible(db, p, user, my_groups) -> bool:
     from ..core.scopes import scope_visible, get_scopes
+    from ..models.dataset import Dataset
+    # 研究项目边界优先于历史帖子自身保存的 scope，防止旧公开 scope 绕过新规则。
+    project_id = p.group_id
+    if not project_id and p.dataset_id:
+        ds = db.get(Dataset, p.dataset_id)
+        project_id = ds.group_id if ds else None
+    if project_id and project_id not in my_groups:
+        return False
     sc = get_scopes(db, "post", p.id)
     if sc:
         return scope_visible(db, "post", p.id, p.author_id, user)
@@ -153,6 +161,16 @@ def feed(dataset_id: int | None = None, group_id: int | None = None,
     rows = q.order_by(Post.id.desc()).limit(600).all()
     out = []
     for p in rows:
+        # 研究项目内部讨论只在研究项目/内部数据集页面出现，不混入全站研究讨论区与热榜。
+        # 仍复用同一帖子、点赞和嵌套评论能力。
+        if not dataset_id and not group_id:
+            internal = bool(p.group_id)
+            if not internal and p.dataset_id:
+                from ..models.dataset import Dataset
+                _ds = db.get(Dataset, p.dataset_id)
+                internal = bool(_ds and _ds.group_id)
+            if internal:
+                continue
         if since and p.created_at and p.created_at < since:
             continue
         if not _post_visible(db, p, user, my_groups):
@@ -191,18 +209,32 @@ def hot_posts(range: str = "7d", limit: int = 10, db: Session = Depends(get_db),
 def create_post(body: PostIn, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
     from ..core.scopes import set_scope
+    from ..models.dataset import Dataset
+    from ..core.permissions import is_group_member
     if not (body.content_zh or "").strip() and not (body.title or "").strip():
         raise HTTPException(400, "标题或正文至少填一项")
-    legacy = {"public": "platform", "self": "private"}.get(body.scope, "group")
+    project_id = body.group_id
+    if body.dataset_id:
+        ds = db.get(Dataset, body.dataset_id)
+        if not ds:
+            raise HTTPException(404, "数据集不存在")
+        if ds.group_id:
+            project_id = ds.group_id
+    internal = bool(project_id)
+    if internal and not is_group_member(db, project_id, user):
+        raise HTTPException(403, "仅研究项目成员可在内部讨论中发帖")
+    post_scope = "group" if internal else body.scope
+    scope_refs = [project_id] if internal else (
+        body.scope_ref_ids or ([body.scope_ref_id] if body.scope_ref_id else []))
+    legacy = "group" if internal else {"public": "platform", "self": "private"}.get(post_scope, "group")
     p = Post(author_id=user.id, content_zh=body.content_zh, content_en=body.content_en,
              title=(body.title or None), post_type=body.post_type or "discussion",
              status=body.status or "open",
-             dataset_id=body.dataset_id, group_id=body.group_id,
+             dataset_id=body.dataset_id, group_id=project_id,
              visibility=legacy, cover_icon=body.cover_icon)
     db.add(p); db.flush()
-    refs = body.scope_ref_ids or ([body.scope_ref_id] if body.scope_ref_id else [])
     try:
-        set_scope(db, "post", p.id, body.scope, refs, user)
+        set_scope(db, "post", p.id, post_scope, scope_refs, user)
     except ValueError as e:
         raise HTTPException(400, str(e))
     for tg in body.tags:
@@ -252,10 +284,14 @@ def edit_post(pid: int, body: PostIn, db: Session = Depends(get_db),
         if (tg or "").strip():
             db.add(PostTag(post_id=pid, tag=tg.strip()))
     # 更新可见范围
-    refs = body.scope_ref_ids or ([body.scope_ref_id] if body.scope_ref_id else [])
+    # 已属于研究项目的内部讨论不可改成公开范围。
+    internal = bool(p.group_id)
+    post_scope = "group" if internal else body.scope
+    refs = ([p.group_id] if internal else
+            (body.scope_ref_ids or ([body.scope_ref_id] if body.scope_ref_id else [])))
     try:
-        set_scope(db, "post", pid, body.scope, refs, user)
-        p.visibility = {"public": "platform", "self": "private"}.get(body.scope, "group")
+        set_scope(db, "post", pid, post_scope, refs, user)
+        p.visibility = "group" if internal else {"public": "platform", "self": "private"}.get(post_scope, "group")
     except ValueError as e:
         raise HTTPException(400, str(e))
     db.commit()
@@ -278,6 +314,7 @@ def del_post(pid: int, db: Session = Depends(get_db), user: User = Depends(get_c
 @router.post("/posts/{pid}/react")
 def react(pid: int, type: str = "like", db: Session = Depends(get_db),
           user: User = Depends(get_current_user)):
+    _guard_post_visible(db, pid, user)
     ex = db.query(PostReaction).filter_by(post_id=pid, user_id=user.id, type=type).first()
     if ex:
         db.delete(ex); db.commit(); return {"toggled": "off"}
@@ -288,9 +325,7 @@ def react(pid: int, type: str = "like", db: Session = Depends(get_db),
 @router.post("/posts/{pid}/follow")
 def follow_post(pid: int, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
-    p = db.get(Post, pid)
-    if not p:
-        raise HTTPException(404, "帖子不存在")
+    p = _guard_post_visible(db, pid, user)
     ex = db.query(PostFollow).filter_by(post_id=pid, user_id=user.id).first()
     if ex:
         db.delete(ex); db.commit(); return {"followed": False}

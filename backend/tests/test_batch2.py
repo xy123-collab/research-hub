@@ -103,13 +103,33 @@ def test_perm_request_flow(client, founder, member):
     client.post(f"/api/datasets/cod/members/{uid}/revoke", params={"perm": "analysis.online"}, headers=founder)
 
 
-def test_dataset_search_and_feed_link(client, founder, member):
+def test_internal_dataset_discussion_stays_inside_project(client, founder, member, outsider):
     res = client.get("/api/datasets/search", params={"q": "COD"}, headers=member).json()
     assert res and any("COD" in d["name"] for d in res)
     did = res[0]["id"]
-    client.post("/api/posts", json={"content_zh": "关联讨论xyz", "tags": [], "dataset_id": did}, headers=member)
-    fp = [p for p in client.get("/api/posts", headers=member).json() if p["content_zh"] == "关联讨论xyz"][0]
+    made = client.post("/api/posts", json={
+        "content_zh": "关联讨论xyz", "tags": [], "dataset_id": did
+    }, headers=member)
+    assert made.status_code == 200
+    pid = made.json()["id"]
+    # 内部数据集不出现在非项目成员搜索中，页面和帖子也不可访问。
+    assert client.get("/api/datasets/search", params={"q": "COD"}, headers=outsider).json() == []
+    assert client.get("/api/datasets/cod", headers=outsider).status_code == 403
+    assert client.get(f"/api/posts/{pid}", headers=outsider).status_code == 403
+    # 即使是项目成员，内部讨论也不进入全站研究讨论区，只在内部数据集入口出现。
+    assert not any(p["id"] == pid for p in client.get("/api/posts", headers=member).json())
+    internal = client.get("/api/posts", params={"dataset_id": did}, headers=member).json()
+    fp = [p for p in internal if p["id"] == pid][0]
     assert fp["dataset_slug"] and fp["dataset_name"]
+    # 复用完整帖子互动：点赞、一级评论、评论回复。
+    assert client.post(f"/api/posts/{pid}/react", headers=member).status_code == 200
+    top = client.post(f"/api/posts/{pid}/comments", json={"content": "一级评论"},
+                      headers=member).json()["id"]
+    assert client.post(f"/api/posts/{pid}/comments",
+                       json={"content": "回复评论", "parent_id": top},
+                       headers=founder).status_code == 200
+    comments = client.get(f"/api/posts/{pid}/comments", headers=member).json()
+    assert any(c["parent_id"] == top for c in comments)
 
 
 def test_super_admin_primary_and_roles(client, founder):

@@ -45,6 +45,8 @@ def _get_ds(db, slug) -> Dataset:
 def _ensure_ds_visible(db: Session, d: Dataset, user: User) -> None:
     """Project Dataset 对所属 Project 全体成员可见，但不赋予 Dataset 管理权限。"""
     project_member = bool(d.group_id and is_group_member(db, d.group_id, user))
+    if d.group_id and not project_member:
+        raise HTTPException(403, "该内部数据集仅所属研究项目成员可见")
     if not d.is_public and not is_dataset_member(db, d.id, user) and not project_member:
         raise HTTPException(403, "该数据集仅已加入成员可见；请联系数据集管理员加入后再访问")
 
@@ -70,7 +72,8 @@ def _ds_card(db, d, user):
 def wall(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """全平台公开数据集墙（发现用）。字段向后兼容，仅新增协作信号。"""
     return [_ds_card(db, d, user) for d in
-            db.query(Dataset).filter_by(is_deleted=False, is_public=True).all()]
+            db.query(Dataset).filter_by(
+                is_deleted=False, is_public=True, group_id=None).all()]
 
 
 @router.get("/datasets/search")
@@ -253,6 +256,7 @@ def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_cu
         Charter.version.desc()).first()
     pubs = db.query(Publication).filter_by(dataset_id=d.id).all()
     grp = db.get(ResearchGroup, d.group_id) if d.group_id else None
+    project_member = bool(d.group_id and is_group_member(db, d.group_id, user))
     pend = db.query(DatasetGroupRequest).filter_by(
         dataset_id=d.id, status="pending").first()
     pend_group = db.get(ResearchGroup, pend.group_id) if pend else None
@@ -273,13 +277,13 @@ def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_cu
         "id": d.id, "slug": d.slug, "name_zh": d.name_zh, "name_en": d.name_en,
         "desc_zh": d.desc_zh, "icon": d.icon, "is_sensitive": d.is_sensitive,
         "is_public": d.is_public,
-        "group": ({"slug": grp.slug, "name_zh": grp.name_zh} if grp else None),
+        "group": ({"id": grp.id, "slug": grp.slug, "name_zh": grp.name_zh} if grp else None),
         "pending_group_request": ({"kind": pend.kind, "group_name": pend_group.name_zh
                                    if pend_group else "", "status": pend.status}
                                   if pend else None),
         "founder": {"id": lead_id, "name": lead_user.display_name if lead_user else "",
                     "contact": (lead_user.email if lead_user else "") or ""},
-        "is_member": member, "is_admin": is_admin,
+        "is_member": member, "is_project_member": project_member, "is_admin": is_admin,
         "is_lead": lead_id == user.id, "lead_id": lead_id,
         "unique_id_var": (_data_config(db, d.id).unique_id_var),
         "charter": ({"id": charter.id, "body_zh": charter.body_zh,
