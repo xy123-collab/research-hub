@@ -27,6 +27,7 @@ from ..models.curation import CodeComment, CodeVersion
 from ..models.version import DataVersion
 from ..models.workspace import Workspace, WorkspaceMember
 from ..models.extras import NotificationState
+from ..models.governance import FeedbackTicket
 
 router = APIRouter(tags=["notifications"])
 
@@ -386,6 +387,16 @@ def build_notifications(db: Session, user: User) -> dict:
                 title="课题组发布了新数据集",
                 subtitle=f"「{d.name_zh}」",
                 link=f"/datasets/{d.slug}", sort=d.id)
+
+    # 平台使用问题统一提醒平台管理员；不向其暴露私有研究内容。
+    if user.role and user.role.code == "super_admin":
+        for ticket in db.query(FeedbackTicket).filter(
+                FeedbackTicket.status.in_(["pending", "processing", "waiting_user"])
+                ).order_by(FeedbackTicket.id.desc()).limit(30).all():
+            add(type="feedback_ticket", level="action", category="todo",
+                title="网站反馈待处理",
+                subtitle=f"工单 #{ticket.id} · {ticket.title}",
+                link="/admin?panel=feedback", at_dt=ticket.created_at, sort=ticket.id)
 
     actions = [i for i in items if i["level"] == "action"]
     infos = [i for i in items if i["level"] == "info"]

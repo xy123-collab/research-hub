@@ -6,11 +6,13 @@ import { useAuth } from './stores/auth'
 import api from './api'
 import PlatformFooter from './components/PlatformFooter.vue'
 import NotificationCenter from './components/NotificationCenter.vue'
+import FeedbackCenter from './components/FeedbackCenter.vue'
 
 const auth = useAuth()
 const route = useRoute()
 const { locale, t } = useI18n()
 const cfg = ref<any>({ name_zh: '科研数据共享平台', name_en: 'Research Hub' })
+const feedbackCenter = ref<any>(null)
 
 const showNav = computed(() => route.path !== '/login')
 
@@ -39,6 +41,7 @@ function toggleLang() {
             <router-link to="/feed" class="hover:text-accent">{{ t('nav.feed') }}</router-link>
             <router-link to="/collab" class="hover:text-accent">{{ t('nav.collab') }}</router-link>
             <router-link to="/admin" class="hover:text-accent">{{ t('nav.admin') }}</router-link>
+            <button class="hover:text-accent" @click="feedbackCenter?.show()">帮助与反馈</button>
           </nav>
         </div>
         <div class="flex items-center gap-3 text-sm">
@@ -66,5 +69,6 @@ function toggleLang() {
 
     <!-- 集中消息入口：登录后显示右下角悬浮铃铛 -->
     <NotificationCenter v-if="auth.user && showNav" />
+    <FeedbackCenter v-if="auth.user && showNav" ref="feedbackCenter" />
   </div>
 </template>

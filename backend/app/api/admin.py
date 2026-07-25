@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from ..core.db import get_db
 from ..core.permissions import (get_current_user, require_super_admin, is_group_admin,
                                 is_group_lead, group_lead_id, is_dataset_admin,
@@ -15,6 +15,7 @@ from ..models.correction import Bug
 from ..models.code import CodeScript
 from ..models.community import Post, PostComment
 from ..models.governance import AuditLog, ContributionEvent
+from ..models.governance import FeedbackTicket
 from ..models.access import DownloadRequest
 from ..services.scoring import leaderboard, by_dataset
 
@@ -190,6 +191,62 @@ def audit_log(limit: int = 200, db: Session = Depends(get_db),
     return [{"id": l.id, "user_id": l.user_id, "action": l.action,
              "object_type": l.object_type, "object_id": l.object_id,
              "created_at": str(l.created_at)} for l in logs]
+
+
+@router.get("/admin/platform-analytics")
+def platform_analytics(db: Session = Depends(get_db),
+                       user: User = Depends(require_super_admin)):
+    """平台运营元数据汇总，不返回私有 Project/Dataset 内容。"""
+    now = datetime.utcnow()
+    week = now - timedelta(days=7)
+    month = now - timedelta(days=30)
+
+    def active_since(cutoff):
+        return (db.query(func.count(func.distinct(AuditLog.user_id)))
+                .filter(AuditLog.created_at >= cutoff, AuditLog.user_id.isnot(None)).scalar() or 0)
+
+    action_groups = [
+        ("登录", ("auth.login", "login")),
+        ("数据访问", ("dataset.view", "dataset.detail")),
+        ("下载", ("download",)),
+        ("上传与发布", ("upload", "publish", "version")),
+        ("讨论互动", ("post", "comment", "reaction")),
+        ("数据勘误", ("bug", "correction")),
+        ("项目协作", ("group", "project", "workspace")),
+    ]
+
+    def action_count(prefixes, cutoff):
+        filters = [AuditLog.action.ilike(f"%{prefix}%") for prefix in prefixes]
+        return db.query(AuditLog).filter(AuditLog.created_at >= cutoff, or_(*filters)).count()
+
+    features = [{"name": name, "week": action_count(prefixes, week),
+                 "month": action_count(prefixes, month)}
+                for name, prefixes in action_groups]
+    features.sort(key=lambda x: x["month"], reverse=True)
+
+    daily = []
+    for offset in range(29, -1, -1):
+        start = (now - timedelta(days=offset)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        count = (db.query(func.count(func.distinct(AuditLog.user_id)))
+                 .filter(AuditLog.created_at >= start, AuditLog.created_at < end,
+                         AuditLog.user_id.isnot(None)).scalar() or 0)
+        daily.append({"date": start.strftime("%m-%d"), "active_users": count})
+
+    return {
+        "overview": {
+            "users": db.query(User).count(),
+            "projects": db.query(ResearchGroup).filter_by(is_deleted=False).count(),
+            "datasets": db.query(Dataset).filter_by(is_deleted=False).count(),
+            "wau": active_since(week), "mau": active_since(month),
+            "open_feedback": db.query(FeedbackTicket).filter(
+                FeedbackTicket.status.in_(["pending", "processing", "waiting_user"])).count(),
+        },
+        "features": features,
+        "daily_active": daily,
+        "audit_actions_7d": db.query(AuditLog).filter(AuditLog.created_at >= week).count(),
+        "audit_actions_30d": db.query(AuditLog).filter(AuditLog.created_at >= month).count(),
+    }
 
 
 PRIMARY_KEY = "primary_super_admin_uid"

@@ -19,7 +19,8 @@ from .resume import Resume, ResumeBlock
 from .extras import (UserProfile, ProjectMeta, WorkspaceEntry, CollabSection,
                      SkillMeta, SkillComment, EmailEvent, PasswordResetToken,
                      ContentScope, AppliedFix, ContentTombstone, PlatformSetting, PermRequest)
-from .governance import (AuditLog, ContributionEvent, QualityRule, QualityRun, VerifyFlag)
+from .governance import (AuditLog, ContributionEvent, QualityRule, QualityRun, VerifyFlag,
+                         FeedbackTicket)
 from .literature import (LitTopic, LitRef, DatasetSummaryAI, Publication,
                          DatasetSummary, AnalysisSnippet)
 from .mapping import VersionAuxFile, FileCorrection

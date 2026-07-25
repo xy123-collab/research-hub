@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Text, Boolean, JSON, Float
+from sqlalchemy import Column, Integer, String, ForeignKey, Text, Boolean, JSON, Float, DateTime
 from ..core.db import Base
 
 
@@ -50,3 +50,23 @@ class VerifyFlag(Base):
     issue_desc = Column(Text); confidence = Column(Float)   # rule=1.0; ai 0-1
     status = Column(String(20), default="open")   # open|confirmed|dismissed|drafted|fixed
     drafted_bug_id = Column(Integer, ForeignKey("bugs.id"))
+
+
+class FeedbackTicket(Base):
+    """网站使用问题与建议工单；不承载数据内容本身。"""
+    __tablename__ = "feedback_tickets"
+    id = Column(Integer, primary_key=True)
+    submitted_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    category = Column(String(40), nullable=False)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=False)
+    expected_result = Column(Text)
+    page_url = Column(String(800))
+    object_type = Column(String(30))
+    object_id = Column(String(100))
+    impact = Column(String(30), default="suggestion")
+    contact_email = Column(String(200))
+    status = Column(String(30), default="pending")
+    admin_reply = Column(Text)
+    handled_by = Column(Integer, ForeignKey("users.id"))
+    handled_at = Column(DateTime)

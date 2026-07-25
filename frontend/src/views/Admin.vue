@@ -12,6 +12,9 @@ const mem = ref<any>(null)            // 数据集成员与权限（用于内联
 const err = ref('')
 // 平台级
 const audit = ref<any[]>([])
+const analytics = ref<any>(null)
+const tickets = ref<any[]>([])
+const ticketFilter = ref('')
 const superInfo = ref<any>({ admins: [], primary_uid: null, i_am_primary: false })
 // 管理员检索（按名称或 ID，检索出的结果显示名称供确认）
 const adminQ = ref(''); const adminResults = ref<any[]>([]); const adminPick = ref<any>(null)
@@ -33,8 +36,12 @@ async function selectScope(kind: string, slug: string) {
     } else if (kind === 'group') {
       console_.value = (await api.get(`/admin/groups/${slug}/console`)).data
     } else if (kind === 'platform') {
-      audit.value = (await api.get('/admin/audit-log', { params: { limit: 40 } })).data
-      superInfo.value = (await api.get('/admin/super-admins')).data
+      const [ar, sr, tr, an] = await Promise.all([
+        api.get('/admin/audit-log', { params: { limit: 40 } }),
+        api.get('/admin/super-admins'), api.get('/admin/feedback'),
+        api.get('/admin/platform-analytics')
+      ])
+      audit.value = ar.data; superInfo.value = sr.data; tickets.value = tr.data; analytics.value = an.data
     }
   } catch (e: any) { err.value = e.response?.data?.detail || '加载失败' }
 }
@@ -83,6 +90,18 @@ async function revokeSuper(s: any) {
   catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 const roleTag = (r: string) => r === 'lead' ? '总管理员' : '管理员'
+const maxFeature = computed(() => Math.max(1, ...(analytics.value?.features || []).map((x:any) => x.month)))
+const shownTickets = computed(() => ticketFilter.value
+  ? tickets.value.filter((x:any) => x.status === ticketFilter.value) : tickets.value)
+const statusLabel: any = { pending:'待受理', processing:'处理中', waiting_user:'等待用户补充',
+  resolved:'已解决', closed:'已关闭', rejected:'不予处理' }
+async function updateTicket(row:any, status:string) {
+  const reply = prompt('给提交人的处理说明（可留空）', row.admin_reply || '')
+  if (reply === null) return
+  await api.patch(`/admin/feedback/${row.id}`, { status, admin_reply: reply })
+  const tr = await api.get('/admin/feedback'); tickets.value = tr.data
+  analytics.value = (await api.get('/admin/platform-analytics')).data
+}
 </script>
 
 <template>
@@ -207,6 +226,54 @@ const roleTag = (r: string) => r === 'lead' ? '总管理员' : '管理员'
 
   <!-- ========== 平台系统（总管理员）========== -->
   <div v-if="sel?.kind==='platform'">
+    <section v-if="analytics" class="mb-6">
+      <h2 class="text-lg mb-2">平台运营总览</h2>
+      <p class="text-xs text-gray-500 mb-3">仅统计使用动作和资源元数据，不读取私有研究项目、内部数据集或讨论内容。</p>
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
+        <div v-for="[k,l] in [['users','用户'],['projects','研究项目'],['datasets','数据集'],['wau','周活用户'],['mau','月活用户'],['open_feedback','待处理反馈']]"
+          :key="k" class="card"><div class="label-cap">{{ l }}</div><p class="text-2xl mt-1">{{ analytics.overview[k] }}</p></div>
+      </div>
+      <div class="grid lg:grid-cols-5 gap-5">
+        <div class="card lg:col-span-3">
+          <div class="flex justify-between mb-3"><h3>功能使用活跃度</h3><span class="text-xs text-gray-400">近7天 / 近30天</span></div>
+          <div v-for="f in analytics.features" :key="f.name" class="grid grid-cols-[86px_1fr_72px] items-center gap-2 mb-2 text-xs">
+            <span>{{ f.name }}</span>
+            <div class="h-3 rounded bg-gray-100 overflow-hidden"><div class="h-full bg-accent rounded" :style="{width: (f.month/maxFeature*100)+'%'}"></div></div>
+            <span class="text-right font-mono">{{ f.week }} / {{ f.month }}</span>
+          </div>
+        </div>
+        <div class="card lg:col-span-2">
+          <h3 class="mb-3">近30日每日活跃用户</h3>
+          <div class="h-32 flex items-end gap-1 border-b border-line">
+            <div v-for="d in analytics.daily_active" :key="d.date" class="flex-1 bg-accent/70 min-h-[2px]"
+              :style="{height: Math.max(2, d.active_users / Math.max(1, ...analytics.daily_active.map((x:any)=>x.active_users)) * 100)+'%'}"
+              :title="`${d.date}：${d.active_users} 人`"></div>
+          </div>
+          <p class="text-xs text-gray-400 mt-2">周动作 {{ analytics.audit_actions_7d }} · 月动作 {{ analytics.audit_actions_30d }}</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="mb-6">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-lg">反馈与问题 <span v-if="analytics?.overview.open_feedback" class="tag text-accent2 ml-1">{{ analytics.overview.open_feedback }} 待处理</span></h2>
+        <select v-model="ticketFilter" class="input w-36 text-xs"><option value="">全部状态</option>
+          <option v-for="(label,key) in statusLabel" :key="key" :value="key">{{ label }}</option></select>
+      </div>
+      <div class="card overflow-x-auto">
+        <table class="w-full text-xs min-w-[760px]">
+          <thead><tr class="text-left text-gray-400"><th>工单</th><th>类型 / 标题</th><th>提交人</th><th>影响</th><th>状态</th><th>提交时间</th><th>处理</th></tr></thead>
+          <tbody><tr v-for="x in shownTickets" :key="x.id" class="border-t border-line align-top">
+            <td class="py-2">#{{ x.id }}</td><td class="py-2 max-w-xs"><span class="tag">{{ x.category }}</span><p class="mt-1">{{ x.title }}</p><p class="text-gray-400 truncate" :title="x.description">{{ x.description }}</p></td>
+            <td class="py-2">{{ x.submitter?.name || '—' }}</td><td class="py-2">{{ x.impact }}</td>
+            <td class="py-2">{{ statusLabel[x.status] || x.status }}</td><td class="py-2 text-gray-400">{{ x.created_at?.slice(0,16) }}</td>
+            <td class="py-2"><select class="input text-xs w-28" :value="x.status" @change="updateTicket(x, ($event.target as HTMLSelectElement).value)">
+              <option v-for="(label,key) in statusLabel" :key="key" :value="key">{{ label }}</option></select></td>
+          </tr><tr v-if="!shownTickets.length"><td colspan="7" class="py-4 text-center text-gray-400">暂无反馈工单。</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="mb-6">
       <h2 class="text-lg mb-2">平台管理员</h2>
       <div class="card text-sm">
