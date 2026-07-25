@@ -319,7 +319,9 @@ def add_project_link(slug: str, title: str = Form(...), url: str = Form(...),
     if not title or not (url.startswith("https://") or url.startswith("http://")):
         raise HTTPException(400, "请填写标题及有效的 http(s) 链接")
     row = ProjectResourceLink(group_id=g.id, title=title, url=url, created_by=user.id)
-    db.add(row); db.commit()
+    db.add(row); db.flush()
+    write_audit(db, user.id, "project.link.add", "group", g.id)
+    db.commit()
     return {"id": row.id}
 
 
@@ -367,7 +369,9 @@ def add_project_timeline(slug: str, category: str = Form("progress"),
     row = ProjectTimelineEntry(group_id=g.id, category=category,
                                title=title.strip() or None, body=body.strip() or None,
                                created_by=user.id, **meta)
-    db.add(row); db.commit()
+    db.add(row); db.flush()
+    write_audit(db, user.id, "project.timeline.add", "group", g.id)
+    db.commit()
     return {"id": row.id}
 
 
@@ -397,7 +401,9 @@ def upload_project_file(slug: str, file: UploadFile = File(...),
     from ..services.uploads import save_upload
     row = ProjectFile(group_id=g.id, created_by=user.id,
                       **save_upload(file, f"project/{g.id}/files"))
-    db.add(row); db.commit()
+    db.add(row); db.flush()
+    write_audit(db, user.id, "project.file.upload", "group", g.id)
+    db.commit()
     return {"id": row.id, "file_name": row.file_name}
 
 
@@ -461,7 +467,7 @@ def create_dataset(slug: str, body: DatasetIn, user: User = Depends(get_current_
                    version=1, updated_by=user.id))
     from ..core.audit import record_contribution
     record_contribution(db, user.id, "dataset_founder", "dataset", d.id, d.id, weight=30)
-    write_audit(db, user.id, "dataset.create", "dataset", d.id)
+    write_audit(db, user.id, "project.dataset.create", "dataset", d.id)
     db.commit()
     return {"id": d.id, "slug": d.slug}
 

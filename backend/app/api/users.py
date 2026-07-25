@@ -13,6 +13,7 @@ from ..models.community import Post, Project
 from ..models.extras import UserProfile
 from ..schemas.models import ResumeBlockIn
 from ..services.scoring import user_total
+from ..core.audit import write_audit
 
 router = APIRouter(tags=["users"])
 
@@ -253,6 +254,7 @@ def deactivate_account(body: AccountDeactivateIn,
     user.avatar = None; user.bio_zh = None; user.bio_en = None; user.contact = None
     user.role_id = member_role.id if member_role else None
     user.status = "left"
+    write_audit(db, old_uid, "account.deactivate", "user", old_uid)
     db.commit()
     return {"ok": True, "detail": "账号已注销，个人身份信息已清除"}
 

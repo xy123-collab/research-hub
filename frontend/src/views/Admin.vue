@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
+import { downloadFile } from '../utils/download'
 
 const router = useRouter()
 // 我管理的范围（可切换查看不同课题组/数据集）
@@ -20,6 +21,7 @@ const analyticsPeriod = ref<'week'|'month'>('month')
 const scopePeriod = ref<'week'|'month'>('month')
 const scopeActivityGroup = ref('all')
 const downloadCategory = ref('all')
+const downloadPeriod = ref<'all'|'month'|'week'>('all')
 const superInfo = ref<any>({ admins: [], primary_uid: null, i_am_primary: false })
 // 管理员检索（按名称或 ID，检索出的结果显示名称供确认）
 const adminQ = ref(''); const adminResults = ref<any[]>([]); const adminPick = ref<any>(null)
@@ -34,7 +36,7 @@ onMounted(async () => {
 
 async function selectScope(kind: string, slug: string) {
   sel.value = { kind, slug }; console_.value = null; mem.value = null; err.value = ''
-  scopeActivityGroup.value = 'all'; downloadCategory.value = 'all'
+  scopeActivityGroup.value = 'all'; downloadCategory.value = 'all'; downloadPeriod.value = 'all'
   try {
     if (kind === 'dataset') {
       console_.value = (await api.get(`/admin/datasets/${slug}/console`)).data
@@ -112,7 +114,12 @@ const scopeFeatures = computed(() => (console_.value?.feature_activity || [])
 const maxScopeFeature = computed(() => Math.max(1, ...scopeFeatures.value.map((x:any)=>x[scopePeriod.value])))
 const downloadCategories = computed(() => Array.from(new Set((console_.value?.download_history || []).map((x:any)=>x.category))))
 const shownDownloads = computed(() => (console_.value?.download_history || [])
-  .filter((x:any) => downloadCategory.value === 'all' || x.category === downloadCategory.value))
+  .filter((x:any) => downloadCategory.value === 'all' || x.category === downloadCategory.value)
+  .filter((x:any) => {
+    if (downloadPeriod.value === 'all') return true
+    const days = downloadPeriod.value === 'week' ? 7 : 30
+    return new Date(x.downloaded_at).getTime() >= Date.now() - days*86400000
+  }))
 const dailyMax = computed(() => Math.max(1, ...(analytics.value?.daily_active || []).map((x:any)=>x.active_users)))
 const yTicks = computed(() => [dailyMax.value, Math.ceil(dailyMax.value/2), 0])
 const shownTickets = computed(() => ticketFilter.value
@@ -125,6 +132,10 @@ async function updateTicket(row:any, status:string) {
   await api.patch(`/admin/feedback/${row.id}`, { status, admin_reply: reply })
   const tr = await api.get('/admin/feedback'); tickets.value = tr.data
   analytics.value = (await api.get('/admin/platform-analytics')).data
+}
+function exportDownloads() {
+  downloadFile(`/admin/${sel.value.kind}/${sel.value.slug}/downloads.xlsx`,
+    `${sel.value.slug}_download_history.xlsx`)
 }
 </script>
 
@@ -201,21 +212,29 @@ async function updateTicket(row:any, status:string) {
 
     <section class="mb-6">
       <div class="flex flex-wrap items-center justify-between gap-3 mb-2">
-        <div><h2 class="text-base">文件下载历史</h2><p class="text-xs text-gray-400 mt-1">最多展示最近 200 条真实下载记录。</p></div>
-        <select v-model="downloadCategory" class="input w-40 text-xs whitespace-nowrap">
-          <option value="all">全部类别</option><option v-for="c in downloadCategories" :key="String(c)" :value="c">{{ c }}</option>
-        </select>
+        <div><h2 class="text-base">文件下载历史</h2><p class="text-xs text-gray-400 mt-1">默认显示约5条高度，可在方框内滚动查看全部真实记录。</p></div>
+        <div class="flex flex-wrap gap-2">
+          <select v-model="downloadCategory" class="input w-40 text-xs whitespace-nowrap">
+            <option value="all">全部类别</option><option v-for="c in downloadCategories" :key="String(c)" :value="c">{{ c }}</option>
+          </select>
+          <select v-model="downloadPeriod" class="input w-32 text-xs whitespace-nowrap">
+            <option value="all">不限日期</option><option value="month">近30天</option><option value="week">近7天</option>
+          </select>
+          <button class="btn-ghost text-xs whitespace-nowrap" @click="exportDownloads">导出全部 Excel</button>
+        </div>
       </div>
-      <div class="card overflow-x-auto">
+      <div class="card p-0 overflow-x-auto">
+        <div class="max-h-[270px] overflow-y-auto">
         <table class="w-full min-w-[760px] text-xs">
-          <thead><tr class="text-left text-gray-400 whitespace-nowrap"><th>类别</th><th>下载用户</th><th>下载内容</th><th>所在位置</th><th>时间</th></tr></thead>
+          <thead class="sticky top-0 bg-white z-10"><tr class="text-left text-gray-400 whitespace-nowrap"><th class="px-4 py-2">类别</th><th>下载用户</th><th>下载内容</th><th>所在位置</th><th class="pr-4">时间</th></tr></thead>
           <tbody><tr v-for="x in shownDownloads" :key="x.id" class="border-t border-line">
-            <td class="py-2 whitespace-nowrap"><span class="tag whitespace-nowrap">{{ x.category }}</span></td>
+            <td class="px-4 py-2 whitespace-nowrap"><span class="tag whitespace-nowrap">{{ x.category }}</span></td>
             <td class="py-2 whitespace-nowrap">{{ x.user_name }} <span class="text-gray-400">ID {{ x.user_id }}</span></td>
             <td class="py-2">{{ x.file_name }}<span v-if="x.detail" class="block text-gray-400">{{ x.detail }}</span></td>
-            <td class="py-2">{{ x.location || '—' }}</td><td class="py-2 whitespace-nowrap text-gray-400">{{ x.downloaded_at?.slice(0,19) }}</td>
+            <td class="py-2">{{ x.location || '—' }}</td><td class="py-2 pr-4 whitespace-nowrap text-gray-400">{{ x.downloaded_at?.slice(0,19) }}</td>
           </tr><tr v-if="!shownDownloads.length"><td colspan="5" class="py-4 text-center text-gray-400">暂无该类别的下载记录。</td></tr></tbody>
         </table>
+        </div>
       </div>
     </section>
 
@@ -300,8 +319,8 @@ async function updateTicket(row:any, status:string) {
         <div v-for="[k,l] in [['users','用户'],['projects','研究项目'],['datasets','数据集'],['wau','周活用户'],['mau','月活用户'],['open_feedback','待处理反馈']]"
           :key="k" class="card"><div class="label-cap">{{ l }}</div><p class="text-2xl mt-1">{{ analytics.overview[k] }}</p></div>
       </div>
-      <div class="grid xl:grid-cols-5 gap-5">
-        <div class="card xl:col-span-3">
+      <div class="flex flex-col gap-5">
+        <div class="card order-2">
           <div class="flex flex-wrap justify-between items-start gap-3 mb-3">
             <div><h3>功能使用活跃度</h3><p class="text-xs text-gray-400 mt-1">选择“全部”混排所有子功能，或按大模块查看内部子功能。</p></div>
             <div class="flex gap-1 whitespace-nowrap">
@@ -316,13 +335,13 @@ async function updateTicket(row:any, status:string) {
               :class="['px-3 py-1 rounded-full text-xs border',analyticsModule===m.key?'bg-paper border-accent text-accent':'border-line']"
               @click="analyticsModule=m.key">{{ m.name }} <span class="font-mono ml-1">{{ m[analyticsPeriod] }}</span></button>
           </div>
-          <div v-for="f in platformFeatures" :key="f.module+f.name" class="grid grid-cols-[minmax(150px,230px)_1fr_52px] items-center gap-3 mb-3 text-xs">
-            <span class="truncate" :title="`${f.module} · ${f.name}`"><span class="text-gray-400">{{ f.module }} · </span>{{ f.name }}</span>
+          <div v-for="f in platformFeatures" :key="f.module+f.name" class="grid grid-cols-[minmax(240px,330px)_1fr_52px] items-center gap-3 mb-3 text-xs">
+            <span class="leading-5" :title="`${f.module} · ${f.name}`"><span class="text-gray-400">{{ f.module }} · </span>{{ f.name }}</span>
             <div class="h-4 rounded bg-gray-100 overflow-hidden"><div class="h-full bg-accent rounded" :style="{width: (f[analyticsPeriod]/maxFeature*100)+'%'}"></div></div>
             <span class="text-right font-mono whitespace-nowrap">{{ f[analyticsPeriod] }} 次</span>
           </div>
         </div>
-        <div class="card xl:col-span-2">
+        <div class="card order-1">
           <h3 class="mb-3">近30日每日活跃用户</h3>
           <div class="grid grid-cols-[34px_1fr] grid-rows-[150px_26px] text-[10px] text-gray-400">
             <div class="relative border-r border-line">

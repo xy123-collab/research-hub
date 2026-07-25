@@ -67,7 +67,9 @@ def create_section(body: SectionIn, db: Session = Depends(get_db),
     seq = (db.query(CollabSection).count()) + 1
     s = CollabSection(key=key, name_zh=body.name_zh.strip(), name_en=body.name_en,
                       desc_zh=body.desc_zh, kind="generic", created_by=user.id, seq=seq)
-    db.add(s); db.commit(); db.refresh(s)
+    db.add(s); db.flush()
+    write_audit(db, user.id, "collab_section.create", "collab_section", s.id)
+    db.commit(); db.refresh(s)
     return {"id": s.id, "key": s.key}
 
 
@@ -172,6 +174,7 @@ def create_skill(name_zh: str = Form(...), desc_zh: str = Form(""),
         meta.file_path = fm["file_path"]; meta.file_name = fm["file_name"]; meta.mime = fm["mime"]
     db.add(meta)
     record_contribution(db, user.id, "skill_create", "skill", s.id, weight=15)
+    write_audit(db, user.id, "skill.create", "skill", s.id)
     db.commit()
     return {"id": s.id}
 
@@ -269,6 +272,7 @@ def download_skill(sid: int, db: Session = Depends(get_db), user: User = Depends
     log_download(db, user_id=user.id, source="skill", dataset_id=None,
                  location_label="Skill 协作", detail=(s.name_zh or s.name_en or "Skill"),
                  file_name=m.file_name, link="/#/collab")
+    write_audit(db, user.id, "skill.download", "skill", sid)
     db.commit()
     from ..services.uploads import attachment_headers
     return StreamingResponse(stream,
@@ -318,6 +322,7 @@ def add_skill_comment(sid: int, body: SkillCommentIn, db: Session = Depends(get_
     from ..services.mentions import record_mentions
     record_mentions(db, source_type="skill_comment", source_id=c.id, post_ref="collab",
                     snippet=body.content, by_user=user, raw_mentions=(body.mentions or []))
+    write_audit(db, user.id, "skill.comment", "skill", sid)
     db.commit()
     return {"id": c.id}
 

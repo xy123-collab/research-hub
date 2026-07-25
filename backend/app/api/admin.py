@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+import io
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from ..core.db import get_db
@@ -36,7 +38,7 @@ def _period_counts(query, time_col, now):
     }
 
 
-def _download_rows(db, query):
+def _download_rows(db, query, limit=200):
     labels = {
         "dataset_version": "数据版本", "code": "处理代码",
         "bug_attachment": "勘误附件", "post_attachment": "讨论附件",
@@ -49,7 +51,52 @@ def _download_rows(db, query):
         "user_name": _uname(db, row.user_id), "file_name": row.file_name,
         "location": row.location_label, "detail": row.detail,
         "downloaded_at": str(row.downloaded_at),
-    } for row in query.order_by(DownloadHistory.downloaded_at.desc()).limit(200).all()]
+    } for row in query.order_by(DownloadHistory.downloaded_at.desc()).limit(limit).all()]
+
+
+def _scope_download_query(db, kind, slug, user):
+    if kind == "dataset":
+        d = db.query(Dataset).filter_by(slug=slug, is_deleted=False).first()
+        if not d or not is_dataset_admin(db, d.id, user):
+            raise HTTPException(403, "需要数据集管理员")
+        return d.name_zh, db.query(DownloadHistory).filter(DownloadHistory.dataset_id == d.id)
+    if kind == "group":
+        g = db.query(ResearchGroup).filter_by(slug=slug, is_deleted=False).first()
+        if not g or not is_group_admin(db, g.id, user):
+            raise HTTPException(403, "需要研究项目管理员")
+        ds_ids = [x.id for x in db.query(Dataset).filter_by(group_id=g.id, is_deleted=False).all()]
+        return g.name_zh, db.query(DownloadHistory).filter(or_(
+            DownloadHistory.dataset_id.in_(ds_ids or [-1]),
+            DownloadHistory.link.like(f"/groups/{g.slug}%")))
+    raise HTTPException(400, "不支持的管理范围")
+
+
+@router.get("/admin/{kind}/{slug}/downloads.xlsx")
+def export_scope_downloads(kind: str, slug: str, db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    """导出当前管理范围的全部下载留痕，不受前端当前筛选限制。"""
+    name, query = _scope_download_query(db, kind, slug, user)
+    rows = _download_rows(db, query, limit=1000000)
+    from openpyxl import Workbook
+    from ..services.uploads import attachment_headers
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "下载历史"
+    ws.append(["类别", "用户ID", "用户名", "下载内容", "所在位置", "补充信息", "下载时间"])
+    for row in rows:
+        ws.append([row["category"], row["user_id"], row["user_name"], row["file_name"],
+                   row["location"], row["detail"], row["downloaded_at"][:19]])
+    ws.freeze_panes = "A2"
+    widths = [16, 12, 18, 36, 28, 28, 22]
+    for i, width in enumerate(widths, 1):
+        ws.column_dimensions[chr(64 + i)].width = width
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"{slug}_download_history.xlsx"
+    return StreamingResponse(buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=attachment_headers(filename))
 
 
 def _feature(name, group, query, time_col, now):
@@ -151,7 +198,7 @@ def dataset_console(slug: str, db: Session = Depends(get_db),
             "is_lead": is_dataset_lead(db, d.id, user),
             "contributions": contributions, "activity": activity,
             "feature_activity": feature_activity,
-            "download_history": _download_rows(db, dh),
+            "download_history": _download_rows(db, dh, limit=100000),
             "recent": recent[:8], "pending": pending}
 
 
@@ -225,7 +272,7 @@ def group_console(slug: str, db: Session = Depends(get_db),
             "is_lead": is_group_lead(db, g.id, user),
             "contributions": contributions, "activity": activity,
             "feature_activity": feature_activity,
-            "download_history": _download_rows(db, dh),
+            "download_history": _download_rows(db, dh, limit=100000),
             "recent": recent, "pending": pending}
 
 
@@ -289,6 +336,9 @@ def platform_analytics(db: Session = Depends(get_db),
     module_specs = [
         ("account", "账号与安全", [
             ("登录", ("login",)),
+            ("注册", ("account.register",)),
+            ("注销账号", ("account.deactivate",)),
+            ("修改密码", ("account.password.reset",)),
         ]),
         ("datasets", "数据集", [
             ("创建数据集", ("dataset.create", "dataset.create_standalone")),
@@ -306,16 +356,27 @@ def platform_analytics(db: Session = Depends(get_db),
             ("创建研究项目", ("group.create",)),
             ("成员 · 邀请与管理", ("project.member.invite", "group.member.remove",
                               "group.admin.add", "group.admin.remove")),
-            ("研究项目 · 编辑", ("group.edit",)),
+            ("数据集 · 新建内部数据集", ("project.dataset.create",)),
+            ("Overleaf / 链接 · 上传链接", ("project.link.add",)),
+            ("时间线 · 上传时间线", ("project.timeline.add",)),
+            ("文件 · 上传文件", ("project.file.upload",)),
+            ("内部讨论", ("project.discussion.post.create",
+                      "project.discussion.comment.create")),
+        ]),
+        ("discussion", "研究讨论区", [
+            ("发布讨论", ("discussion.post.create",)),
+            ("编辑或删除讨论", ("discussion.post.edit", "discussion.post.delete")),
+            ("评论与点赞", ("discussion.comment.create", "discussion.reaction")),
         ]),
         ("collab", "其他协作", [
-            ("Skill 共享 · 可见范围", ("skill.visibility",)),
-            ("Skill 共享 · 删除", ("skill.delete",)),
-            ("自建协作分区 · 删除", ("collab_section.delete",)),
+            ("Skill 共享 · 所有操作", ("skill.create", "skill.download", "skill.comment",
+                                  "skill.visibility", "skill.delete")),
+            ("自建协作分区 · 所有操作", ("collab_section.create",
+                                  "collab_section.delete")),
         ]),
         ("feedback", "帮助与反馈", [
             ("提交反馈", ("feedback.submit",)),
-            ("反馈与问题 · 处理工单", ("feedback.update",)),
+            ("处理工单", ("feedback.update",)),
         ]),
     ]
 

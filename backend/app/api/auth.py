@@ -27,7 +27,9 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     u = User(username=body.username, password_hash=hash_password(body.password),
              display_name=body.display_name or body.username, email=body.email,
              role_id=member.id if member else None, status="active")
-    db.add(u); db.commit(); db.refresh(u)
+    db.add(u); db.flush()
+    write_audit(db, u.id, "account.register", "user", u.id)
+    db.commit(); db.refresh(u)
     return TokenOut(access_token=create_access_token(u.id),
                     refresh_token=create_refresh_token(u.id))
 
@@ -86,6 +88,7 @@ def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "用户不存在")
     u.password_hash = hash_password(body.new_password)
     row.used = True
+    write_audit(db, u.id, "account.password.reset", "user", u.id)
     db.commit()
     return {"ok": True, "detail": "密码已重置，请用新密码登录"}
 

@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..core.permissions import get_current_user, is_super_admin
-from ..core.audit import record_contribution
+from ..core.audit import record_contribution, write_audit
 from ..models.user import User
 from ..models.group import GroupMember
 from ..models.community import (Post, PostTag, PostReaction, PostComment, PostAdminFlag,
@@ -241,6 +241,8 @@ def create_post(body: PostIn, db: Session = Depends(get_db),
         if (tg or "").strip():
             db.add(PostTag(post_id=p.id, tag=tg.strip()))
     record_contribution(db, user.id, "post", "post", p.id, body.dataset_id, weight=1)
+    write_audit(db, user.id, "project.discussion.post.create" if internal else "discussion.post.create", "post", p.id,
+                {"internal": internal})
     db.commit()
     return {"id": p.id}
 
@@ -294,6 +296,7 @@ def edit_post(pid: int, body: PostIn, db: Session = Depends(get_db),
         p.visibility = "group" if internal else {"public": "platform", "self": "private"}.get(post_scope, "group")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    write_audit(db, user.id, "discussion.post.edit", "post", pid)
     db.commit()
     return {"ok": True}
 
@@ -306,6 +309,7 @@ def del_post(pid: int, db: Session = Depends(get_db), user: User = Depends(get_c
     if p.author_id != user.id and not is_super_admin(user):
         raise HTTPException(403, "无权删除")
     from ..services.content_deletion import delete_post_record
+    write_audit(db, user.id, "discussion.post.delete", "post", pid)
     delete_post_record(db, p)
     db.commit()
     return {"ok": True}
@@ -317,8 +321,10 @@ def react(pid: int, type: str = "like", db: Session = Depends(get_db),
     _guard_post_visible(db, pid, user)
     ex = db.query(PostReaction).filter_by(post_id=pid, user_id=user.id, type=type).first()
     if ex:
-        db.delete(ex); db.commit(); return {"toggled": "off"}
-    db.add(PostReaction(post_id=pid, user_id=user.id, type=type)); db.commit()
+        db.delete(ex); write_audit(db, user.id, "discussion.reaction", "post", pid)
+        db.commit(); return {"toggled": "off"}
+    db.add(PostReaction(post_id=pid, user_id=user.id, type=type))
+    write_audit(db, user.id, "discussion.reaction", "post", pid); db.commit()
     return {"toggled": "on"}
 
 
@@ -409,6 +415,10 @@ def add_comment(pid: int, body: CommentIn, db: Session = Depends(get_db),
     record_mentions(db, source_type="post_comment", source_id=c.id,
                     post_ref=f"post={pid}", snippet=body.content.strip(), by_user=user,
                     raw_mentions=[m.model_dump() for m in (body.mentions or [])])
+    post = db.get(Post, pid)
+    write_audit(db, user.id,
+                "project.discussion.comment.create" if post and post.group_id else "discussion.comment.create",
+                "post", pid)
     db.commit()
     return {"id": c.id}
 
