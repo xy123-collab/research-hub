@@ -8,7 +8,8 @@ from ..core.permissions import (get_current_user, require_super_admin, is_group_
                                 is_dataset_lead, dataset_lead_id, is_super_admin,
                                 GROUP_ADMIN_ROLES, DS_ADMIN_ROLES)
 from ..models.user import User, Role
-from ..models.group import ResearchGroup, GroupMember, GroupJoinRequest
+from ..models.group import (ResearchGroup, GroupMember, GroupJoinRequest,
+                            ProjectTimelineEntry, ProjectFile)
 from ..models.dataset import Dataset, DatasetMember, JoinRequest
 from ..models.version import DataVersion, DownloadLog
 from ..models.correction import Bug
@@ -17,6 +18,7 @@ from ..models.community import Post, PostComment
 from ..models.governance import AuditLog, ContributionEvent
 from ..models.governance import FeedbackTicket
 from ..models.access import DownloadRequest
+from ..models.notify import DownloadHistory
 from ..services.scoring import leaderboard, by_dataset
 
 router = APIRouter(tags=["admin"])
@@ -25,6 +27,33 @@ router = APIRouter(tags=["admin"])
 def _uname(db, uid):
     u = db.get(User, uid)
     return u.display_name if u else f"用户#{uid}"
+
+
+def _period_counts(query, time_col, now):
+    return {
+        "week": query.filter(time_col >= now - timedelta(days=7)).count(),
+        "month": query.filter(time_col >= now - timedelta(days=30)).count(),
+    }
+
+
+def _download_rows(db, query):
+    labels = {
+        "dataset_version": "数据版本", "code": "处理代码",
+        "bug_attachment": "勘误附件", "post_attachment": "讨论附件",
+        "project_file": "项目文件", "project_timeline": "时间线附件",
+        "skill": "Skill",
+    }
+    return [{
+        "id": row.id, "category": labels.get(row.source, row.source),
+        "source": row.source, "user_id": row.user_id,
+        "user_name": _uname(db, row.user_id), "file_name": row.file_name,
+        "location": row.location_label, "detail": row.detail,
+        "downloaded_at": str(row.downloaded_at),
+    } for row in query.order_by(DownloadHistory.downloaded_at.desc()).limit(200).all()]
+
+
+def _feature(name, group, query, time_col, now):
+    return {"name": name, "group": group, **_period_counts(query, time_col, now)}
 
 
 # ============ 管理控制台（按我管理的组/数据集切换）============
@@ -58,7 +87,8 @@ def dataset_console(slug: str, db: Session = Depends(get_db),
         raise HTTPException(404, "数据集不存在")
     if not is_dataset_admin(db, d.id, user):
         raise HTTPException(403, "需要数据集管理员")
-    cutoff = datetime.utcnow() - timedelta(days=30)
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=30)
     # 贡献度（分成员）
     rows = (db.query(ContributionEvent.user_id, func.sum(ContributionEvent.weight))
             .filter(ContributionEvent.dataset_id == d.id)
@@ -97,9 +127,31 @@ def dataset_console(slug: str, db: Session = Depends(get_db),
         "download_requests": db.query(DownloadRequest).filter_by(dataset_id=d.id, status="pending").count(),
         "corrections": activity["corrections_pending"],
     }
+    ds_posts = db.query(Post).filter(Post.dataset_id == d.id)
+    ds_post_ids = [x.id for x in ds_posts.all()]
+    dh = db.query(DownloadHistory).filter(DownloadHistory.dataset_id == d.id)
+    feature_activity = [
+        _feature("版本库 · 发布数据版本", "内容上传", db.query(DataVersion).filter(
+            DataVersion.dataset_id == d.id), DataVersion.release_date, now),
+        _feature("处理代码库 · 提交代码", "内容上传", db.query(CodeScript).filter(
+            CodeScript.dataset_id == d.id), CodeScript.created_at, now),
+        _feature("原始数据勘误 · 提交勘误", "内容上传", db.query(Bug).filter(
+            Bug.dataset_id == d.id), Bug.created_at, now),
+        _feature("研究讨论区 · 发布讨论", "讨论互动", ds_posts, Post.created_at, now),
+        _feature("研究讨论区 · 发表评论", "讨论互动", db.query(PostComment).filter(
+            PostComment.post_id.in_(ds_post_ids or [-1])), PostComment.created_at, now),
+    ]
+    for source, label in [("dataset_version", "版本库 · 下载数据"),
+                          ("code", "处理代码库 · 下载代码"),
+                          ("bug_attachment", "原始数据勘误 · 下载附件"),
+                          ("post_attachment", "研究讨论区 · 下载附件")]:
+        feature_activity.append(_feature(label, "内容下载", dh.filter(
+            DownloadHistory.source == source), DownloadHistory.downloaded_at, now))
     return {"dataset": {"slug": d.slug, "name_zh": d.name_zh},
             "is_lead": is_dataset_lead(db, d.id, user),
             "contributions": contributions, "activity": activity,
+            "feature_activity": feature_activity,
+            "download_history": _download_rows(db, dh),
             "recent": recent[:8], "pending": pending}
 
 
@@ -111,7 +163,8 @@ def group_console(slug: str, db: Session = Depends(get_db),
         raise HTTPException(404, "课题组不存在")
     if not is_group_admin(db, g.id, user):
         raise HTTPException(403, "需要课题组管理员")
-    cutoff = datetime.utcnow() - timedelta(days=30)
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=30)
     ds = db.query(Dataset).filter_by(group_id=g.id, is_deleted=False).all()
     ds_ids = [x.id for x in ds]
     member_ids = [m.user_id for m in db.query(GroupMember).filter_by(
@@ -143,9 +196,36 @@ def group_console(slug: str, db: Session = Depends(get_db),
                        "at": str(v.release_date)[:10] if v.release_date else "", "sort": v.id})
     pending = {"join_requests": db.query(GroupJoinRequest).filter_by(
         group_id=g.id, status="pending").count()}
+    group_posts = db.query(Post).filter(Post.group_id == g.id)
+    group_post_ids = [x.id for x in group_posts.all()]
+    dh = db.query(DownloadHistory).filter(or_(
+        DownloadHistory.dataset_id.in_(ds_ids or [-1]),
+        DownloadHistory.link.like(f"/groups/{g.slug}%")))
+    feature_activity = [
+        _feature("文件 · 上传项目文件", "内容上传", db.query(ProjectFile).filter(
+            ProjectFile.group_id == g.id), ProjectFile.created_at, now),
+        _feature("时间线 · 发布进展", "内容上传", db.query(ProjectTimelineEntry).filter(
+            ProjectTimelineEntry.group_id == g.id), ProjectTimelineEntry.created_at, now),
+        _feature("数据集 · 发布数据版本", "内容上传", db.query(DataVersion).filter(
+            DataVersion.dataset_id.in_(ds_ids or [-1])), DataVersion.release_date, now),
+        _feature("数据集 · 提交处理代码", "内容上传", db.query(CodeScript).filter(
+            CodeScript.dataset_id.in_(ds_ids or [-1])), CodeScript.created_at, now),
+        _feature("内部讨论 · 发布讨论", "讨论互动", group_posts, Post.created_at, now),
+        _feature("内部讨论 · 发表评论", "讨论互动", db.query(PostComment).filter(
+            PostComment.post_id.in_(group_post_ids or [-1])), PostComment.created_at, now),
+    ]
+    for source, label in [("dataset_version", "数据集 · 下载数据"),
+                          ("code", "数据集 · 下载处理代码"),
+                          ("post_attachment", "内部讨论 · 下载附件"),
+                          ("project_file", "文件 · 下载项目文件"),
+                          ("project_timeline", "时间线 · 下载附件")]:
+        feature_activity.append(_feature(label, "内容下载", dh.filter(
+            DownloadHistory.source == source), DownloadHistory.downloaded_at, now))
     return {"group": {"slug": g.slug, "name_zh": g.name_zh},
             "is_lead": is_group_lead(db, g.id, user),
             "contributions": contributions, "activity": activity,
+            "feature_activity": feature_activity,
+            "download_history": _download_rows(db, dh),
             "recent": recent, "pending": pending}
 
 
@@ -205,24 +285,53 @@ def platform_analytics(db: Session = Depends(get_db),
         return (db.query(func.count(func.distinct(AuditLog.user_id)))
                 .filter(AuditLog.created_at >= cutoff, AuditLog.user_id.isnot(None)).scalar() or 0)
 
-    action_groups = [
-        ("登录", ("auth.login", "login")),
-        ("数据访问", ("dataset.view", "dataset.detail")),
-        ("下载", ("download",)),
-        ("上传与发布", ("upload", "publish", "version")),
-        ("讨论互动", ("post", "comment", "reaction")),
-        ("数据勘误", ("bug", "correction")),
-        ("项目协作", ("group", "project", "workspace")),
+    # 标题与前台现有功能保持一致；数值直接来自 audit_log，不生成模拟数据。
+    module_specs = [
+        ("account", "账号与安全", [
+            ("登录", ("login",)),
+        ]),
+        ("datasets", "数据集", [
+            ("创建数据集", ("dataset.create", "dataset.create_standalone")),
+            ("版本库 · 发布数据版本", ("version.publish",)),
+            ("版本库 · 下载数据", ("download",)),
+            ("原始数据勘误 · 提交勘误", ("bug.submit", "bug.submit.batch")),
+            ("原始数据勘误 · 终审勘误", ("bug.finalize", "bug.item.finalize")),
+            ("处理代码库 · 提交代码", ("code.add", "code.upload")),
+            ("处理代码库 · 发布代码版本", ("code.version.publish",)),
+            ("处理代码库 · 下载代码", ("code.download",)),
+            ("成员与权限 · 权限管理", ("dataset.grant", "dataset.revoke",
+                                  "dataset.admin.add", "dataset.admin.remove")),
+        ]),
+        ("projects", "研究项目", [
+            ("创建研究项目", ("group.create",)),
+            ("成员 · 邀请与管理", ("project.member.invite", "group.member.remove",
+                              "group.admin.add", "group.admin.remove")),
+            ("研究项目 · 编辑", ("group.edit",)),
+        ]),
+        ("collab", "其他协作", [
+            ("Skill 共享 · 可见范围", ("skill.visibility",)),
+            ("Skill 共享 · 删除", ("skill.delete",)),
+            ("自建协作分区 · 删除", ("collab_section.delete",)),
+        ]),
+        ("feedback", "帮助与反馈", [
+            ("提交反馈", ("feedback.submit",)),
+            ("反馈与问题 · 处理工单", ("feedback.update",)),
+        ]),
     ]
 
-    def action_count(prefixes, cutoff):
-        filters = [AuditLog.action.ilike(f"%{prefix}%") for prefix in prefixes]
-        return db.query(AuditLog).filter(AuditLog.created_at >= cutoff, or_(*filters)).count()
+    def exact_action_count(actions, cutoff):
+        return db.query(AuditLog).filter(
+            AuditLog.created_at >= cutoff, AuditLog.action.in_(actions)).count()
 
-    features = [{"name": name, "week": action_count(prefixes, week),
-                 "month": action_count(prefixes, month)}
-                for name, prefixes in action_groups]
-    features.sort(key=lambda x: x["month"], reverse=True)
+    modules = []
+    for key, name, specs in module_specs:
+        children = [{"name": child_name,
+                     "week": exact_action_count(actions, week),
+                     "month": exact_action_count(actions, month)}
+                    for child_name, actions in specs]
+        modules.append({"key": key, "name": name, "features": children,
+                        "week": sum(x["week"] for x in children),
+                        "month": sum(x["month"] for x in children)})
 
     daily = []
     for offset in range(29, -1, -1):
@@ -242,7 +351,7 @@ def platform_analytics(db: Session = Depends(get_db),
             "open_feedback": db.query(FeedbackTicket).filter(
                 FeedbackTicket.status.in_(["pending", "processing", "waiting_user"])).count(),
         },
-        "features": features,
+        "modules": modules,
         "daily_active": daily,
         "audit_actions_7d": db.query(AuditLog).filter(AuditLog.created_at >= week).count(),
         "audit_actions_30d": db.query(AuditLog).filter(AuditLog.created_at >= month).count(),

@@ -15,6 +15,11 @@ const audit = ref<any[]>([])
 const analytics = ref<any>(null)
 const tickets = ref<any[]>([])
 const ticketFilter = ref('')
+const analyticsModule = ref('all')
+const analyticsPeriod = ref<'week'|'month'>('month')
+const scopePeriod = ref<'week'|'month'>('month')
+const scopeActivityGroup = ref('all')
+const downloadCategory = ref('all')
 const superInfo = ref<any>({ admins: [], primary_uid: null, i_am_primary: false })
 // 管理员检索（按名称或 ID，检索出的结果显示名称供确认）
 const adminQ = ref(''); const adminResults = ref<any[]>([]); const adminPick = ref<any>(null)
@@ -29,6 +34,7 @@ onMounted(async () => {
 
 async function selectScope(kind: string, slug: string) {
   sel.value = { kind, slug }; console_.value = null; mem.value = null; err.value = ''
+  scopeActivityGroup.value = 'all'; downloadCategory.value = 'all'
   try {
     if (kind === 'dataset') {
       console_.value = (await api.get(`/admin/datasets/${slug}/console`)).data
@@ -90,7 +96,25 @@ async function revokeSuper(s: any) {
   catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 const roleTag = (r: string) => r === 'lead' ? '总管理员' : '管理员'
-const maxFeature = computed(() => Math.max(1, ...(analytics.value?.features || []).map((x:any) => x.month)))
+const platformFeatures = computed(() => {
+  const modules = analytics.value?.modules || []
+  if (analyticsModule.value === 'all') {
+    return modules.flatMap((m:any) => m.features.map((f:any) => ({...f, module:m.name})))
+      .sort((x:any,y:any) => y[analyticsPeriod.value] - x[analyticsPeriod.value])
+  }
+  const m = modules.find((x:any) => x.key === analyticsModule.value)
+  return (m?.features || []).map((f:any) => ({...f, module:m.name}))
+})
+const maxFeature = computed(() => Math.max(1, ...platformFeatures.value.map((x:any) => x[analyticsPeriod.value])))
+const scopeGroups = computed(() => Array.from(new Set((console_.value?.feature_activity || []).map((x:any)=>x.group))))
+const scopeFeatures = computed(() => (console_.value?.feature_activity || [])
+  .filter((x:any) => scopeActivityGroup.value === 'all' || x.group === scopeActivityGroup.value))
+const maxScopeFeature = computed(() => Math.max(1, ...scopeFeatures.value.map((x:any)=>x[scopePeriod.value])))
+const downloadCategories = computed(() => Array.from(new Set((console_.value?.download_history || []).map((x:any)=>x.category))))
+const shownDownloads = computed(() => (console_.value?.download_history || [])
+  .filter((x:any) => downloadCategory.value === 'all' || x.category === downloadCategory.value))
+const dailyMax = computed(() => Math.max(1, ...(analytics.value?.daily_active || []).map((x:any)=>x.active_users)))
+const yTicks = computed(() => [dailyMax.value, Math.ceil(dailyMax.value/2), 0])
 const shownTickets = computed(() => ticketFilter.value
   ? tickets.value.filter((x:any) => x.status === ticketFilter.value) : tickets.value)
 const statusLabel: any = { pending:'待受理', processing:'处理中', waiting_user:'等待用户补充',
@@ -151,6 +175,49 @@ async function updateTicket(row:any, status:string) {
         <div class="card"><div class="label-cap">发帖 / 评论</div><p class="text-2xl mt-1">{{ a.posts_total ?? 0 }} / {{ a.comments_total ?? 0 }}</p></div>
       </template>
     </div>
+
+    <section class="card mb-5">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div><h2 class="text-base">{{ sel.kind==='dataset' ? '数据集功能活跃度' : '研究项目功能活跃度' }}</h2>
+          <p class="text-xs text-gray-400 mt-1">基于真实发布、讨论和下载记录统计。</p></div>
+        <div class="flex gap-1 whitespace-nowrap">
+          <button v-for="[k,l] in [['week','近7天'],['month','近30天']]" :key="k"
+            :class="['px-3 py-1.5 rounded-full text-xs border',scopePeriod===k?'bg-accent text-white border-accent':'border-line']"
+            @click="scopePeriod=k as any">{{ l }}</button>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-2 mb-4">
+        <button :class="['px-3 py-1 rounded-full text-xs border',scopeActivityGroup==='all'?'bg-paper border-accent text-accent':'border-line']" @click="scopeActivityGroup='all'">全部</button>
+        <button v-for="g in scopeGroups" :key="String(g)"
+          :class="['px-3 py-1 rounded-full text-xs border',scopeActivityGroup===g?'bg-paper border-accent text-accent':'border-line']"
+          @click="scopeActivityGroup=String(g)">{{ g }}</button>
+      </div>
+      <div v-for="f in scopeFeatures" :key="f.group+f.name" class="grid grid-cols-[minmax(150px,240px)_1fr_52px] items-center gap-3 mb-3 text-xs">
+        <span class="truncate" :title="f.name"><span class="text-gray-400">{{ f.group }} · </span>{{ f.name }}</span>
+        <div class="h-4 rounded bg-gray-100 overflow-hidden"><div class="h-full bg-accent rounded" :style="{width:(f[scopePeriod]/maxScopeFeature*100)+'%'}"></div></div>
+        <span class="text-right font-mono whitespace-nowrap">{{ f[scopePeriod] }} 次</span>
+      </div>
+    </section>
+
+    <section class="mb-6">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-2">
+        <div><h2 class="text-base">文件下载历史</h2><p class="text-xs text-gray-400 mt-1">最多展示最近 200 条真实下载记录。</p></div>
+        <select v-model="downloadCategory" class="input w-40 text-xs whitespace-nowrap">
+          <option value="all">全部类别</option><option v-for="c in downloadCategories" :key="String(c)" :value="c">{{ c }}</option>
+        </select>
+      </div>
+      <div class="card overflow-x-auto">
+        <table class="w-full min-w-[760px] text-xs">
+          <thead><tr class="text-left text-gray-400 whitespace-nowrap"><th>类别</th><th>下载用户</th><th>下载内容</th><th>所在位置</th><th>时间</th></tr></thead>
+          <tbody><tr v-for="x in shownDownloads" :key="x.id" class="border-t border-line">
+            <td class="py-2 whitespace-nowrap"><span class="tag whitespace-nowrap">{{ x.category }}</span></td>
+            <td class="py-2 whitespace-nowrap">{{ x.user_name }} <span class="text-gray-400">ID {{ x.user_id }}</span></td>
+            <td class="py-2">{{ x.file_name }}<span v-if="x.detail" class="block text-gray-400">{{ x.detail }}</span></td>
+            <td class="py-2">{{ x.location || '—' }}</td><td class="py-2 whitespace-nowrap text-gray-400">{{ x.downloaded_at?.slice(0,19) }}</td>
+          </tr><tr v-if="!shownDownloads.length"><td colspan="5" class="py-4 text-center text-gray-400">暂无该类别的下载记录。</td></tr></tbody>
+        </table>
+      </div>
+    </section>
 
     <div class="grid md:grid-cols-2 gap-5">
       <!-- 贡献度 -->
@@ -228,35 +295,56 @@ async function updateTicket(row:any, status:string) {
   <div v-if="sel?.kind==='platform'">
     <section v-if="analytics" class="mb-6">
       <h2 class="text-lg mb-2">平台运营总览</h2>
-      <p class="text-xs text-gray-500 mb-3">仅统计使用动作和资源元数据，不读取私有研究项目、内部数据集或讨论内容。</p>
+      <p class="text-xs text-gray-500 mb-3">以下是数据库中的真实记录，不是模拟数据。功能活跃度来自审计日志，未埋点的单纯页面浏览不会被计入；不读取私有研究内容。</p>
       <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
         <div v-for="[k,l] in [['users','用户'],['projects','研究项目'],['datasets','数据集'],['wau','周活用户'],['mau','月活用户'],['open_feedback','待处理反馈']]"
           :key="k" class="card"><div class="label-cap">{{ l }}</div><p class="text-2xl mt-1">{{ analytics.overview[k] }}</p></div>
       </div>
-      <div class="grid lg:grid-cols-5 gap-5">
-        <div class="card lg:col-span-3">
-          <div class="flex justify-between mb-3"><h3>功能使用活跃度</h3><span class="text-xs text-gray-400">近7天 / 近30天</span></div>
-          <div v-for="f in analytics.features" :key="f.name" class="grid grid-cols-[86px_1fr_72px] items-center gap-2 mb-2 text-xs">
-            <span>{{ f.name }}</span>
-            <div class="h-3 rounded bg-gray-100 overflow-hidden"><div class="h-full bg-accent rounded" :style="{width: (f.month/maxFeature*100)+'%'}"></div></div>
-            <span class="text-right font-mono">{{ f.week }} / {{ f.month }}</span>
+      <div class="grid xl:grid-cols-5 gap-5">
+        <div class="card xl:col-span-3">
+          <div class="flex flex-wrap justify-between items-start gap-3 mb-3">
+            <div><h3>功能使用活跃度</h3><p class="text-xs text-gray-400 mt-1">选择“全部”混排所有子功能，或按大模块查看内部子功能。</p></div>
+            <div class="flex gap-1 whitespace-nowrap">
+              <button v-for="[k,l] in [['week','近7天'],['month','近30天']]" :key="k"
+                :class="['px-3 py-1.5 rounded-full text-xs border',analyticsPeriod===k?'bg-accent text-white border-accent':'border-line']"
+                @click="analyticsPeriod=k as any">{{ l }}</button>
+            </div>
+          </div>
+          <div class="flex flex-wrap gap-2 mb-4">
+            <button :class="['px-3 py-1 rounded-full text-xs border',analyticsModule==='all'?'bg-paper border-accent text-accent':'border-line']" @click="analyticsModule='all'">全部子功能</button>
+            <button v-for="m in analytics.modules" :key="m.key"
+              :class="['px-3 py-1 rounded-full text-xs border',analyticsModule===m.key?'bg-paper border-accent text-accent':'border-line']"
+              @click="analyticsModule=m.key">{{ m.name }} <span class="font-mono ml-1">{{ m[analyticsPeriod] }}</span></button>
+          </div>
+          <div v-for="f in platformFeatures" :key="f.module+f.name" class="grid grid-cols-[minmax(150px,230px)_1fr_52px] items-center gap-3 mb-3 text-xs">
+            <span class="truncate" :title="`${f.module} · ${f.name}`"><span class="text-gray-400">{{ f.module }} · </span>{{ f.name }}</span>
+            <div class="h-4 rounded bg-gray-100 overflow-hidden"><div class="h-full bg-accent rounded" :style="{width: (f[analyticsPeriod]/maxFeature*100)+'%'}"></div></div>
+            <span class="text-right font-mono whitespace-nowrap">{{ f[analyticsPeriod] }} 次</span>
           </div>
         </div>
-        <div class="card lg:col-span-2">
+        <div class="card xl:col-span-2">
           <h3 class="mb-3">近30日每日活跃用户</h3>
-          <div class="h-32 flex items-end gap-1 border-b border-line">
-            <div v-for="d in analytics.daily_active" :key="d.date" class="flex-1 bg-accent/70 min-h-[2px]"
-              :style="{height: Math.max(2, d.active_users / Math.max(1, ...analytics.daily_active.map((x:any)=>x.active_users)) * 100)+'%'}"
-              :title="`${d.date}：${d.active_users} 人`"></div>
+          <div class="grid grid-cols-[34px_1fr] grid-rows-[150px_26px] text-[10px] text-gray-400">
+            <div class="relative border-r border-line">
+              <span v-for="(tick,i) in yTicks" :key="tick+i" class="absolute right-2 -translate-y-1/2" :style="{top:(i*50)+'%'}">{{ tick }}</span>
+            </div>
+            <div class="relative flex items-end gap-1 border-b border-line">
+              <div v-for="tick in yTicks" :key="'line'+tick" class="absolute left-0 right-0 border-t border-dashed border-gray-100" :style="{bottom:(tick/dailyMax*100)+'%'}"></div>
+              <div v-for="d in analytics.daily_active" :key="d.date" class="relative flex-1 bg-accent/70 min-h-[2px] rounded-t"
+                :style="{height: Math.max(2, d.active_users/dailyMax*100)+'%'}" :title="`${d.date}：${d.active_users} 人`"></div>
+            </div>
+            <div class="text-right pr-2 pt-1">人数</div>
+            <div class="flex justify-between pt-1"><span v-for="i in [0,5,11,17,23,29]" :key="i">{{ analytics.daily_active[i]?.date }}</span></div>
           </div>
-          <p class="text-xs text-gray-400 mt-2">周动作 {{ analytics.audit_actions_7d }} · 月动作 {{ analytics.audit_actions_30d }}</p>
+          <p class="text-xs text-gray-400 mt-2 whitespace-nowrap">横轴：日期　纵轴：活跃用户数</p>
+          <p class="text-xs text-gray-400 mt-1 whitespace-nowrap">近7天动作 {{ analytics.audit_actions_7d }} · 近30天动作 {{ analytics.audit_actions_30d }}</p>
         </div>
       </div>
     </section>
 
     <section class="mb-6">
       <div class="flex items-center justify-between mb-2">
-        <h2 class="text-lg">反馈与问题 <span v-if="analytics?.overview.open_feedback" class="tag text-accent2 ml-1">{{ analytics.overview.open_feedback }} 待处理</span></h2>
+        <h2 class="text-lg whitespace-nowrap">反馈与问题 <span v-if="analytics?.overview.open_feedback" class="tag text-accent2 ml-1 whitespace-nowrap">{{ analytics.overview.open_feedback }} 待处理</span></h2>
         <select v-model="ticketFilter" class="input w-36 text-xs"><option value="">全部状态</option>
           <option v-for="(label,key) in statusLabel" :key="key" :value="key">{{ label }}</option></select>
       </div>

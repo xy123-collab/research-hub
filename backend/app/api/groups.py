@@ -379,6 +379,11 @@ def project_timeline_file(slug: str, eid: int, user: User = Depends(get_current_
     if not row or row.group_id != g.id or not row.file_path:
         raise HTTPException(404, "附件不存在")
     from ..services.uploads import open_stored_file, attachment_headers
+    from ..services.downloads import log_download
+    log_download(db, user_id=user.id, source="project_timeline",
+                 file_name=row.file_name or "时间线附件", location_label=g.name_zh,
+                 detail=row.title or "时间线", link=f"/groups/{g.slug}?tab=timeline")
+    db.commit()
     return StreamingResponse(open_stored_file(row.file_path),
                              media_type=row.mime or "application/octet-stream",
                              headers=attachment_headers(row.file_name))
@@ -404,6 +409,11 @@ def download_project_file(slug: str, fid: int, user: User = Depends(get_current_
     if not row or row.group_id != g.id:
         raise HTTPException(404, "文件不存在")
     from ..services.uploads import open_stored_file, attachment_headers
+    from ..services.downloads import log_download
+    log_download(db, user_id=user.id, source="project_file",
+                 file_name=row.file_name, location_label=g.name_zh,
+                 detail="项目文件", link=f"/groups/{g.slug}?tab=files")
+    db.commit()
     return StreamingResponse(open_stored_file(row.file_path),
                              media_type=row.mime or "application/octet-stream",
                              headers=attachment_headers(row.file_name))
