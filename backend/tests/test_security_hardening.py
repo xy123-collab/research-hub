@@ -66,14 +66,35 @@ def test_a4_sandbox_blocks_env_and_file_reads():
 
 
 def test_a4_sandbox_child_process_has_no_secrets(monkeypatch):
-    """子进程是重新 execve 的干净进程：环境里读不到 JWT_SECRET 等密钥。"""
+    """独立容器内的任务子进程仍从零构造环境，不继承任何业务密钥。"""
     from app.services import sandbox
+    from sandbox_runtime.executor import clean_env
     monkeypatch.setenv("JWT_SECRET", "super-secret-value")
-    env = sandbox._clean_env("/tmp")
+    env = clean_env("/tmp")
     assert "JWT_SECRET" not in env and "DATABASE_URL" not in env
     assert "AI_API_KEY" not in env and "COS_SECRET_KEY" not in env
-    # 正常统计仍然跑得通
+    # 正常统计必须经共享队列交给 worker，不能在 Web 内 exec。
     assert sandbox.run_readonly("result = len(df)", [{"a": 1}, {"a": 2}])["result"] == 2
+
+
+def test_a4_worker_deletes_payload_before_starting_user_process(tmp_path, monkeypatch):
+    """执行器启动时，含原始数据行的任务 JSON 已从任务卷删除。"""
+    import json
+    from sandbox_runtime import worker
+    layout = worker.ensure_layout(str(tmp_path))
+    (layout["in"] / "job123.json").write_text(
+        json.dumps({"code": "result=1", "rows": [{"secret": "row"}], "timeout": 2}),
+        encoding="utf-8",
+    )
+
+    def fake_execute(*_args, **_kwargs):
+        assert not list(layout["in"].glob("*.json"))
+        assert not list(layout["processing"].glob("*.json"))
+        return {"ok": True, "result": 1}
+
+    monkeypatch.setattr(worker, "execute_payload", fake_execute)
+    assert worker.process_once(str(tmp_path), drop_uid=None, drop_gid=None) is True
+    assert json.loads((layout["out"] / "job123.json").read_text())["result"] == 1
 
 
 # ---------- A5：匿名信息泄露 ----------
@@ -110,17 +131,35 @@ def test_a6_weak_password_rejected_on_register(client, pw):
 
 def test_a6_production_guard_rejects_default_secret(monkeypatch):
     from app.core.config import Settings
-    s = Settings(DATABASE_URL="postgresql://u:p@h:5432/db", JWT_SECRET="change-me-in-prod")
+    cos = dict(STORAGE_BACKEND="cos", COS_BUCKET="b-123", COS_REGION="ap-beijing",
+               COS_SECRET_ID="sid", COS_SECRET_KEY="skey")
+    s = Settings(DATABASE_URL="postgresql://u:p@h:5432/db",
+                 JWT_SECRET="change-me-in-prod", **cos)
     assert s.is_production is True and s.docs_enabled is False
     with pytest.raises(RuntimeError):
         s.assert_production_ready()
     s2 = Settings(DATABASE_URL="postgresql://u:p@h:5432/db",
-                  JWT_SECRET="a-real-strong-secret", ENABLE_ONLINE_ANALYSIS=False)
+                  JWT_SECRET="a-real-strong-secret", ENABLE_ONLINE_ANALYSIS=False, **cos)
     s2.assert_production_ready()          # 不抛异常即通过
     s3 = Settings(DATABASE_URL="postgresql://u:p@h:5432/db",
-                  JWT_SECRET="a-real-strong-secret", ENABLE_ONLINE_ANALYSIS=True)
+                  JWT_SECRET="a-real-strong-secret", ENABLE_ONLINE_ANALYSIS=True,
+                  SANDBOX_BACKEND="disabled", **cos)
     with pytest.raises(RuntimeError):
         s3.assert_production_ready()
+    s4 = Settings(DATABASE_URL="postgresql://u:p@h:5432/db",
+                  JWT_SECRET="a-real-strong-secret", ENABLE_ONLINE_ANALYSIS=True,
+                  SANDBOX_BACKEND="isolated_queue", **cos)
+    s4.assert_production_ready()
+
+
+def test_a6_production_guard_rejects_ephemeral_or_incomplete_storage():
+    from app.core.config import Settings
+    base = dict(DATABASE_URL="postgresql://u:p@h:5432/db",
+                JWT_SECRET="a-real-strong-secret")
+    with pytest.raises(RuntimeError, match="STORAGE_BACKEND=cos"):
+        Settings(**base, STORAGE_BACKEND="local").assert_production_ready()
+    with pytest.raises(RuntimeError, match="COS 配置不完整"):
+        Settings(**base, STORAGE_BACKEND="cos").assert_production_ready()
 
 
 def test_a6_rate_limit_blocks_burst(client, monkeypatch):

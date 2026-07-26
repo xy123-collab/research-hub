@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/opt
+
+WORKDIR /opt
+RUN pip install --no-cache-dir pandas==2.2.2
+COPY sandbox_runtime /opt/sandbox_runtime
+
+ENTRYPOINT ["python", "-m", "sandbox_runtime.worker", "--job-dir", "/sandbox-jobs"]

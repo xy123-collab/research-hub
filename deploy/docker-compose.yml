@@ -1,5 +1,5 @@
 # 科研数据共享平台 · 腾讯云一键部署
-# 默认形态：TencentDB for PostgreSQL（外部托管） + COS 对象存储 + 应用 web + nginx 前端。
+# 默认形态：TencentDB for PostgreSQL（外部托管） + COS + web + 独立沙箱 + nginx。
 # 如需同机自装 PostgreSQL：加 --profile local-db 启动（把 .env 的 DATABASE_URL 指向 db 服务）。
 services:
   web:
@@ -7,13 +7,44 @@ services:
       context: ../backend
       dockerfile: Dockerfile
     env_file: ../.env
+    environment:
+      ENABLE_ONLINE_ANALYSIS: "true"
+      SANDBOX_BACKEND: isolated_queue
+      SANDBOX_JOB_DIR: /sandbox-jobs
     restart: always
     expose:
       - "8000"
     volumes:
       - app_data:/app/data            # STORAGE_BACKEND=local 时的文件目录（COS 模式可忽略）
+      - sandbox_jobs:/sandbox-jobs
     # 若使用 local-db profile，取消下一行注释让 web 等待 db
     # depends_on: [db]
+
+  # ---- A4：独立在线分析沙箱 ----
+  # 不读取 ../.env，因此拿不到 JWT、数据库、AI、COS 等任何业务密钥。
+  # network_mode:none 是网络边界；read_only/tmpfs/资源限额是第二层边界。
+  sandbox:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.sandbox
+    restart: always
+    user: "0:0"                       # worker 读队列后把用户任务降权为 nobody
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+    volumes:
+      - sandbox_jobs:/sandbox-jobs
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 64
 
   frontend:
     build:
@@ -45,3 +76,4 @@ services:
 volumes:
   app_data:
   pg_data:
+  sandbox_jobs:

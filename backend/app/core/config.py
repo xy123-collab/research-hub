@@ -68,9 +68,12 @@ class Settings(BaseSettings):
     MAX_UPLOAD_MB: int = 50
     MIN_PASSWORD_LEN: int = 10           # 注册/重置密码的最短长度（A6 生产配置基线）
     ENABLE_API_DOCS: bool = False        # 生产默认关闭 /docs、/redoc；本地开发自动打开
-    # A4 P0：在独立无网络/只读容器落地前，生产环境必须关闭在线分析。
-    # 本地 sqlite 开发环境仍可用 hardened subprocess 做功能调试。
+    # A4：只有 isolated_queue 才允许启用。Web 只投递任务，用户代码由独立的
+    # --network none / --read-only / 无业务密钥 sandbox 容器执行。
     ENABLE_ONLINE_ANALYSIS: bool = False
+    SANDBOX_BACKEND: str = "disabled"     # disabled | isolated_queue
+    SANDBOX_JOB_DIR: str = "/sandbox-jobs"
+    SANDBOX_TIMEOUT: int = 10
     RATE_LIMIT_ENABLED: bool = True      # 登录/注册/找回密码的频率限制（测试里关掉）
     PLATFORM_NAME_ZH: str = "科研数据共享平台"
     PLATFORM_NAME_EN: str = "Research Hub"
@@ -117,10 +120,22 @@ class Settings(BaseSettings):
                 "启动被拒绝：生产环境的 JWT_SECRET 仍是默认值。任何人都能用它伪造"
                 "包括总管理员在内的任意用户令牌。请在部署环境变量里设置一个强随机值："
                 'python -c "import secrets;print(secrets.token_urlsafe(48))"')
-        if self.ENABLE_ONLINE_ANALYSIS:
+        storage_backend = self.STORAGE_BACKEND.strip().lower()
+        if storage_backend != "cos":
             raise RuntimeError(
-                "启动被拒绝：生产环境尚未接入独立沙箱容器，"
-                "ENABLE_ONLINE_ANALYSIS 必须保持 false。")
+                "启动被拒绝：生产文件存储必须使用腾讯云 COS（STORAGE_BACKEND=cos）。"
+                "本地容器磁盘会在重部署后清空，并让数据库中已有的 COS 文件全部不可见。")
+        missing_cos = [
+            name for name in ("COS_BUCKET", "COS_REGION", "COS_SECRET_ID", "COS_SECRET_KEY")
+            if not getattr(self, name).strip()
+        ]
+        if missing_cos:
+            raise RuntimeError(
+                "启动被拒绝：COS 配置不完整，缺少 " + "、".join(missing_cos))
+        if self.ENABLE_ONLINE_ANALYSIS and self.SANDBOX_BACKEND != "isolated_queue":
+            raise RuntimeError(
+                "启动被拒绝：ENABLE_ONLINE_ANALYSIS=true 时必须设置 "
+                "SANDBOX_BACKEND=isolated_queue，并启动独立 sandbox 容器。")
 
 
 settings = Settings()

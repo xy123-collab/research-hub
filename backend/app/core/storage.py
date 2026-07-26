@@ -82,6 +82,15 @@ class LocalStorage(Storage):
 class COSStorage(Storage):
     """腾讯云 COS 实现（私有读 + 签名 URL）。仅在此层引用 COS SDK。"""
     def __init__(self):
+        required = {
+            "COS_BUCKET": settings.COS_BUCKET,
+            "COS_REGION": settings.COS_REGION,
+            "COS_SECRET_ID": settings.COS_SECRET_ID,
+            "COS_SECRET_KEY": settings.COS_SECRET_KEY,
+        }
+        missing = [name for name, value in required.items() if not value.strip()]
+        if missing:
+            raise RuntimeError("COS 配置不完整，缺少 " + "、".join(missing))
         from qcloud_cos import CosConfig, CosS3Client
         conf = CosConfig(Region=settings.COS_REGION, SecretId=settings.COS_SECRET_ID,
                          SecretKey=settings.COS_SECRET_KEY, Scheme="https")
@@ -109,7 +118,10 @@ def get_storage() -> Storage:
     backend = (settings.STORAGE_BACKEND or "local").strip().lower()
     if backend == "cos":
         return COSStorage()
-    return LocalStorage(settings.LOCAL_STORAGE_DIR)
+    if backend == "local":
+        return LocalStorage(settings.LOCAL_STORAGE_DIR)
+    raise RuntimeError(
+        f"不支持的 STORAGE_BACKEND={settings.STORAGE_BACKEND!r}；当前只支持 local 或 cos")
 
 
 storage = get_storage()

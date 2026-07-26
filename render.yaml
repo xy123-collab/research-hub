@@ -18,7 +18,15 @@ services:
       - key: JWT_SECRET
         generateValue: true          # Render 自动生成强随机值
       - key: STORAGE_BACKEND
-        value: local                 # 免费无持久盘：上传文件重启会清空（seed/数据在 PG 里持久）
+        value: cos                   # 必须保持 COS；local 会让历史文件/头像不可见且重启丢失
+      - key: COS_BUCKET
+        sync: false                  # ★ Render Environment 中填写，桶名含 APPID 后缀
+      - key: COS_REGION
+        sync: false                  # ★ 例如 ap-beijing
+      - key: COS_SECRET_ID
+        sync: false                  # ★ 仅授予目标私有桶所需权限的 CAM 子用户
+      - key: COS_SECRET_KEY
+        sync: false                  # ★ 不写进仓库
       # ---- AI（腾讯云 TokenHub，OpenAI 兼容）----
       - key: AI_PROVIDER
         value: tokenhub               # 关闭填 none
@@ -35,7 +43,9 @@ services:
       - key: SEED_ON_START
         value: "false"               # 生产禁止灌入 admin/admin123 等弱口令演示账号
       - key: ENABLE_ONLINE_ANALYSIS
-        value: "false"               # A4：独立无网络沙箱容器落地前保持关闭
+        value: "false"               # Render 单容器无隔离 sidecar，继续关闭
+      - key: SANDBOX_BACKEND
+        value: disabled              # 双容器 docker-compose 部署才设 isolated_queue
       - key: WEB_CONCURRENCY
         value: "1"                   # 免费档 512MB：单 worker 最稳；多 worker 易 OOM 重启
       - key: PYTHONPATH

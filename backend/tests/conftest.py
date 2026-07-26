@@ -1,8 +1,11 @@
-import os, tempfile, pytest
+import os, shutil, tempfile, threading, pytest
 os.environ["DATABASE_URL"] = "sqlite:///" + tempfile.gettempdir() + "/test_rhub.db"
 os.environ["LOCAL_STORAGE_DIR"] = tempfile.gettempdir() + "/test_rhub_data"
 os.environ["STORAGE_BACKEND"] = "local"
-os.environ["ENABLE_ONLINE_ANALYSIS"] = "true"  # sqlite 测试环境仅用于功能回归
+_sandbox_dir = os.path.join(tempfile.gettempdir(), f"test_rhub_sandbox_jobs_{os.getpid()}")
+os.environ["ENABLE_ONLINE_ANALYSIS"] = "true"
+os.environ["SANDBOX_BACKEND"] = "isolated_queue"
+os.environ["SANDBOX_JOB_DIR"] = _sandbox_dir
 # 频率限制默认关：整个测试套件从同一个「IP」发几百次登录，会被正常限流挡住。
 # 限流本身由 tests/test_security_hardening.py 单独打开验证。
 os.environ["RATE_LIMIT_ENABLED"] = "false"
@@ -20,6 +23,24 @@ from app.main import app
 from fastapi.testclient import TestClient
 
 seed_run()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolated_sandbox_worker():
+    """测试也走 Web→队列→worker，避免回退成 Web 进程直接 exec。"""
+    from sandbox_runtime.worker import run_worker
+    shutil.rmtree(_sandbox_dir, ignore_errors=True)
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=run_worker,
+        kwargs={"job_dir": _sandbox_dir, "stop_event": stop, "drop_identity": False},
+        daemon=True,
+    )
+    worker.start()
+    yield
+    stop.set()
+    worker.join(timeout=2)
+    shutil.rmtree(_sandbox_dir, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
