@@ -26,5 +26,7 @@ from .literature import (LitTopic, LitRef, DatasetSummaryAI, Publication,
 from .mapping import VersionAuxFile, FileCorrection
 from .notify import (NotificationPreference, NotificationEvent, EmailDelivery,
                      DatasetFollow, Mention, DownloadHistory)
+from .authx import (InviteCode, InviteCodeUse, EmailVerification,
+                    TokenEpoch, RevokedToken)
 
 __all__ = ["User"]

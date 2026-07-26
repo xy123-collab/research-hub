@@ -509,10 +509,17 @@ def list_projects(author_id: int | None = None, label: str | None = None,
                     "body_zh": p.body_zh, "pinned": bool(m and m.pinned),
                     "has_image": bool(m and m.image_path), "labels": labels,
                     "scope": _sum["scope"], "scope_label": _sum["label"],
-                    "image_url": f"/api/projects/{p.id}/image" if (m and m.image_path) else None})
+                    "image_url": _project_image_url(p.id, m)})
     # 置顶优先，其余按新→旧
     out.sort(key=lambda x: (not x["pinned"], -x["id"]))
     return out
+
+
+def _project_image_url(pid: int, meta) -> str | None:
+    """返回鉴权图片地址；前端 AuthImage 会用 Bearer 令牌加载。"""
+    if not meta or not meta.image_path:
+        return None
+    return f"/api/projects/{pid}/image"
 
 
 def _set_project_labels(db, pid: int, labels):
@@ -575,11 +582,22 @@ def toggle_pin(pid: int, pinned: bool = True, db: Session = Depends(get_db),
 
 
 @router.get("/projects/{pid}/image")
-def project_image(pid: int, db: Session = Depends(get_db)):
-    from ..core.storage import storage
+def project_image(pid: int, db: Session = Depends(get_db),
+                  viewer: User = Depends(get_current_user)):
+    """A5：原来无需登录、也不校验可见范围，按 pid 遍历就能拿到「仅自己可见」项目的封面图。
+
+    现在必须登录，并使用与项目详情相同的 scope_visible() 可见范围检查。
+    前端通过 AuthImage 发带 Bearer 的请求，不再依赖匿名 <img> 请求。
+    """
+    from ..core.scopes import scope_visible
     m = db.get(ProjectMeta, pid)
     if not m or not m.image_path:
         raise HTTPException(404, "无封面图")
+    p = db.get(Project, pid)
+    if not p:
+        raise HTTPException(403, "无权查看该图片")
+    if not scope_visible(db, "project", p.id, p.author_id, viewer):
+        raise HTTPException(403, "无权查看该图片")
     from ..services.uploads import open_stored_file
     return StreamingResponse(open_stored_file(m.image_path),
                              media_type=m.image_mime or "image/*")
@@ -661,7 +679,7 @@ def get_project(pid: int, db: Session = Depends(get_db), user: User = Depends(ge
             "can_edit": p.author_id == user.id,
             "can_manage": p.author_id == user.id or is_super_admin(user),
             "scope": _sum["scope"], "scope_label": _sum["label"], "scope_ref_ids": ref_ids,
-            "image_url": f"/api/projects/{p.id}/image" if (m and m.image_path) else None}
+            "image_url": _project_image_url(p.id, m)}
 
 
 # -------- 项目评论 --------

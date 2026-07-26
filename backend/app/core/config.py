@@ -32,7 +32,6 @@ class Settings(BaseSettings):
     COS_SECRET_ID: str = ""
     COS_SECRET_KEY: str = ""
     COS_SIGNED_URL_TTL: int = 600
-
     # ---- AI 网关（OpenAI 兼容；默认腾讯云 TokenHub）----
     AI_PROVIDER: str = "none"            # none | tokenhub | openai | local（none=关闭）
     AI_BASE_URL: str = "https://tokenhub.tencentmaas.com/v1"
@@ -63,8 +62,16 @@ class Settings(BaseSettings):
     WEEKLY_DIGEST_HOUR: int = 8
 
     # ---- 其它 ----
-    ALLOWED_ORIGINS: str = "*"
+    # 留空时：本地开发允许任意来源；生产只允许 SITE_URL 同源。
+    # 迁移到新域名时可用逗号分隔显式配置多个可信来源。
+    ALLOWED_ORIGINS: str = ""
     MAX_UPLOAD_MB: int = 50
+    MIN_PASSWORD_LEN: int = 10           # 注册/重置密码的最短长度（A6 生产配置基线）
+    ENABLE_API_DOCS: bool = False        # 生产默认关闭 /docs、/redoc；本地开发自动打开
+    # A4 P0：在独立无网络/只读容器落地前，生产环境必须关闭在线分析。
+    # 本地 sqlite 开发环境仍可用 hardened subprocess 做功能调试。
+    ENABLE_ONLINE_ANALYSIS: bool = False
+    RATE_LIMIT_ENABLED: bool = True      # 登录/注册/找回密码的频率限制（测试里关掉）
     PLATFORM_NAME_ZH: str = "科研数据共享平台"
     PLATFORM_NAME_EN: str = "Research Hub"
     PLATFORM_SLOGAN_ZH: str = "让每一份自建数据都可信、可迭代、可复用"
@@ -72,9 +79,48 @@ class Settings(BaseSettings):
 
     @property
     def origins_list(self):
-        if self.ALLOWED_ORIGINS.strip() == "*":
+        configured = self.ALLOWED_ORIGINS.strip()
+        if configured == "*":
             return ["*"]
-        return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+        if configured:
+            return [o.strip() for o in configured.split(",") if o.strip()]
+        if not self.is_production:
+            return ["*"]
+        from urllib.parse import urlsplit
+        site = urlsplit(self.SITE_URL)
+        return [f"{site.scheme}://{site.netloc}"] if site.scheme and site.netloc else []
+
+    # ---- 生产环境判定与启动自检（A6）----
+    @property
+    def is_production(self) -> bool:
+        """用 sqlite 即视为本地/测试；用 Postgres 即视为真实部署。
+
+        这样不需要再引入一个容易忘记设置的 APP_ENV 变量：线上 Render/阿里云
+        注入的都是 Postgres 的 DATABASE_URL，本地开发与 pytest 用的都是 sqlite。
+        """
+        return not self.DATABASE_URL.startswith("sqlite")
+
+    @property
+    def docs_enabled(self) -> bool:
+        return self.ENABLE_API_DOCS or not self.is_production
+
+    def assert_production_ready(self) -> None:
+        """生产环境缺少关键密钥时直接拒绝启动，而不是带着默认值裸奔。
+
+        触发时请在部署面板（Render Environment / 服务器 .env）补齐后重启。
+        生成强密钥：python -c "import secrets;print(secrets.token_urlsafe(48))"
+        """
+        if not self.is_production:
+            return
+        if self.JWT_SECRET.strip() in ("", "change-me-in-prod"):
+            raise RuntimeError(
+                "启动被拒绝：生产环境的 JWT_SECRET 仍是默认值。任何人都能用它伪造"
+                "包括总管理员在内的任意用户令牌。请在部署环境变量里设置一个强随机值："
+                'python -c "import secrets;print(secrets.token_urlsafe(48))"')
+        if self.ENABLE_ONLINE_ANALYSIS:
+            raise RuntimeError(
+                "启动被拒绝：生产环境尚未接入独立沙箱容器，"
+                "ENABLE_ONLINE_ANALYSIS 必须保持 false。")
 
 
 settings = Settings()

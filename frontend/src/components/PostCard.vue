@@ -5,6 +5,7 @@ import { ref } from 'vue'
 import api from '../api'
 import Icon from './Icon.vue'
 import MentionInput from './MentionInput.vue'
+import AuthImage from './AuthImage.vue'
 import { downloadFile } from '../utils/download'
 
 const props = defineProps<{ post: any; currentUserId?: number }>()
@@ -92,7 +93,7 @@ const isMine = () => props.currentUserId && p.value.author_id === props.currentU
     <!-- 头部 -->
     <div class="flex items-center gap-2 text-sm">
       <div class="w-7 h-7 rounded-full bg-paper overflow-hidden flex items-center justify-center shrink-0">
-        <img v-if="p.author_avatar" :src="p.author_avatar" class="w-full h-full object-cover" />
+        <AuthImage v-if="p.author_avatar" :src="p.author_avatar" class="w-full h-full object-cover" />
         <Icon v-else name="users" class="ico text-gray-300" style="width:15px;height:15px" />
       </div>
       <router-link :to="`/users/${p.author_id}`" class="text-accent hover:underline font-medium">{{ p.author_name }}</router-link>

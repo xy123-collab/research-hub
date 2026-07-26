@@ -57,11 +57,54 @@ api.interceptors.request.use((cfg) => {
   return cfg
 })
 
+// ---- 401 自动续期（A1：修"登录一小时后必掉线"）----
+// access token 只活 1 小时，后端一直有 /auth/refresh，但前端以前从不调用，
+// 一收到 401 就清 token 跳登录页 —— 于是每个用户挂满一小时就必然被踢出。
+// 现在：401 且不是 /auth/* 接口时，先静默 refresh 再重放原请求，失败才跳登录页。
+// 同一时刻多个请求一起 401 时只发一次 refresh，其余排队等结果（下面的 refreshing）。
+let refreshing: Promise<string | null> | null = null
+
+function clearSession() {
+  localStorage.removeItem('access_token')
+  localStorage.removeItem('refresh_token')
+}
+
+async function refreshAccessToken(): Promise<string | null> {
+  const rt = localStorage.getItem('refresh_token')
+  if (!rt) return null
+  try {
+    // 用裸 axios，避免走本拦截器造成递归
+    const { data } = await axios.post('/api/auth/refresh', { refresh_token: rt })
+    localStorage.setItem('access_token', data.access_token)
+    // 后端会轮换 refresh_token（旧的立即作废），必须把新的存下来
+    if (data.refresh_token) localStorage.setItem('refresh_token', data.refresh_token)
+    return data.access_token
+  } catch {
+    clearSession()
+    return null
+  }
+}
+
 api.interceptors.response.use(
   (r) => r,
-  (err) => {
+  async (err) => {
+    const cfg: any = err.config || {}
+    const url = String(cfg.url || '')
+    const authPath = url.replace(/^\/api/, '')
+    // 这些是公开或本身负责签发令牌的接口，401 时不能递归 refresh。
+    // /auth/logout-all 是受保护接口，仍应自动续期后重放。
+    const skipRefresh = /^\/?auth\/(login|register|refresh|forgot-password|forgot-username|reset-password|register-policy|send-email-code)(?:[/?]|$)/.test(authPath)
+    if (err.response?.status === 401 && !skipRefresh && !cfg._retried) {
+      cfg._retried = true
+      if (!refreshing) refreshing = refreshAccessToken().finally(() => { refreshing = null })
+      const token = await refreshing
+      if (token) {
+        cfg.headers = { ...(cfg.headers || {}), Authorization: `Bearer ${token}` }
+        return api.request(cfg)          // 用户无感：原请求自动重放
+      }
+    }
     if (err.response?.status === 401 && !location.hash.includes('/login')) {
-      localStorage.removeItem('access_token')
+      clearSession()
       location.hash = '#/login'
     }
     const message = apiErrorMessage(err)

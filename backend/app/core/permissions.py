@@ -45,6 +45,10 @@ def get_current_user(token: str | None = Depends(oauth2_scheme),
     payload = decode_token(token)
     if not payload or payload.get("type") != "access":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "令牌无效")
+    # A1：改密码 / 注销 / 退出全部设备后，旧令牌必须立刻失效
+    from ..services.tokens import token_is_revoked
+    if token_is_revoked(db, payload):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "登录状态已失效，请重新登录")
     user = db.get(User, int(payload["sub"]))
     if not user or user.status == "left":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户不存在或已离开")

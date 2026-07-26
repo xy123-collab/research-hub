@@ -7,6 +7,7 @@ import api from './api'
 import PlatformFooter from './components/PlatformFooter.vue'
 import NotificationCenter from './components/NotificationCenter.vue'
 import FeedbackCenter from './components/FeedbackCenter.vue'
+import AuthImage from './components/AuthImage.vue'
 
 const auth = useAuth()
 const route = useRoute()
@@ -50,7 +51,7 @@ function toggleLang() {
           <router-link v-if="auth.user" to="/me"
             class="flex items-center gap-1.5 hover:text-accent" :title="t('nav.profile')">
             <span class="w-6 h-6 rounded-full bg-accent/10 text-accent flex items-center justify-center overflow-hidden">
-              <img v-if="auth.user.avatar" :src="auth.user.avatar" class="w-full h-full object-cover" />
+              <AuthImage v-if="auth.user.avatar" :src="auth.user.avatar" class="w-full h-full object-cover" />
               <span v-else class="text-[11px]">{{ (auth.user.display_name || 'U').slice(0,1) }}</span>
             </span>
             <span class="text-gray-600">{{ auth.user.display_name }}</span>

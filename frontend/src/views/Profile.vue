@@ -10,6 +10,7 @@ import PostCard from '../components/PostCard.vue'
 import PostComposer from '../components/PostComposer.vue'
 import MentionInput from '../components/MentionInput.vue'
 import DownloadHistoryModal from '../components/DownloadHistoryModal.vue'
+import AuthImage from '../components/AuthImage.vue'
 import { downloadFile } from '../utils/download'
 
 const route = useRoute(); const router = useRouter(); const { t } = useI18n(); const auth = useAuth()
@@ -568,7 +569,7 @@ async function deactivateAccount() {
     <div class="rounded-lg p-6 text-white" style="background: linear-gradient(135deg,#2d4a7c,#3d5a8c)">
       <div class="flex items-start gap-4">
         <div class="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center overflow-hidden shrink-0">
-          <img v-if="profile.avatar" :src="profile.avatar" class="w-full h-full object-cover" />
+          <AuthImage v-if="profile.avatar" :src="profile.avatar" class="w-full h-full object-cover" />
           <Icon v-else name="users" class="ico" style="width:26px;height:26px" />
         </div>
         <div class="min-w-0 flex-1">
@@ -627,7 +628,7 @@ async function deactivateAccount() {
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div v-for="p in filteredProjects" :key="p.id" class="card overflow-hidden p-0 cursor-pointer hover:shadow-md transition"
             @click="openProject(p.id)">
-            <img v-if="p.image_url" :src="p.image_url" class="w-full h-40 object-cover" />
+            <AuthImage v-if="p.image_url" :src="p.image_url" class="w-full h-40 object-cover" />
             <div class="p-4">
               <div class="flex items-center gap-2">
                 <span v-if="p.pinned" class="tag" style="background:#fef3c7;color:#92400e">置顶</span>
@@ -736,7 +737,8 @@ async function deactivateAccount() {
         </div>
         <div class="flex items-center gap-3 mb-3">
           <div class="w-16 h-16 rounded-full bg-paper overflow-hidden flex items-center justify-center">
-            <img v-if="avatarPreview || editForm.avatar" :src="avatarPreview || editForm.avatar" class="w-full h-full object-cover" />
+            <img v-if="avatarPreview" :src="avatarPreview" class="w-full h-full object-cover" />
+            <AuthImage v-else-if="editForm.avatar" :src="editForm.avatar" class="w-full h-full object-cover" />
             <Icon v-else name="users" class="ico text-gray-300" style="width:24px;height:24px" />
           </div>
           <label class="btn-ghost text-xs cursor-pointer">更换头像
@@ -856,7 +858,7 @@ async function deactivateAccount() {
           <button @click="projDetail=null" class="text-gray-400 shrink-0"><Icon name="close" class="ico" style="width:18px;height:18px" /></button>
         </div>
 
-        <img v-if="projDetail.image_url" :src="projDetail.image_url"
+        <AuthImage v-if="projDetail.image_url" :src="projDetail.image_url"
           class="block mx-auto max-w-full max-h-[70vh] w-auto h-auto object-contain rounded mt-3 bg-paper" />
 
         <!-- 正文 / 编辑 -->

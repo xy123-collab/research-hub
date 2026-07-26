@@ -1,3 +1,4 @@
+import re
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -69,7 +70,10 @@ def my_collab_scopes(db: Session = Depends(get_db), user: User = Depends(get_cur
 
 
 @router.get("/users/{uid}")
-def get_user(uid: int, db: Session = Depends(get_db)):
+def get_user(uid: int, db: Session = Depends(get_db),
+             viewer: User = Depends(get_current_user)):
+    """A5：原来无需登录，按 uid 遍历即可批量抓走全平台用户的邮箱/联系方式/研究方向。
+    个人信息不对匿名访问者开放。"""
     u = db.get(User, uid)
     if not u:
         raise HTTPException(404, "用户不存在")
@@ -254,6 +258,9 @@ def deactivate_account(body: AccountDeactivateIn,
     user.avatar = None; user.bio_zh = None; user.bio_en = None; user.contact = None
     user.role_id = member_role.id if member_role else None
     user.status = "left"
+    # A1：注销后把该账号已签发的令牌全部作废，否则旧 token 在有效期内仍能调接口
+    from ..services.tokens import revoke_all
+    revoke_all(db, old_uid, reason="deactivate")
     write_audit(db, old_uid, "account.deactivate", "user", old_uid)
     db.commit()
     return {"ok": True, "detail": "账号已注销，个人身份信息已清除"}
@@ -367,21 +374,39 @@ def upload_avatar(file: UploadFile = File(...), user: User = Depends(get_current
     return {"avatar": user.avatar}
 
 
+_AVATAR_KEY = re.compile(r"^avatar/\d+/[A-Za-z0-9._-]{1,120}$")
+
+
 @router.get("/me/avatar/file")
-def get_avatar_file(k: str, db: Session = Depends(get_db)):
-    from ..core.storage import storage
-    if not k.startswith("avatar/"):
+def get_avatar_file(k: str, db: Session = Depends(get_db),
+                    viewer: User = Depends(get_current_user)):
+    """A3：原来只校验 startswith("avatar/")，`avatar/../versions/xxx.dta` 既过了校验、
+    又读到了别的数据集的原始数据；`avatar/../../../etc/passwd` 更能跳出存储目录。
+
+    现在三重防护（任何一层单独都够用，叠着是因为这条曾是全平台最危险的洞）：
+      1. 存储层 `core/storage.safe_key()` 一律拒绝含 `..` 的 key；
+      2. 这里用严格正则限定 key 形状，只放行 `avatar/<用户id>/<文件名>`；
+      3. 该 key 必须确实是某个用户当前的头像（查库核对），否则不给读；
+      4. 必须登录。前端 AuthImage 统一用带 Bearer 的请求加载图片。
+    """
+    if not _AVATAR_KEY.match(k or ""):
         raise HTTPException(400, "非法路径")
+    if not db.query(User).filter(User.avatar == f"/api/me/avatar/file?k={k}").first():
+        raise HTTPException(404, "头像不存在")
     try:
         from ..services.uploads import open_stored_file
         return StreamingResponse(open_stored_file(k), media_type="image/*")
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(404, "头像不存在")
 
 
 # -------- resume --------
 @router.get("/users/{uid}/resume")
-def get_resume(uid: int, db: Session = Depends(get_db)):
+def get_resume(uid: int, db: Session = Depends(get_db),
+               viewer: User = Depends(get_current_user)):
+    """A5：简历同样不对匿名访问者开放（原来按 uid 遍历即可抓全平台简历）。"""
     r = db.query(Resume).filter_by(user_id=uid).first()
     if not r:
         return {"resume": None, "blocks": []}

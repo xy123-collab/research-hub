@@ -5,7 +5,7 @@ import uuid
 from urllib.parse import quote
 from fastapi import UploadFile, HTTPException
 from ..core.config import settings
-from ..core.storage import storage
+from ..core.storage import storage, StorageKeyError
 
 # 数据文件支持的格式：Stata / CSV / Excel / Parquet / MATLAB(.mat v7.2 及以下)
 DATA_EXT = {".dta", ".csv", ".xlsx", ".xls", ".parquet", ".mat"}
@@ -42,6 +42,8 @@ def save_stored_file(key: str, fileobj) -> str:
         return storage.save(key, fileobj)
     except HTTPException:
         raise
+    except StorageKeyError:
+        raise HTTPException(400, "非法的文件路径")
     except Exception:
         raise HTTPException(
             503, "文件存储服务暂时不可用；请稍后重试。若持续发生，"
@@ -49,9 +51,12 @@ def save_stored_file(key: str, fileobj) -> str:
 
 
 def open_stored_file(key: str):
-    """打开已存文件，区分「文件丢失」与「存储服务不可用」。"""
+    """打开已存文件，区分「非法 key」「文件丢失」与「存储服务不可用」。"""
     try:
         return storage.open(key)
+    except StorageKeyError:
+        # 路径穿越等非法 key：是调用方传错或有人在试探，不是存储故障
+        raise HTTPException(400, "非法的文件路径")
     except FileNotFoundError:
         raise HTTPException(
             404, "存储中已找不到该文件；如果使用 Render 免费本地存储，"

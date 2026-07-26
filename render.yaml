@@ -31,9 +31,11 @@ services:
       - key: AI_API_KEY
         sync: false                   # ★ 不写进代码；部署后在 Render 面板手填（Environment）
       - key: ALLOWED_ORIGINS
-        value: "*"
+        value: "https://research-hub-pmow.onrender.com"
       - key: SEED_ON_START
-        value: "true"                # 首次自动灌入 seed 假数据；之后库非空会自动跳过
+        value: "false"               # 生产禁止灌入 admin/admin123 等弱口令演示账号
+      - key: ENABLE_ONLINE_ANALYSIS
+        value: "false"               # A4：独立无网络沙箱容器落地前保持关闭
       - key: WEB_CONCURRENCY
         value: "1"                   # 免费档 512MB：单 worker 最稳；多 worker 易 OOM 重启
       - key: PYTHONPATH

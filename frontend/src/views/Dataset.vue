@@ -78,12 +78,15 @@ const canDownloadCurrent = computed(() => {
   return false
 })
 const canAnalyze = computed(() => {
-  if (!d.value) return false
+  if (!d.value?.online_analysis_enabled) return false
   if (d.value.is_admin || d.value.settings?.analysis_open) return true
   return (d.value.my_perms || []).includes('analysis.online')
 })
 const canUploadCandidate = computed(() =>
   d.value && (d.value.is_admin || (d.value.my_perms || []).includes('upload.candidate')))
+const visibleGrantCatalog = computed(() =>
+  (mem.value.grant_catalog || []).filter((x: any) =>
+    d.value?.online_analysis_enabled || x.perm !== 'analysis.online'))
 const permLabel: Record<string, string> = {
   'download.current': '下载当前完整正式版本', 'download.masked': '下载脱敏数据',
   'version.history.view': '查看历史版本', 'download.history': '下载历史版本',
@@ -152,7 +155,7 @@ async function removeDsMember(uid: number) {
 }
 function openGrant(m: any) {
   grantTarget.value = m
-  grantForm.value = { perm: mem.value.grant_catalog?.[0]?.perm || 'download.current', scope_type: 'permanent', valid_to: '', scope_version: '', project_note: '' }
+  grantForm.value = { perm: visibleGrantCatalog.value[0]?.perm || 'download.current', scope_type: 'permanent', valid_to: '', scope_version: '', project_note: '' }
   showGrant.value = true
 }
 async function doGrant() {
@@ -182,8 +185,12 @@ async function requestAnalysis() {
 }
 // ---------- 申请其他单独授权（成员）----------
 const showPermReq = ref(false); const permReqForm = ref<any>({ perm: '', purpose: '' })
-const grantablePerms = ['download.current','download.masked','version.history.view','download.history','analysis.online','upload.candidate','codebook.draft','code.maintain']
-const myLackPerms = computed(() => grantablePerms.filter(p => !((d.value?.my_perms)||[]).includes(p)))
+const grantablePerms = computed(() => [
+  'download.current','download.masked','version.history.view','download.history',
+  ...(d.value?.online_analysis_enabled ? ['analysis.online'] : []),
+  'upload.candidate','codebook.draft','code.maintain'
+])
+const myLackPerms = computed(() => grantablePerms.value.filter(p => !((d.value?.my_perms)||[]).includes(p)))
 function openPermReq() { permReqForm.value = { perm: myLackPerms.value[0] || '', purpose: '' }; showPermReq.value = true }
 async function submitPermReq() {
   if (!permReqForm.value.perm) { alert('请选择要申请的权限'); return }
@@ -895,7 +902,8 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 
       <!-- dashboard -->
       <div v-else-if="tab==='dashboard'">
-        <p class="text-xs text-gray-500 mb-3">在线分析在服务器的只读隔离子进程里运行：<b>df 就是本数据集最新「原始」版的真实数据</b>（列名即真实变量），行数超上限时只读前 5 万行。禁文件/网络/写操作，10 秒超时，<b>绝不改原始数据</b>。</p>
+        <p v-if="d.online_analysis_enabled" class="text-xs text-gray-500 mb-3">在线分析在服务器的只读隔离子进程里运行：<b>df 就是本数据集最新「原始」版的真实数据</b>（列名即真实变量），行数超上限时只读前 5 万行。禁文件/网络/写操作，10 秒超时，<b>绝不改原始数据</b>。</p>
+        <p v-else class="text-xs text-amber-700 mb-3">在线分析因安全整改暂时关闭；普通数据看板仍可使用。待独立无网络、只读沙箱容器上线后恢复。</p>
         <div v-if="dash && dash.length" class="card">
           <div class="label-cap">样本描述性统计 · gender（派生汇总示例）</div>
           <div class="mt-3 space-y-2">
@@ -908,7 +916,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
         <div class="card mt-4">
           <div class="label-cap">AI / 手写描述分析（只读沙箱，绝不改原始值）</div>
-          <template v-if="canAnalyze">
+          <template v-if="d.online_analysis_enabled && canAnalyze">
             <!-- 本数据现有哪些变量：直接读最新原始数据 -->
             <div class="mt-2 rounded-lg border border-line bg-paper p-3 text-xs">
               <div v-if="analysisCtx && analysisCtx.connected">
@@ -937,7 +945,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <pre>{{ JSON.stringify(aiResult.result !== undefined ? aiResult.result : aiResult, null, 2) }}</pre>
             </div>
           </template>
-          <div v-else class="mt-2">
+          <div v-else-if="d.online_analysis_enabled" class="mt-2">
             <p class="text-sm text-gray-400">在线分析功能需数据集管理员单独授权后开放。</p>
             <button v-if="d.is_member && !d.is_admin" class="btn-ghost text-xs text-accent mt-2" @click="requestAnalysis">
               申请开通在线分析权限
@@ -1635,7 +1643,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <p class="text-xs text-gray-500 mb-3">给「{{ grantTarget?.name }}」授予一项权限（加入数据集不自动获得，需在此单独授予）。</p>
         <label class="label-cap">授权项</label>
         <select v-model="grantForm.perm" class="input mb-2">
-          <option v-for="c in mem.grant_catalog" :key="c.perm" :value="c.perm">{{ c.label }}</option>
+          <option v-for="c in visibleGrantCatalog" :key="c.perm" :value="c.perm">{{ c.label }}</option>
         </select>
         <label class="label-cap">有效范围</label>
         <select v-model="grantForm.scope_type" class="input mb-2">
@@ -1668,7 +1676,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </select>
         <label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" v-model="settingsForm.history_visible" /> 成员默认可见历史版本信息</label>
         <label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" v-model="settingsForm.history_downloadable" /> 成员默认可下载历史版本</label>
-        <label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" v-model="settingsForm.analysis_open" /> 在线分析对全体成员开放</label>
+        <label v-if="d.online_analysis_enabled" class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" v-model="settingsForm.analysis_open" /> 在线分析对全体成员开放</label>
         <label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" v-model="settingsForm.codebook_public" /> 公开 codebook 非成员可见</label>
         <label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" v-model="settingsForm.dashboard_public" /> 公开看板非成员可见</label>
         <div class="flex justify-end gap-2">

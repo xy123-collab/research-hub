@@ -139,7 +139,7 @@ def test_super_admin_primary_and_roles(client, founder):
     info = client.get("/api/admin/super-admins", headers=admin).json()
     assert "primary_uid" in info and info["i_am_primary"] is True
     # 注册一个临时用户，按名称检索能返回名称
-    client.post("/api/auth/register", json={"username": "tmpadm", "password": "pass123",
+    client.post("/api/auth/register", json={"username": "tmpadm", "password": "Rhub-Test-2026",
                                             "display_name": "临时管理员", "email": "t@a.com"})
     res = client.get("/api/users/search", params={"q": "临时管理员"}, headers=admin).json()
     assert res and res[0]["display_name"] == "临时管理员"
@@ -150,7 +150,7 @@ def test_super_admin_primary_and_roles(client, founder):
     # 添加为管理员
     assert client.post("/api/admin/super-admins", params={"uid": uid}, headers=admin).status_code == 200
     # 该用户是「其他管理员」，非 primary → 不能交接
-    tok = _h(client, "tmpadm", "pass123")
+    tok = _h(client, "tmpadm", "Rhub-Test-2026")
     assert client.post("/api/admin/super-admins/transfer", params={"uid": uid}, headers=tok).status_code == 403
     # 总管理员可移除他
     assert client.delete(f"/api/admin/super-admins/{uid}", headers=admin).status_code == 200

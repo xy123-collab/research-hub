@@ -13,15 +13,15 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 40
 
 
 def test_register_requires_email(client):
-    r = client.post("/api/auth/register", json={"username": "noemail", "password": "pass123"})
+    r = client.post("/api/auth/register", json={"username": "noemail", "password": "Rhub-Test-2026"})
     assert r.status_code == 422
-    r2 = client.post("/api/auth/register", json={"username": "hasemail", "password": "pass123",
+    r2 = client.post("/api/auth/register", json={"username": "hasemail", "password": "Rhub-Test-2026",
                                                  "email": "he@x.com"})
     assert r2.status_code == 200
 
 
 def test_forgot_and_reset_password(client):
-    client.post("/api/auth/register", json={"username": "reset1", "password": "pass123",
+    client.post("/api/auth/register", json={"username": "reset1", "password": "Rhub-Test-2026",
                                             "email": "reset1@x.com"})
     assert client.post("/api/auth/forgot-password", json={"email": "reset1@x.com"}).status_code == 200
     # 取出 mock 邮件里的 token
@@ -30,9 +30,9 @@ def test_forgot_and_reset_password(client):
     db = SessionLocal()
     tk = db.query(PasswordResetToken).order_by(PasswordResetToken.id.desc()).first().token
     db.close()
-    r = client.post("/api/auth/reset-password", json={"token": tk, "new_password": "newpass1"})
+    r = client.post("/api/auth/reset-password", json={"token": tk, "new_password": "Rhub-New-2026"})
     assert r.status_code == 200
-    assert client.post("/api/auth/login", json={"username": "reset1", "password": "newpass1"}).status_code == 200
+    assert client.post("/api/auth/login", json={"username": "reset1", "password": "Rhub-New-2026"}).status_code == 200
 
 
 def test_profile_extra_and_resume_bulk(client, founder):

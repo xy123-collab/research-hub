@@ -50,6 +50,7 @@ async function selectScope(kind: string, slug: string) {
         api.get('/admin/platform-analytics')
       ])
       audit.value = ar.data; superInfo.value = sr.data; tickets.value = tr.data; analytics.value = an.data
+      await loadRegistration()
     }
   } catch (e: any) { err.value = e.response?.data?.detail || '加载失败' }
 }
@@ -137,6 +138,54 @@ function exportDownloads() {
   downloadFile(`/admin/${sel.value.kind}/${sel.value.slug}/downloads.xlsx`,
     `${sel.value.slug}_download_history.xlsx`)
 }
+
+// ---------- 注册准入：邀请制开关 + 邀请码 ----------
+const reg = ref<any>(null)                 // 当前注册策略与邀请码统计
+const invites = ref<any[]>([])             // 邀请码列表
+const inviteFilter = ref('')               // '' | available | used_up | expired | disabled
+const newInvite = ref({ count: 10, valid_days: 30 as number | null, max_uses: 1, note: '' })
+const lastBatch = ref<any>(null)           // 刚生成的一批，直接显示出来方便复制
+const regBusy = ref(false)
+
+async function loadRegistration() {
+  reg.value = (await api.get('/admin/registration')).data
+  invites.value = (await api.get('/admin/invite-codes', { params: { state: inviteFilter.value } })).data
+}
+async function saveReg(patch: any) {
+  regBusy.value = true
+  try { reg.value = (await api.patch('/admin/registration', patch)).data }
+  catch (e: any) { alert(e.response?.data?.detail || '保存失败') }
+  finally { regBusy.value = false }
+}
+async function makeInvites() {
+  const n = Number(newInvite.value.count)
+  if (!n || n < 1) { alert('请填写要生成的数量'); return }
+  regBusy.value = true
+  try {
+    const days = newInvite.value.valid_days === null || String(newInvite.value.valid_days) === ''
+      ? null : Number(newInvite.value.valid_days)
+    const r = await api.post('/admin/invite-codes', { ...newInvite.value, valid_days: days })
+    lastBatch.value = r.data
+    await loadRegistration()
+  } catch (e: any) { alert(e.response?.data?.detail || '生成失败') }
+  finally { regBusy.value = false }
+}
+async function toggleInvite(row: any) {
+  await api.patch(`/admin/invite-codes/${row.id}`, null, { params: { active: !row.is_active } })
+  await loadRegistration()
+}
+async function disableBatch(batchId: string) {
+  if (!confirm(`确认停用整批邀请码（${batchId}）？已经用掉的记录会保留。`)) return
+  await api.post('/admin/invite-codes/disable-batch', null, { params: { batch_id: batchId } })
+  lastBatch.value = null
+  await loadRegistration()
+}
+function exportInvites() { downloadFile('/admin/invite-codes.csv', 'invite_codes.csv') }
+async function copyCodes(codes: string[]) {
+  try { await navigator.clipboard.writeText(codes.join('\n')); alert(`已复制 ${codes.length} 个邀请码`) }
+  catch { alert('浏览器不允许自动复制，请手动选中下方文本复制') }
+}
+const inviteStateLabel: any = { available: '可用', used_up: '已用完', expired: '已过期', disabled: '已停用' }
 </script>
 
 <template>
@@ -379,6 +428,107 @@ function exportDownloads() {
               <option v-for="(label,key) in statusLabel" :key="key" :value="key">{{ label }}</option></select></td>
           </tr><tr v-if="!shownTickets.length"><td colspan="7" class="py-4 text-center text-gray-400">暂无反馈工单。</td></tr></tbody>
         </table>
+      </div>
+    </section>
+
+    <!-- 注册准入：邀请制 + 邮箱验证 + 邀请码 -->
+    <section v-if="reg" class="mb-6">
+      <h2 class="text-lg mb-2">注册准入</h2>
+      <div class="card text-sm mb-3">
+        <div class="flex flex-wrap items-start gap-6">
+          <label class="flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" class="mt-1" :checked="reg.invite_only" :disabled="regBusy"
+              @change="saveReg({ invite_only: ($event.target as HTMLInputElement).checked })" />
+            <span>
+              <b>邀请制注册</b>
+              <span class="block text-xs text-gray-400 mt-0.5 max-w-xs">
+                打开后，注册页会要求填写邀请码，验证通过才能注册；关闭则任何人都可自由注册。
+              </span>
+            </span>
+          </label>
+          <div>
+            <div class="label-cap mb-1">注册邮箱验证</div>
+            <select class="input w-44 text-xs" :value="reg.email_verify" :disabled="regBusy"
+              @change="saveReg({ email_verify: ($event.target as HTMLSelectElement).value })">
+              <option value="auto">自动（邮件可用时开启）</option>
+              <option value="on">强制开启</option>
+              <option value="off">关闭</option>
+            </select>
+            <p class="text-xs mt-1" :class="reg.email_verify_effective ? 'text-green-700' : 'text-gray-400'">
+              当前实际状态：{{ reg.email_verify_effective ? '注册需邮箱验证码' : '注册不需要邮箱验证码' }}
+            </p>
+            <p v-if="!reg.email_backend_can_send" class="text-xs text-accent2 mt-1 max-w-sm">
+              当前邮件后端为 <b>{{ reg.email_backend }}</b>，尚不能真实发信，因此注册不会要求邮箱验证码。
+              代码已经预留；迁移后接通 SMTP，再选择「自动」或「强制开启」即可生效。
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card text-sm">
+        <div class="flex flex-wrap items-end gap-3 mb-3">
+          <div><div class="label-cap mb-1">生成数量</div>
+            <input v-model.number="newInvite.count" type="number" min="1" max="200" class="input w-24" /></div>
+          <div><div class="label-cap mb-1">有效期（天）</div>
+            <input v-model="newInvite.valid_days" type="number" min="1" class="input w-28" placeholder="留空=长期" /></div>
+          <div><div class="label-cap mb-1">每码可用次数</div>
+            <input v-model.number="newInvite.max_uses" type="number" min="1" class="input w-24" /></div>
+          <div class="flex-1 min-w-[160px]"><div class="label-cap mb-1">备注（发给谁 / 用途）</div>
+            <input v-model="newInvite.note" class="input w-full" placeholder="如：2026 秋季第一批" /></div>
+          <button class="btn-primary text-sm" :disabled="regBusy" @click="makeInvites">生成邀请码</button>
+          <button class="btn-ghost text-sm" @click="exportInvites">导出 CSV</button>
+        </div>
+
+        <div v-if="lastBatch" class="border border-accent rounded p-3 mb-3 bg-paper">
+          <div class="flex items-center gap-2 mb-2">
+            <b class="text-accent">本次生成 {{ lastBatch.codes.length }} 个</b>
+            <span class="text-xs text-gray-500">
+              到期：{{ lastBatch.expires_at ? String(lastBatch.expires_at).slice(0,10) : '长期有效' }}
+            </span>
+            <button class="btn-ghost text-xs ml-auto" @click="copyCodes(lastBatch.codes)">一键复制</button>
+            <button class="btn-ghost text-xs" @click="disableBatch(lastBatch.batch_id)">整批停用</button>
+          </div>
+          <p class="font-mono text-xs break-all leading-6">{{ lastBatch.codes.join('   ') }}</p>
+        </div>
+
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-xs text-gray-500">
+            共 {{ reg.invite_stat.total }} 个 · 可用 {{ reg.invite_stat.available || 0 }} ·
+            已用完 {{ reg.invite_stat.used_up || 0 }} · 已过期 {{ reg.invite_stat.expired || 0 }} ·
+            已停用 {{ reg.invite_stat.disabled || 0 }}
+          </span>
+          <select v-model="inviteFilter" class="input text-xs w-28 ml-auto" @change="loadRegistration">
+            <option value="">全部状态</option><option value="available">可用</option>
+            <option value="used_up">已用完</option><option value="expired">已过期</option>
+            <option value="disabled">已停用</option>
+          </select>
+        </div>
+        <div class="card p-0 overflow-x-auto">
+          <div class="max-h-[300px] overflow-y-auto">
+            <table class="w-full min-w-[720px] text-xs">
+              <thead class="sticky top-0 bg-white z-10"><tr class="text-left text-gray-400">
+                <th class="px-3 py-2">邀请码</th><th>状态</th><th>已用/可用</th><th>到期</th>
+                <th>备注</th><th>使用者</th><th class="pr-3">操作</th></tr></thead>
+              <tbody>
+                <tr v-for="x in invites" :key="x.id" class="border-t border-line">
+                  <td class="px-3 py-2 font-mono">{{ x.code }}</td>
+                  <td><span class="tag">{{ inviteStateLabel[x.state] || x.state }}</span></td>
+                  <td>{{ x.used_count }} / {{ x.max_uses }}</td>
+                  <td class="text-gray-400">{{ x.expires_at ? String(x.expires_at).slice(0,10) : '长期' }}</td>
+                  <td class="max-w-[160px] truncate" :title="x.note">{{ x.note || '—' }}</td>
+                  <td class="text-gray-500">{{ x.used_by.map((u:any)=>u.username).join('、') || '—' }}</td>
+                  <td class="pr-3"><button class="text-accent text-xs hover:underline" @click="toggleInvite(x)">
+                    {{ x.is_active ? '停用' : '恢复' }}</button></td>
+                </tr>
+                <tr v-if="!invites.length"><td colspan="7" class="py-4 text-center text-gray-400">暂无邀请码。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <p class="text-xs text-gray-400 mt-2">
+          邀请码不区分大小写，复制给受邀人即可；同一个码可用次数用完、到期或被停用后立即失效。
+          停用不会删除记录，历史核销可追溯。
+        </p>
       </div>
     </section>
 

@@ -2,7 +2,7 @@
 
 
 def _register(client, username: str):
-    password = "pass123"
+    password = "Rhub-Test-2026"
     r = client.post("/api/auth/register", json={
         "username": username, "password": password,
         "email": f"{username}@example.com", "display_name": username,

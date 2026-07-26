@@ -1,15 +1,29 @@
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from .core.config import settings
+from .core.permissions import require_super_admin
 from .api import api_router
 
-app = FastAPI(title="科研数据共享平台 API", version="1.0")
+# A6：生产环境不暴露 /docs、/redoc（等于把全部接口清单和参数结构公开）。
+# 需要临时打开时把环境变量 ENABLE_API_DOCS 设为 true。
+_docs = "/docs" if settings.docs_enabled else None
+app = FastAPI(title="科研数据共享平台 API", version="1.0",
+              docs_url=_docs, redoc_url=("/redoc" if settings.docs_enabled else None),
+              openapi_url=("/openapi.json" if settings.docs_enabled else None))
 
+# A6：启动即校验生产配置（JWT_SECRET 仍是默认值就直接拒绝启动），
+# 避免"忘了配密钥 → 任何人可自行签发总管理员令牌"这种静默的致命错误。
+settings.assert_production_ready()
+
+# A6/B5：allow_origins=["*"] 与 allow_credentials=True 同时出现时，
+# Starlette 会回显任意来源域。平台用 Bearer 令牌、不依赖 Cookie，
+# 因此未配白名单时关掉 credentials；配了白名单才允许带凭证。
+_origins = settings.origins_list
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.origins_list,
-    allow_credentials=True,
+    allow_origins=_origins,
+    allow_credentials=(_origins != ["*"]),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -90,23 +104,25 @@ except Exception:
     pass
 
 
+# A2：下面三个「立刻给全平台群发邮件」的运维接口原来任何人都能 POST，
+# 攻击者写个循环就能打爆企业邮日配额并轰炸全体用户邮箱。一律限平台总管理员。
 @app.post("/api/admin/run-digest")
-def _run_digest_now():
-    """手动触发一次消息摘要巡检（便于测试/运维）。"""
+def _run_digest_now(_admin=Depends(require_super_admin)):
+    """手动触发一次消息摘要巡检（便于测试/运维）。仅平台总管理员。"""
     from .services.digest import run_digest_once
     return run_digest_once()
 
 
 @app.post("/api/admin/run-weekly-digest")
-def _run_weekly_now():
-    """手动触发一次每周帖子周报（便于测试/运维）。"""
+def _run_weekly_now(_admin=Depends(require_super_admin)):
+    """手动触发一次每周帖子周报（便于测试/运维）。仅平台总管理员。"""
     from .services.weekly_digest import run_weekly_digest_once
     return run_weekly_digest_once()
 
 
 @app.post("/api/admin/flush-deliveries")
-def _flush_now():
-    """手动把到点的版本/代码更新汇总投递发出（便于测试/运维）。"""
+def _flush_now(_admin=Depends(require_super_admin)):
+    """手动把到点的版本/代码更新汇总投递发出（便于测试/运维）。仅平台总管理员。"""
     from .services.notify import flush_due_deliveries
     from .core.db import SessionLocal
     db = SessionLocal()

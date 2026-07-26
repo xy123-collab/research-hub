@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from ..core.db import get_db
+from ..core.config import settings
 from ..core.storage import storage
 from ..core.ai_client import ai_client
 from ..core.permissions import (get_current_user, is_super_admin, is_dataset_member,
@@ -293,6 +294,7 @@ def detail(slug: str, db: Session = Depends(get_db), user: User = Depends(get_cu
                      "history_visible": st.history_visible,
                      "history_downloadable": st.history_downloadable,
                      "analysis_open": st.analysis_open, "is_closed": st.is_closed},
+        "online_analysis_enabled": settings.ENABLE_ONLINE_ANALYSIS,
         "my_download_request": ({"status": my_dl_req.status} if my_dl_req else None),
         "current_version": ({"id": cur.id, "version_id": cur.version_id,
                              "changelog_zh": cur.changelog_zh} if cur else None),
@@ -1333,6 +1335,10 @@ def dashboard(slug: str, var: str, group: str = "", db: Session = Depends(get_db
 
 def _require_analysis(db, d, user):
     """在线分析需授权（原则三 / 速查表）。管理员或获 analysis.online 授权，或数据集开放。"""
+    if not settings.ENABLE_ONLINE_ANALYSIS:
+        raise HTTPException(
+            503,
+            "在线分析因安全整改暂时关闭；待独立无网络、只读沙箱容器上线后恢复")
     if not is_dataset_member(db, d.id, user):
         raise HTTPException(403, "需先加入数据集")
     if is_dataset_admin(db, d.id, user):

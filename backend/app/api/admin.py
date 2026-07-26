@@ -11,7 +11,7 @@ from ..core.permissions import (get_current_user, require_super_admin, is_group_
                                 GROUP_ADMIN_ROLES, DS_ADMIN_ROLES)
 from ..models.user import User, Role
 from ..models.group import (ResearchGroup, GroupMember, GroupJoinRequest,
-                            ProjectTimelineEntry, ProjectFile)
+                            ProjectTimelineEntry, ProjectFile, ProjectResourceLink)
 from ..models.dataset import Dataset, DatasetMember, JoinRequest
 from ..models.version import DataVersion, DownloadLog
 from ..models.correction import Bug, CorrectionFinal
@@ -24,7 +24,12 @@ from ..models.notify import DownloadHistory
 from ..models.curation import CodeVersion
 from ..models.skill import Skill
 from ..models.extras import CollabSection, SkillComment, PasswordResetToken
+from ..models.authx import InviteCode, InviteCodeUse
+from ..core.config import settings
+from ..schemas.auth import InviteCodeIn, RegistrationSettingIn
+from ..services import registration as reg
 from ..services.scoring import leaderboard, by_dataset
+from ..services.uploads import attachment_headers
 
 router = APIRouter(tags=["admin"])
 
@@ -551,3 +556,121 @@ def revoke_super(uid: int, db: Session = Depends(get_db),
                     object_id=str(uid), detail_json={}))
     db.commit()
     return {"ok": True}
+
+
+# ==================== 注册准入：邀请码 + 邮箱验证 ====================
+@router.get("/admin/registration")
+def registration_settings(db: Session = Depends(get_db),
+                          user: User = Depends(require_super_admin)):
+    """注册策略现状 + 邀请码统计。只有平台总管理员/管理员能看。"""
+    now = datetime.utcnow()
+    rows = db.query(InviteCode).all()
+    stat = {"total": len(rows), "available": 0, "used_up": 0, "expired": 0, "disabled": 0}
+    for r in rows:
+        stat[reg.code_state(r)] = stat.get(reg.code_state(r), 0) + 1
+    return {"invite_only": reg.invite_only(db),
+            "email_verify": reg.email_verify_mode(db),
+            "email_verify_effective": reg.email_verify_required(db),
+            "email_backend": settings.EMAIL_BACKEND,
+            "email_backend_can_send": reg.email_backend_can_send(),
+            "min_password_len": settings.MIN_PASSWORD_LEN,
+            "invite_stat": stat, "now": now.isoformat(timespec="seconds")}
+
+
+@router.patch("/admin/registration")
+def update_registration(body: RegistrationSettingIn, db: Session = Depends(get_db),
+                        user: User = Depends(require_super_admin)):
+    reg.set_policy(db, invite_only_flag=body.invite_only, email_verify=body.email_verify)
+    db.add(AuditLog(user_id=user.id, action="platform.registration.update",
+                    object_type="platform", object_id="registration",
+                    detail_json={"invite_only": body.invite_only,
+                                 "email_verify": body.email_verify}))
+    db.commit()
+    return registration_settings(db=db, user=user)
+
+
+@router.get("/admin/invite-codes")
+def list_invite_codes(state: str = "", limit: int = 300, db: Session = Depends(get_db),
+                      user: User = Depends(require_super_admin)):
+    """邀请码列表（新的在前）。state 可选 available/used_up/expired/disabled。"""
+    rows = (db.query(InviteCode).order_by(InviteCode.id.desc()).limit(max(1, min(limit, 1000))).all())
+    uses = {}
+    for u in db.query(InviteCodeUse).all():
+        uses.setdefault(u.code_id, []).append({"user_id": u.user_id, "username": u.username,
+                                               "used_at": u.used_at})
+    out = []
+    for r in rows:
+        st = reg.code_state(r)
+        if state and st != state:
+            continue
+        out.append({"id": r.id, "code": r.code, "batch_id": r.batch_id, "note": r.note,
+                    "max_uses": r.max_uses, "used_count": r.used_count or 0,
+                    "expires_at": r.expires_at, "is_active": r.is_active,
+                    "state": st, "created_at": r.created_at,
+                    "created_by": _uname(db, r.created_by) if r.created_by else "—",
+                    "used_by": uses.get(r.id, [])})
+    return out
+
+
+@router.post("/admin/invite-codes")
+def create_invite_codes(body: InviteCodeIn, db: Session = Depends(get_db),
+                        user: User = Depends(require_super_admin)):
+    """批量生成邀请码：指定数量、有效期（天）、每码可用次数、备注。"""
+    rows = reg.generate_codes(db, count=body.count, valid_days=body.valid_days,
+                              max_uses=body.max_uses, note=body.note or "",
+                              created_by=user.id)
+    codes = [r.code for r in rows]
+    batch = rows[0].batch_id if rows else ""
+    db.add(AuditLog(user_id=user.id, action="platform.invite_code.create",
+                    object_type="invite_code", object_id=batch,
+                    detail_json={"count": len(codes), "valid_days": body.valid_days,
+                                 "max_uses": body.max_uses}))
+    db.commit()
+    return {"ok": True, "batch_id": batch, "codes": codes,
+            "expires_at": rows[0].expires_at if rows else None}
+
+
+@router.patch("/admin/invite-codes/{cid}")
+def toggle_invite_code(cid: int, active: bool, db: Session = Depends(get_db),
+                       user: User = Depends(require_super_admin)):
+    """停用 / 恢复某个邀请码（不删除，保留核销记录便于追溯）。"""
+    r = db.get(InviteCode, cid)
+    if not r:
+        raise HTTPException(404, "邀请码不存在")
+    r.is_active = bool(active)
+    db.add(AuditLog(user_id=user.id, action="platform.invite_code.toggle",
+                    object_type="invite_code", object_id=r.code,
+                    detail_json={"active": bool(active)}))
+    db.commit()
+    return {"ok": True, "state": reg.code_state(r)}
+
+
+@router.post("/admin/invite-codes/disable-batch")
+def disable_batch(batch_id: str, db: Session = Depends(get_db),
+                  user: User = Depends(require_super_admin)):
+    """整批停用（比如一批码发错了对象）。已经用掉的核销记录仍保留。"""
+    n = (db.query(InviteCode).filter_by(batch_id=batch_id)
+         .update({"is_active": False}, synchronize_session=False))
+    db.add(AuditLog(user_id=user.id, action="platform.invite_code.disable_batch",
+                    object_type="invite_code", object_id=batch_id,
+                    detail_json={"count": n}))
+    db.commit()
+    return {"ok": True, "disabled": n}
+
+
+@router.get("/admin/invite-codes.csv")
+def export_invite_codes(batch_id: str = "", db: Session = Depends(get_db),
+                        user: User = Depends(require_super_admin)):
+    """导出邀请码 CSV（可按批次），方便逐个发给受邀人。"""
+    q = db.query(InviteCode).order_by(InviteCode.id.desc())
+    if batch_id:
+        q = q.filter_by(batch_id=batch_id)
+    lines = ["邀请码,状态,可用次数,已用次数,到期时间,备注,批次"]
+    for r in q.all():
+        lines.append(",".join([
+            r.code, reg.code_state(r), str(r.max_uses or 1), str(r.used_count or 0),
+            r.expires_at.strftime("%Y-%m-%d %H:%M") if r.expires_at else "长期有效",
+            (r.note or "").replace(",", "，"), r.batch_id or ""]))
+    buf = io.BytesIO(("﻿" + "\n".join(lines)).encode("utf-8"))   # BOM：Excel 打开不乱码
+    return StreamingResponse(buf, media_type="text/csv",
+                             headers=attachment_headers("invite_codes.csv"))

@@ -20,9 +20,15 @@ PY
 echo "[entrypoint] 执行数据库迁移 (alembic upgrade head)..."
 alembic upgrade head || echo "[entrypoint] 迁移跳过/已最新"
 
-if [ "${SEED_ON_START:-true}" = "true" ]; then
+# A6：生产环境默认**不**灌 seed。seed 会建 admin/admin123 等弱口令账号，
+# 新库上线的瞬间就存在一个弱口令总管理员。需要初始化演示数据时，
+# 临时把环境变量 SEED_ON_START 设为 true，跑完一次立刻改回 false。
+if [ "${SEED_ON_START:-false}" = "true" ]; then
   echo "[entrypoint] 初始化 seed 数据（仅首次，库非空则跳过）..."
   python -m app.seed || true
+else
+  echo "[entrypoint] 跳过 seed（SEED_ON_START 未开启）。首次部署请手工创建管理员账号。"
+  python -m app.bootstrap_admin || true
 fi
 
 echo "[entrypoint] 执行数据修正（幂等/一次性）..."
