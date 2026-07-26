@@ -86,9 +86,41 @@ class FinalizeIn(BaseModel):
     adopt_level: str  # full|partial|reject
     final_score: float; comment: str | None = None
 
+    @field_validator("adopt_level")
+    @classmethod
+    def _adopt_level(cls, v):
+        if v not in {"full", "partial", "reject"}:
+            raise ValueError("终审结论必须是 full、partial 或 reject")
+        return v
+
     @field_validator("final_score")
     @classmethod
     def _f(cls, v):
+        if not 0 <= v <= 10:
+            raise ValueError("最终分需在 0-10 之间")
+        return v
+
+
+class PartialFinalizeIn(BaseModel):
+    uid_value: str
+    var_name: str
+    current_value: str | None = None
+    suggested_value: str | None = None
+    reason: str
+    confirm_new_officer: bool = False
+    final_score: float = 6
+    comment: str | None = None
+
+    @field_validator("uid_value", "var_name", "reason")
+    @classmethod
+    def _required_partial_text(cls, v):
+        if not (v or "").strip():
+            raise ValueError("唯一值、变量和修改理由均为必填")
+        return v.strip()
+
+    @field_validator("final_score")
+    @classmethod
+    def _partial_score(cls, v):
         if not 0 <= v <= 10:
             raise ValueError("最终分需在 0-10 之间")
         return v

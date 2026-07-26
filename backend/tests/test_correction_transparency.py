@@ -93,6 +93,8 @@ def test_batch_validation_separates_evidence_and_marks_new_officer(client, found
     )
     assert checked.status_code == 200
     assert checked.json()["missing_uid_values"] == ["B2"]
+    assert checked.json()["valid_rows"] == 2
+    assert checked.json()["invalid_rows"] == 0
 
     blocked = client.post(
         f"/api/datasets/{slug}/bugs/batch",
@@ -107,9 +109,13 @@ def test_batch_validation_separates_evidence_and_marks_new_officer(client, found
         headers=founder,
     )
     assert committed.status_code == 200
-    items = client.get(
-        f"/api/bugs/{committed.json()['id']}", headers=founder).json()["items"]
-    assert [item["is_new_officer"] for item in items] == [False, True]
+    assert len(committed.json()["ids"]) == 2
+    details = [
+        client.get(f"/api/bugs/{bid}", headers=founder).json()
+        for bid in committed.json()["ids"]
+    ]
+    assert all(len(detail["items"]) == 1 for detail in details)
+    assert [detail["items"][0]["is_new_officer"] for detail in details] == [False, True]
 
     old = "唯一ID值,变量名,当前值,建议值,说明与证据\nB1,year,2001,2000,旧模板\n"
     legacy = client.post(
@@ -118,6 +124,113 @@ def test_batch_validation_separates_evidence_and_marks_new_officer(client, found
         headers=founder,
     )
     assert legacy.status_code == 400 and "旧版" in legacy.json()["detail"]
+
+
+def test_duplicate_detection_batch_row_removal_and_pending_delete(client, founder):
+    slug = "ds-correction-deduplicate"
+    _, variables = _new_dataset(client, founder, slug, [
+        {"officerID": "E1", "year": 2001},
+        {"officerID": "E2", "year": 2002},
+    ])
+    first = _submit(
+        client, founder, slug, variables["year"], "E1", 2001, 2000)
+    assert first.status_code == 200
+    duplicate = _submit(
+        client, founder, slug, variables["year"], "E1", 2001, 2000)
+    assert duplicate.status_code == 409 and "重复勘误" in duplicate.json()["detail"]
+
+    csv = (
+        "唯一ID值,变量名,当前值,建议值,说明,证据\n"
+        "E1,year,2001,2000,历史重复,同一份公告\n"
+        "E2,not_a_variable,2002,2003,变量错误,测试\n"
+        "E2,year,2002,2003,有效修改,新公告\n"
+    ).encode("utf-8")
+    checked = client.post(
+        f"/api/datasets/{slug}/bugs/batch/validate",
+        files={"file": ("batch.csv", io.BytesIO(csv), "text/csv")},
+        headers=founder,
+    )
+    assert checked.status_code == 200
+    payload = checked.json()
+    assert payload["invalid_rows"] == 2 and payload["valid_rows"] == 1
+    assert "重复勘误" in payload["items"][0]["problems"][0]
+    assert "不在当前变量清单" in payload["items"][1]["problems"][0]
+
+    committed = client.post(
+        f"/api/datasets/{slug}/bugs/batch",
+        data={"included_row_numbers": json.dumps([4])},
+        files={"file": ("batch.csv", io.BytesIO(csv), "text/csv")},
+        headers=founder,
+    )
+    assert committed.status_code == 200 and committed.json()["items"] == 1
+    saved = client.get(
+        f"/api/bugs/{committed.json()['id']}", headers=founder).json()
+    assert saved["items"][0]["uid_value"] == "E2"
+    assert saved["can_delete"] is True
+    deleted = client.delete(
+        f"/api/bugs/{committed.json()['id']}", headers=founder)
+    assert deleted.status_code == 200
+    assert client.get(
+        f"/api/bugs/{committed.json()['id']}", headers=founder).status_code == 404
+
+    rejected_id = _submit(
+        client, founder, slug, variables["year"], "E1", 2001, 1999).json()["id"]
+    rejected_item = client.get(
+        f"/api/bugs/{rejected_id}", headers=founder).json()["items"][0]["id"]
+    assert client.post(
+        f"/api/bug-items/{rejected_item}/finalize",
+        json={"adopt_level": "reject", "final_score": 0}, headers=founder,
+    ).status_code == 200
+    rejected_duplicate = _submit(
+        client, founder, slug, variables["year"], "E1", 2001, 1999)
+    assert rejected_duplicate.status_code == 409
+
+
+def test_partial_adoption_requires_real_edit_and_keeps_original(client, founder):
+    slug = "ds-correction-partial-edit"
+    _, variables = _new_dataset(
+        client, founder, slug, [{"officerID": "P1", "year": 2001}])
+    bid = _submit(
+        client, founder, slug, variables["year"], "P1", 2001, 2000).json()["id"]
+    detail = client.get(f"/api/bugs/{bid}", headers=founder).json()
+    item = detail["items"][0]
+
+    direct = client.post(
+        f"/api/bug-items/{item['id']}/finalize",
+        json={"adopt_level": "partial", "final_score": 6}, headers=founder)
+    assert direct.status_code == 409
+    unchanged = client.post(
+        f"/api/bug-items/{item['id']}/finalize-partial",
+        json={
+            "uid_value": "P1", "var_name": "year",
+            "current_value": "2001", "suggested_value": "2000",
+            "reason": "履历年份需要校正", "final_score": 6,
+        }, headers=founder)
+    assert unchanged.status_code == 400 and "实际修改" in unchanged.json()["detail"]
+
+    changed = client.post(
+        f"/api/bug-items/{item['id']}/finalize-partial",
+        json={
+            "uid_value": "P1", "var_name": "year",
+            "current_value": "2001", "suggested_value": "1999",
+            "reason": "管理员依据正式任免公告修正建议值", "final_score": 6,
+        }, headers=founder)
+    assert changed.status_code == 200
+    reviewed = client.get(f"/api/bugs/{bid}", headers=founder).json()
+    assert reviewed["status"] == "accepted"
+    modified = reviewed["items"][0]
+    assert modified["admin_modified"] is True
+    assert modified["original"]["suggested_value"] == "2000"
+    assert modified["suggested_value"] == "1999"
+    assert modified["original"]["reason"] == "履历年份需要校正"
+    assert modified["reason"].startswith("管理员依据")
+    assert _submit(
+        client, founder, slug, variables["year"], "P1", 2001, 2000
+    ).status_code == 409
+    assert _submit(
+        client, founder, slug, variables["year"], "P1", 2001, 1999
+    ).status_code == 409
+    assert client.delete(f"/api/bugs/{bid}", headers=founder).status_code == 403
 
 
 def test_preview_hash_safe_apply_and_manual_new_officer_remains(client, founder):
@@ -155,6 +268,9 @@ def test_preview_hash_safe_apply_and_manual_new_officer_remains(client, founder)
     assert applied.json()["applied"] == 1 and applied.json()["manual_remaining"] == 1
     assert client.get(f"/api/bugs/{safe}", headers=founder).json()["status"] == "fixed"
     assert client.get(f"/api/bugs/{manual}", headers=founder).json()["status"] == "accepted"
+    assert _submit(
+        client, founder, slug, variables["year"], "C1", 2001, 2000
+    ).status_code == 409
 
 
 def test_ai_review_requires_four_inputs_and_saves_reason(client, founder, monkeypatch):

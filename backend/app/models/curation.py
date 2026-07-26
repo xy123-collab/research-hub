@@ -1,6 +1,6 @@
 """本轮新增表（均为新表，靠 create_all 自动建，无需迁移旧表）。
 
-覆盖：版本数据分类(原始/脱敏/样例)、唯一ID与脱敏规则、批量勘误子项、
+覆盖：版本数据分类(原始/脱敏/样例)、唯一ID与脱敏规则、勘误实际修改项、
 处理代码版本/授权/评论。
 """
 from datetime import datetime
@@ -42,8 +42,8 @@ class VariableMaskRule(Base):
 
 # ---------- 批量勘误子项 ----------
 class BugItem(Base):
-    """一条勘误里的一个实际修改项（批量导入时一条 Bug 含多项）。
-    打分/终审按子项逐条进行；应用到数据也按子项定位单元格。"""
+    """一个实际修改项。新批量导入的每一行各自生成一条 Bug + 一个 BugItem；
+    历史批量数据仍可能是一条 Bug 含多个子项。"""
     __tablename__ = "bug_items"
     id = Column(Integer, primary_key=True)
     bug_id = Column(Integer, ForeignKey("bugs.id"))
@@ -63,6 +63,14 @@ class BugItem(Base):
     reviewed_by = Column(Integer, ForeignKey("users.id"))
     reviewed_at = Column(DateTime)
     applied_in_version = Column(Integer, ForeignKey("data_versions.id"))
+    # 管理员选择“部分采纳”时先保留下列原始投稿，再把上方字段改成终审后的实际内容。
+    original_uid_value = Column(String(200))
+    original_var_name = Column(String(80))
+    original_current_value = Column(String(300))
+    original_suggested_value = Column(String(300))
+    original_reason = Column(Text)
+    admin_edited_by = Column(Integer, ForeignKey("users.id"))
+    admin_edited_at = Column(DateTime)
 
 
 # ---------- 处理代码：版本 / 授权 / 评论 ----------

@@ -38,6 +38,9 @@ const bugUidCheck = ref<any>(null); const bugUidChecking = ref(false)
 const bugStatusFilter = ref<'pending'|'accepted'|'fixed'|'rejected'>('pending')
 const bugDateFilter = ref<'7'|'30'|'all'>('all')
 const reviewScore = ref(5); const reviewReason = ref('')
+const showPartialEdit = ref(false)
+const partialEdit = ref<any>(null); const partialOriginal = ref<any>(null)
+const partialUidCheck = ref<any>(null); const partialUidChecking = ref(false)
 const codeModal = ref<any>(null)
 const showPublish = ref(false); const showEdit = ref(false); const showCodeAdd = ref(false)
 const pub = ref<any>({ version_id: '', changelog_zh: '', fixed: [] as number[] })
@@ -387,6 +390,12 @@ function downloadTemplate() { downloadFile(`/datasets/${slug}/bug-template`, `${
 const batchFile = ref<File | null>(null)
 const batchTitle = ref('')
 const batchValidation = ref<any>(null); const batchConfirmNew = ref(false)
+const batchRows = computed<any[]>(() => batchValidation.value?.items || [])
+const batchInvalidRows = computed(() => batchRows.value.filter((row: any) => !row.valid))
+const batchMissingIds = computed(() => Array.from(new Set(
+  batchRows.value.filter((row: any) => row.valid && row.is_new_officer)
+    .map((row: any) => row['唯一ID值'])
+)))
 function selectBatchFile(file: File | null) {
   batchFile.value = file; batchValidation.value = null; batchConfirmNew.value = false
 }
@@ -395,28 +404,101 @@ async function validateBatch() {
   const fd = new FormData(); fd.append('file', batchFile.value)
   try {
     batchValidation.value = (await api.post(`/datasets/${slug}/bugs/batch/validate`, fd)).data
-    batchConfirmNew.value = !(batchValidation.value.missing_uid_values || []).length
+    batchConfirmNew.value = !batchMissingIds.value.length
   } catch (e: any) { batchValidation.value = null; alert(e.response?.data?.detail || '校验失败') }
+}
+function removeBatchRow(rowNo: number) {
+  if (!batchValidation.value?.items) return
+  batchValidation.value.items = batchValidation.value.items.filter(
+    (row: any) => row.row_no !== rowNo
+  )
+  batchConfirmNew.value = !batchMissingIds.value.length
 }
 async function submitBatch() {
   if (!batchFile.value) { alert('请选择填好的模板文件'); return }
   if (!batchValidation.value) { alert('请先解析并校验批量文件'); return }
-  if (batchValidation.value.missing_uid_values?.length && !batchConfirmNew.value) {
+  if (!batchRows.value.length) { alert('请至少保留一条可提交的勘误'); return }
+  if (batchInvalidRows.value.length) { alert('请先删除所有标红的问题行'); return }
+  if (batchMissingIds.value.length && !batchConfirmNew.value) {
     alert('请确认列出的 ID 均为新增官员'); return
   }
   const fd = new FormData(); fd.append('file', batchFile.value)
   fd.append('title', batchTitle.value)
-  fd.append('confirmed_new_officer_ids', JSON.stringify(batchValidation.value.missing_uid_values || []))
+  fd.append('confirmed_new_officer_ids', JSON.stringify(batchMissingIds.value))
+  fd.append('included_row_numbers', JSON.stringify(batchRows.value.map((row: any) => row.row_no)))
   try {
     const r = await api.post(`/datasets/${slug}/bugs/batch`, fd)
-    alert(`已导入 ${r.data.items} 条修改，集成为一条勘误`)
+    alert(`已分别导入 ${r.data.items} 条独立勘误，可逐条查看、评分和终审`)
     batchFile.value = null; batchValidation.value = null; batchTitle.value = ''
     showBugUpload.value = false; loadTab('bugs')
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 // 逐条子项终审 / AI
 async function finalizeItem(iid: number, adopt: string, score: number) {
-  await api.post(`/bug-items/${iid}/finalize`, { adopt_level: adopt, final_score: score }); openBug(bugModal.value.id)
+  try {
+    await api.post(`/bug-items/${iid}/finalize`, { adopt_level: adopt, final_score: score })
+    await openBug(bugModal.value.id); await loadTab('bugs')
+  } catch (e: any) { alert(e.response?.data?.detail || '终审失败') }
+}
+function openPartialEditor(it: any) {
+  partialOriginal.value = {
+    uid_value: String(it.uid_value ?? ''), var_name: String(it.var_name ?? ''),
+    current_value: String(it.current_value ?? ''), suggested_value: String(it.suggested_value ?? ''),
+    reason: String(it.reason ?? '')
+  }
+  partialEdit.value = {
+    item_id: it.id, ...partialOriginal.value,
+    confirm_new_officer: !!it.is_new_officer
+  }
+  partialUidCheck.value = it.is_new_officer ? { exists: false } : { exists: true }
+  showPartialEdit.value = true
+}
+function resetPartialUidCheck() {
+  partialUidCheck.value = null
+  partialEdit.value.confirm_new_officer = false
+}
+async function checkPartialUid() {
+  const value = String(partialEdit.value?.uid_value || '').trim()
+  if (!value) { partialUidCheck.value = null; return }
+  partialUidChecking.value = true
+  try {
+    partialUidCheck.value = (await api.get(`/datasets/${slug}/bugs/id-check`, {
+      params: { value }
+    })).data
+  } catch (e: any) {
+    partialUidCheck.value = { error: e.response?.data?.detail || '唯一 ID 校验失败' }
+  } finally { partialUidChecking.value = false }
+}
+const partialChanged = computed(() => {
+  if (!partialEdit.value || !partialOriginal.value) return false
+  return ['uid_value', 'var_name', 'current_value', 'suggested_value', 'reason']
+    .some(key => String(partialEdit.value[key] ?? '').trim() !==
+      String(partialOriginal.value[key] ?? '').trim())
+})
+const canConfirmPartial = computed(() => {
+  const form = partialEdit.value
+  if (!form || !partialChanged.value) return false
+  const uidReady = partialUidCheck.value && !partialUidCheck.value.error &&
+    (partialUidCheck.value.exists || form.confirm_new_officer)
+  return !!(uidReady && form.uid_value?.trim() && form.var_name?.trim() && form.reason?.trim())
+})
+async function confirmPartialEdit() {
+  if (!canConfirmPartial.value) {
+    alert('请至少实际修改一项，并完成唯一 ID 校验及必填内容'); return
+  }
+  try {
+    await api.post(`/bug-items/${partialEdit.value.item_id}/finalize-partial`, {
+      uid_value: partialEdit.value.uid_value,
+      var_name: partialEdit.value.var_name,
+      current_value: partialEdit.value.current_value,
+      suggested_value: partialEdit.value.suggested_value,
+      reason: partialEdit.value.reason,
+      confirm_new_officer: partialEdit.value.confirm_new_officer,
+      final_score: 6
+    })
+    showPartialEdit.value = false
+    await openBug(bugModal.value.id); await loadTab('bugs')
+  } catch (e: any) { alert(e.response?.data?.detail || '部分采纳失败') }
 }
 async function aiReviewItem(iid: number) {
   try { await api.post(`/bug-items/${iid}/ai-review`); openBug(bugModal.value.id) }
@@ -541,8 +623,24 @@ async function aiReviewBug(id: number) {
   catch (e: any) { alert(e.response?.data?.detail || 'AI 评分失败') }
 }
 async function finalizeBug(id: number, adopt: string, score: number) {
-  await api.post(`/bugs/${id}/finalize`, { adopt_level: adopt, final_score: score })
-  openBug(id); loadTab('bugs')
+  if (adopt === 'partial') {
+    if (bugModal.value?.items?.length !== 1) {
+      alert('历史批量勘误请在每个修改项旁分别选择“部分”并修改'); return
+    }
+    openPartialEditor(bugModal.value.items[0]); return
+  }
+  try {
+    await api.post(`/bugs/${id}/finalize`, { adopt_level: adopt, final_score: score })
+    await openBug(id); await loadTab('bugs')
+  } catch (e: any) { alert(e.response?.data?.detail || '终审失败') }
+}
+async function deleteBug(id: number) {
+  if (!confirm('确认删除这条尚未确认的勘误？删除后无法恢复。')) return
+  try {
+    await api.delete(`/bugs/${id}`)
+    bugModal.value = null
+    await loadTab('bugs')
+  } catch (e: any) { alert(e.response?.data?.detail || '删除失败') }
 }
 
 async function copyCorrectionScript() {
@@ -1590,8 +1688,8 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
 
         <div v-else>
-          <p class="text-xs text-gray-500 mb-3">下载最新模板，分别填写“说明”和“证据”。上传后必须先校验唯一 ID，再确认提交。</p>
-          <input v-model="batchTitle" class="input mb-2" placeholder="批量勘误标题（可选）" />
+          <p class="text-xs text-gray-500 mb-3">每一行会生成一条独立勘误。上传后逐行校验；问题行会标红，可单独删除后提交其余行。</p>
+          <input v-model="batchTitle" class="input mb-2" placeholder="本批来源备注（可选；不会合并勘误）" />
           <div class="flex flex-wrap items-center gap-2">
             <button class="btn-ghost text-xs" @click="downloadTemplate">下载最新模板</button>
             <input type="file" accept=".xlsx,.csv"
@@ -1599,21 +1697,41 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <button class="btn-primary text-xs" @click="validateBatch">解析并校验</button>
           </div>
           <div v-if="batchValidation" class="mt-3 p-3 rounded bg-paper border border-line text-sm">
-            <p>已校验 {{ batchValidation.rows }} 行；依据原始版本 {{ batchValidation.source_version }}。</p>
-            <template v-if="batchValidation.missing_uid_values?.length">
+            <p>
+              已解析 {{ batchValidation.rows }} 行；当前保留 {{ batchRows.length }} 行，
+              其中 {{ batchInvalidRows.length }} 行有问题。依据原始版本 {{ batchValidation.source_version }}。
+            </p>
+            <div class="mt-3 border border-line rounded divide-y divide-line max-h-64 overflow-y-auto bg-white">
+              <div v-for="row in batchRows" :key="row.row_no"
+                :class="['p-2 flex items-start gap-2', row.valid ? '' : 'bg-red-50']">
+                <span class="font-mono text-xs text-gray-400 shrink-0">第{{ row.row_no }}行</span>
+                <div class="min-w-0 flex-1">
+                  <p class="text-xs">
+                    <span class="font-mono">{{ row['唯一ID值'] }}</span> ·
+                    {{ row['变量名'] }}：{{ row['当前值'] }} → {{ row['建议值'] }}
+                  </p>
+                  <p class="text-xs text-gray-500 mt-1">{{ row['说明'] }}</p>
+                  <p v-if="row.is_new_officer && row.valid" class="text-xs text-amber-700 mt-1">现有数据无此 ID，需确认新增官员。</p>
+                  <p v-for="problem in row.problems" :key="problem" class="text-xs text-red-600 mt-1">问题：{{ problem }}</p>
+                </div>
+                <button class="text-xs text-red-600 shrink-0" @click="removeBatchRow(row.row_no)">删除此行</button>
+              </div>
+              <p v-if="!batchRows.length" class="p-4 text-center text-gray-400 text-xs">所有行均已删除。</p>
+            </div>
+            <template v-if="batchMissingIds.length">
               <p class="text-amber-700 mt-2">以下 ID 在现有数据中不存在：</p>
-              <p class="font-mono text-xs mt-1 break-words">{{ batchValidation.missing_uid_values.join('、') }}</p>
+              <p class="font-mono text-xs mt-1 break-words">{{ batchMissingIds.join('、') }}</p>
               <label class="flex items-center gap-2 mt-2">
                 <input type="checkbox" v-model="batchConfirmNew" />
                 我确认以上均为新增官员
               </label>
             </template>
-            <p v-else class="text-emerald-700 mt-2">全部唯一 ID 均在现有数据中找到。</p>
+            <p v-else-if="batchRows.length && !batchInvalidRows.length" class="text-emerald-700 mt-2">保留行均已通过校验。</p>
           </div>
           <div class="flex justify-end gap-2 mt-4">
             <button class="btn-ghost" @click="showBugUpload=false">取消</button>
             <button class="btn-primary"
-              :disabled="!batchValidation || (batchValidation.missing_uid_values?.length && !batchConfirmNew)"
+              :disabled="!batchValidation || !batchRows.length || !!batchInvalidRows.length || (!!batchMissingIds.length && !batchConfirmNew)"
               @click="submitBatch">确认导入</button>
           </div>
         </div>
@@ -1625,7 +1743,10 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
       <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <div class="flex items-center justify-between">
           <h3 class="text-lg">勘误 #{{ bugModal.id }} <span class="tag ml-1">{{ bugStatusLabel[bugModal.status] || bugModal.status }}</span></h3>
-          <button @click="bugModal=null" class="text-gray-400">×</button>
+          <div class="flex items-center gap-2">
+            <button v-if="bugModal.can_delete" @click="deleteBug(bugModal.id)" class="text-xs text-red-600">删除勘误</button>
+            <button @click="bugModal=null" class="text-gray-400">×</button>
+          </div>
         </div>
         <p class="text-sm mt-2">提交人：<router-link :to="`/users/${bugModal.reporter.id}`" class="text-accent">{{ bugModal.reporter.name }}</router-link>
           <span class="text-gray-400"> · {{ bugModal.created_at ? formatChinaDateTime(bugModal.created_at) : '历史时间未知' }} · {{ bugModal.reviewer_count }} 人参与评分</span>
@@ -1650,6 +1771,24 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             </div>
             <p v-if="it.reason" class="text-xs text-gray-500 mt-1">说明：{{ it.reason }}</p>
             <p v-if="it.evidence" class="text-xs text-gray-500 mt-1">证据：{{ it.evidence }}</p>
+            <div v-if="it.admin_modified" class="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+              <div class="rounded border border-line bg-paper p-2">
+                <div class="label-cap">提交人原始内容</div>
+                <p class="text-xs mt-1 font-mono">{{ it.original.uid_value }} · {{ it.original.var_name }}</p>
+                <p class="text-xs mt-1">{{ it.original.current_value }} → {{ it.original.suggested_value }}</p>
+                <p class="text-xs text-gray-500 mt-1">理由：{{ it.original.reason }}</p>
+              </div>
+              <div class="rounded border border-accent/30 bg-white p-2">
+                <div class="label-cap text-accent">管理员修改后</div>
+                <p class="text-xs mt-1 font-mono">{{ it.uid_value }} · {{ it.var_name }}</p>
+                <p class="text-xs mt-1">{{ it.current_value }} → {{ it.suggested_value }}</p>
+                <p class="text-xs text-gray-500 mt-1">理由：{{ it.reason }}</p>
+                <p class="text-[11px] text-gray-400 mt-1">
+                  {{ it.admin_editor?.name || '管理员' }}
+                  <span v-if="it.admin_edited_at"> · {{ formatChinaDateTime(it.admin_edited_at) }}</span>
+                </p>
+              </div>
+            </div>
             <div class="flex items-center gap-2 mt-1 flex-wrap">
               <span v-if="it.ai_score!=null" class="text-xs text-gray-400">AI {{ it.ai_score }}/10</span>
               <span v-if="it.ai_reason" class="text-xs text-gray-500">理由：{{ it.ai_reason }}</span>
@@ -1657,7 +1796,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <template v-if="d.is_admin && it.status==='pending'">
                 <button class="btn-ghost text-[11px]" @click="aiReviewItem(it.id)">AI评分</button>
                 <button class="btn-primary text-[11px]" @click="finalizeItem(it.id,'full',9)">采纳(9)</button>
-                <button class="btn-ghost text-[11px]" @click="finalizeItem(it.id,'partial',6)">部分(6)</button>
+                <button class="btn-ghost text-[11px]" @click="openPartialEditor(it)">部分(需修改)</button>
                 <button class="btn-ghost text-[11px]" @click="finalizeItem(it.id,'reject',0)">拒绝</button>
               </template>
             </div>
@@ -1691,9 +1830,61 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <div class="label-cap mb-1">终审（管理员）</div>
           <div class="flex gap-1">
             <button class="btn-primary text-xs" @click="finalizeBug(bugModal.id,'full',9)">全部采纳(9)</button>
-            <button class="btn-ghost text-xs" @click="finalizeBug(bugModal.id,'partial',6)">部分采纳(6)</button>
+            <button class="btn-ghost text-xs" @click="finalizeBug(bugModal.id,'partial',6)">部分采纳（先修改）</button>
             <button class="btn-ghost text-xs" @click="finalizeBug(bugModal.id,'reject',0)">不采纳</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 管理员部分采纳：必须修改后确认 -->
+    <div v-if="showPartialEdit && partialEdit" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]">
+      <div class="bg-white rounded-lg max-w-2xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-lg">部分采纳：修改勘误</h3>
+            <p class="text-xs text-gray-500 mt-1">至少实际修改一项，确认后才会进入“已采纳未修改”。原始投稿会永久保留在详情中。</p>
+          </div>
+          <button @click="showPartialEdit=false" class="text-gray-400">×</button>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+          <div>
+            <label class="label-cap">唯一值 *</label>
+            <input v-model="partialEdit.uid_value" class="input mt-1"
+              @input="resetPartialUidCheck" @blur="checkPartialUid" />
+          </div>
+          <div>
+            <label class="label-cap">变量 *</label>
+            <select v-model="partialEdit.var_name" class="input mt-1">
+              <option value="">选择变量</option>
+              <option v-for="v in vars" :key="v.id" :value="v.var_name">{{ v.var_name }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="label-cap">当前值</label>
+            <input v-model="partialEdit.current_value" class="input mt-1" />
+          </div>
+          <div>
+            <label class="label-cap">建议值</label>
+            <input v-model="partialEdit.suggested_value" class="input mt-1" />
+          </div>
+        </div>
+        <p v-if="partialUidChecking" class="text-xs text-gray-400 mt-2">正在核对唯一 ID…</p>
+        <p v-else-if="partialUidCheck?.error" class="text-xs text-red-600 mt-2">{{ partialUidCheck.error }}</p>
+        <p v-else-if="partialUidCheck?.exists" class="text-xs text-emerald-700 mt-2">唯一 ID 已在最新原始版本中找到。</p>
+        <label v-else-if="partialUidCheck && !partialUidCheck.exists"
+          class="flex items-center gap-2 text-sm mt-2 p-2 rounded bg-amber-50 border border-amber-200">
+          <input type="checkbox" v-model="partialEdit.confirm_new_officer" />
+          我确认修改后的唯一 ID 是新增官员
+        </label>
+        <label class="label-cap mt-3">修改理由 *</label>
+        <textarea v-model="partialEdit.reason" class="input mt-1" rows="4"></textarea>
+        <p :class="['text-xs mt-2', partialChanged ? 'text-emerald-700' : 'text-amber-700']">
+          {{ partialChanged ? '已检测到修改，可以在完成校验后确认。' : '尚未修改任何内容，不能确认部分采纳。' }}
+        </p>
+        <div class="flex justify-end gap-2 mt-4">
+          <button class="btn-ghost" @click="showPartialEdit=false">取消</button>
+          <button class="btn-primary" :disabled="!canConfirmPartial" @click="confirmPartialEdit">确认修改并部分采纳</button>
         </div>
       </div>
     </div>

@@ -33,8 +33,8 @@ def test_bug_template_downloads_xlsx(client, member):
     assert r.content[:2] == b"PK"   # xlsx=zip
 
 
-def test_batch_correction_integrates_items_and_per_item_finalize(client, founder, member):
-    # 批量提交 CSV → 集成为一条含多子项的勘误
+def test_batch_correction_creates_independent_bugs(client, founder, member):
+    # 批量提交 CSV → 每行成为独立勘误，分别终审
     data = _make_stata([{"officerID": "O1", "begin_yr": 1999, "gender": 1},
                         {"officerID": "O2", "begin_yr": 2000, "gender": 1}])
     client.post("/api/datasets/cod/versions",
@@ -50,9 +50,10 @@ def test_batch_correction_integrates_items_and_per_item_finalize(client, founder
     r = client.post("/api/datasets/cod/bugs/batch", data={"title": "批量A"},
                     files=files, headers=member)
     assert r.status_code == 200 and r.json()["items"] == 2
-    bid = r.json()["id"]
+    assert len(r.json()["ids"]) == 2
+    bid = r.json()["ids"][0]
     detail = client.get(f"/api/bugs/{bid}", headers=member).json()
-    assert len(detail["items"]) == 2
+    assert len(detail["items"]) == 1
     it0 = detail["items"][0]["id"]
     # 逐条终审（管理员）
     fin = client.post(f"/api/bug-items/{it0}/finalize",
