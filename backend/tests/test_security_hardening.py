@@ -162,6 +162,24 @@ def test_a6_production_guard_rejects_ephemeral_or_incomplete_storage():
         Settings(**base, STORAGE_BACKEND="cos").assert_production_ready()
 
 
+@pytest.mark.parametrize("raw", [
+    "cos", " COS ", '"cos"', "'cos'", "\ufeffcos", "cos\u200b", "cos\n",
+])
+def test_a6_storage_backend_normalizes_dashboard_input(raw):
+    """Render 面板复制值时带引号/不可见字符，也应稳定解析为 cos。"""
+    from app.core.config import Settings
+    value = Settings(STORAGE_BACKEND=raw).STORAGE_BACKEND
+    assert value == "cos"
+
+
+def test_a6_storage_guard_reports_actual_resolved_value():
+    from app.core.config import Settings
+    s = Settings(DATABASE_URL="postgresql://u:p@h:5432/db",
+                 JWT_SECRET="a-real-strong-secret", STORAGE_BACKEND="local")
+    with pytest.raises(RuntimeError, match="实际解析到 STORAGE_BACKEND='local'"):
+        s.assert_production_ready()
+
+
 def test_a6_rate_limit_blocks_burst(client, monkeypatch):
     """限流平时在测试里关着（整套测试同一个 IP），这里单独打开验证确实会 429。"""
     from app.core import ratelimit

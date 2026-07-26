@@ -32,6 +32,22 @@ class Settings(BaseSettings):
     COS_SECRET_ID: str = ""
     COS_SECRET_KEY: str = ""
     COS_SIGNED_URL_TTL: int = 600
+
+    @field_validator("STORAGE_BACKEND", mode="before")
+    @classmethod
+    def _normalize_storage_backend(cls, value):
+        """兼容面板手填时误带引号、BOM 或零宽空格的情况。
+
+        Render 的值本应是纯 `cos`，但人工复制 `"cos"` 或 `cos<零宽空格>` 时，
+        旧代码会误判且错误信息看不出真实值。
+        """
+        if not isinstance(value, str):
+            return value
+        normalized = value.replace("\ufeff", "").replace("\u200b", "").strip()
+        if len(normalized) >= 2 and normalized[0] == normalized[-1] \
+                and normalized[0] in ("'", '"'):
+            normalized = normalized[1:-1].strip()
+        return normalized.lower()
     # ---- AI 网关（OpenAI 兼容；默认腾讯云 TokenHub）----
     AI_PROVIDER: str = "none"            # none | tokenhub | openai | local（none=关闭）
     AI_BASE_URL: str = "https://tokenhub.tencentmaas.com/v1"
@@ -123,7 +139,8 @@ class Settings(BaseSettings):
         storage_backend = self.STORAGE_BACKEND.strip().lower()
         if storage_backend != "cos":
             raise RuntimeError(
-                "启动被拒绝：生产文件存储必须使用腾讯云 COS（STORAGE_BACKEND=cos）。"
+                "启动被拒绝：生产文件存储必须使用腾讯云 COS（STORAGE_BACKEND=cos）；"
+                f"程序实际解析到 STORAGE_BACKEND={self.STORAGE_BACKEND!r}。"
                 "本地容器磁盘会在重部署后清空，并让数据库中已有的 COS 文件全部不可见。")
         missing_cos = [
             name for name in ("COS_BUCKET", "COS_REGION", "COS_SECRET_ID", "COS_SECRET_KEY")

@@ -2,9 +2,19 @@
 set -e
 echo "[entrypoint] 等待数据库就绪..."
 python - <<'PY'
-import time, sys
+import os, time, sys
 from sqlalchemy import create_engine, text
 from app.core.config import settings
+raw_storage = os.environ.get("STORAGE_BACKEND")
+cos_presence = {
+    name: bool(os.environ.get(name, "").strip())
+    for name in ("COS_BUCKET", "COS_REGION", "COS_SECRET_ID", "COS_SECRET_KEY")
+}
+print(
+    "[entrypoint] 存储配置诊断："
+    f"STORAGE_BACKEND 原始值={raw_storage!r}，解析值={settings.STORAGE_BACKEND!r}；"
+    f"COS 变量是否存在={cos_presence}"
+)
 for i in range(30):
     try:
         e = create_engine(settings.DATABASE_URL)
