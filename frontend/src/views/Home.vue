@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import api from '../api'
 import Icon from '../components/Icon.vue'
+import { formatChinaDate } from '../utils/time'
 
 const { t } = useI18n(); const router = useRouter()
 const mineDs = ref<any[]>([]); const allDs = ref<any[]>([]); const myGroups = ref<any[]>([])
@@ -116,7 +117,7 @@ const evColor = (x: string) => x === 'version' ? '#2d4a7c' : '#7c2d3a'
         <span class="dot" :style="{ background: evColor(e.type) }"></span>
         <span class="text-gray-800">{{ e.text }}</span>
         <span class="text-gray-400">· {{ e.ds_name }}</span>
-        <span class="ml-auto text-xs text-gray-400">{{ e.at }}</span>
+        <span class="ml-auto text-xs text-gray-400">{{ formatChinaDate(e.at) }}</span>
       </div>
     </div>
   </section>
@@ -141,7 +142,7 @@ const evColor = (x: string) => x === 'version' ? '#2d4a7c' : '#7c2d3a'
         <div v-if="d.recent && d.recent.length" class="mt-3 space-y-1">
           <div v-for="(e,i) in d.recent" :key="i" class="flex items-center gap-2 text-xs text-gray-500">
             <span class="dot" :style="{ background: evColor(e.type) }"></span>
-            <span>{{ e.text }}</span><span v-if="e.at" class="text-gray-400">· {{ e.at }}</span>
+            <span>{{ e.text }}</span><span v-if="e.at" class="text-gray-400">· {{ formatChinaDate(e.at) }}</span>
           </div>
         </div>
         <div class="mt-3 pt-3 border-t border-line flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">

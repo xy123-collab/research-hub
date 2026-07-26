@@ -12,6 +12,7 @@ import MentionInput from '../components/MentionInput.vue'
 import DownloadHistoryModal from '../components/DownloadHistoryModal.vue'
 import AuthImage from '../components/AuthImage.vue'
 import { downloadFile } from '../utils/download'
+import { formatChinaDateTime } from '../utils/time'
 
 const route = useRoute(); const router = useRouter(); const { t } = useI18n(); const auth = useAuth()
 const uid = ref<number>(0)
@@ -913,7 +914,7 @@ async function deactivateAccount() {
             <div class="flex items-start gap-2">
               <div class="flex-1">
                 <div class="text-sm"><b>{{ c.user_name }}</b>
-                  <span class="text-gray-400 text-xs ml-2">{{ c.created_at }}</span></div>
+                  <span class="text-gray-400 text-xs ml-2">{{ formatChinaDateTime(c.created_at) }}</span></div>
                 <p class="text-sm text-gray-700 whitespace-pre-line">{{ c.content }}</p>
                 <div class="text-xs mt-0.5 flex gap-3">
                   <button class="text-accent" @click="replyTo=c">回复</button>
@@ -924,7 +925,7 @@ async function deactivateAccount() {
             <!-- 回复 -->
             <div v-for="r in repliesOf(c.id)" :key="r.id" class="ml-6 mt-2 pl-3 border-l border-line">
               <div class="text-sm"><b>{{ r.user_name }}</b>
-                <span class="text-gray-400 text-xs ml-2">{{ r.created_at }}</span></div>
+                <span class="text-gray-400 text-xs ml-2">{{ formatChinaDateTime(r.created_at) }}</span></div>
               <p class="text-sm text-gray-700 whitespace-pre-line">{{ r.content }}</p>
               <div class="text-xs mt-0.5 flex gap-3">
                 <button class="text-accent" @click="replyTo=c">回复</button>
@@ -1033,7 +1034,7 @@ async function deactivateAccount() {
             <div class="flex items-center gap-2 text-xs text-gray-400">
               <span class="tag">{{ CATS[e.category] || '其他' }}</span>
               <span>{{ e.author_name }}</span>
-              <span>{{ e.created_at }}</span>
+              <span>{{ formatChinaDateTime(e.created_at) }}</span>
               <button class="ml-auto text-accent2" @click="delEntry(e.id)">删除</button>
             </div>
             <div class="font-medium text-sm mt-1" v-if="e.title">{{ e.title }}</div>

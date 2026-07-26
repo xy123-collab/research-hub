@@ -10,6 +10,7 @@ from ..models.community import (Post, PostTag, PostReaction, PostComment, PostAd
                                 PostAttachment, PostFollow, PostCommentReaction,
                                 Project, ProjectTag)
 from ..schemas.models import PostIn, CommentIn, ProjectIn
+from ..core.time import china_iso
 
 router = APIRouter(tags=["community"])
 
@@ -21,10 +22,7 @@ POST_TYPES = {
 
 
 def _bj(dt):
-    if not dt:
-        return None
-    from datetime import timedelta
-    return (dt + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+    return china_iso(dt)
 
 
 def _comment_count(db: Session, pid: int) -> int:
@@ -684,10 +682,7 @@ def get_project(pid: int, db: Session = Depends(get_db), user: User = Depends(ge
 
 # -------- 项目评论 --------
 def _proj_bj(dt):
-    if not dt:
-        return None
-    from datetime import timedelta
-    return (dt + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+    return china_iso(dt)
 
 
 @router.get("/projects/{pid}/comments")

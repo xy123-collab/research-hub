@@ -11,6 +11,7 @@ import PostCard from '../components/PostCard.vue'
 import PostComposer from '../components/PostComposer.vue'
 import MentionInput from '../components/MentionInput.vue'
 import DownloadHistoryModal from '../components/DownloadHistoryModal.vue'
+import { formatChinaDate, formatChinaDateTime } from '../utils/time'
 
 const route = useRoute(); const router = useRouter(); const { t } = useI18n(); const auth = useAuth()
 const slug = route.params.slug as string
@@ -862,7 +863,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <td class="py-1"><router-link :to="`/users/${m.user_id}`" class="text-accent hover:underline">{{ m.name }}</router-link>
                 <span class="text-gray-400 text-xs ml-1">ID {{ m.user_id }}</span></td>
               <td><span class="tag" :class="m.is_lead ? 'border-accent text-accent' : ''">{{ roleLabel(m) }}</span></td>
-              <td class="text-gray-400 text-xs">{{ m.joined_at?.slice(0,10) }}</td>
+              <td class="text-gray-400 text-xs">{{ formatChinaDate(m.joined_at) }}</td>
             </tr>
           </table>
           <button v-if="(d.members||[]).length>3" class="text-xs text-accent mt-2 hover:underline" @click="showMembers=true">查看全部 {{ d.members.length }} 名成员 →</button>
@@ -894,7 +895,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <div class="text-sm text-gray-800">{{ e.title }}</div>
               <div v-if="e.detail" class="text-xs text-gray-500 mt-0.5 line-clamp-2">{{ e.detail }}</div>
             </div>
-            <div class="text-xs text-gray-400 whitespace-nowrap">{{ actLabel(e.type) }}<span v-if="e.at"> · {{ (e.at||'').slice(0,10) }}</span></div>
+            <div class="text-xs text-gray-400 whitespace-nowrap">{{ actLabel(e.type) }}<span v-if="e.at"> · {{ formatChinaDate(e.at) }}</span></div>
           </div>
           <p v-if="!acts.length" class="px-4 py-4 text-gray-400 text-sm">{{ t('ds.noActivity') }}</p>
         </div>
@@ -975,7 +976,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <span class="tag border shrink-0">{{ fcLabel[c.target]||c.target }}</span>
             <div class="min-w-0 flex-1">
               <p class="text-gray-800 break-words">{{ c.content }}</p>
-              <p class="text-xs text-gray-400">{{ c.reporter }} · {{ (c.created_at||'').slice(0,16) }}</p>
+              <p class="text-xs text-gray-400">{{ c.reporter }} · {{ formatChinaDateTime(c.created_at) }}</p>
             </div>
             <div class="shrink-0 flex items-center gap-2">
               <template v-if="fileCorrections.is_admin && c.status==='pending'">
@@ -1473,7 +1474,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <span class="font-mono text-xs">{{ v.version_label }}</span>
             <span v-if="v.is_current" class="tag">当前</span>
             <span class="text-gray-500 truncate">{{ v.changelog }}</span>
-            <span class="text-gray-400 text-xs ml-auto">{{ v.created_at }}</span>
+            <span class="text-gray-400 text-xs ml-auto">{{ formatChinaDateTime(v.created_at) }}</span>
             <button v-if="codeModal.is_member" class="btn-ghost text-[11px]" @click="downloadCode(v.id)">下载</button>
           </div>
         </div>
@@ -1484,7 +1485,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <div v-for="c in codeComments" :key="c.id" class="text-sm border-t border-line py-1">
             <router-link :to="`/users/${c.user_id}`" class="text-accent hover:underline">{{ c.name }}</router-link>
             <span v-if="c.is_correction" class="tag border-accent2 text-accent2 ml-1">勘误</span>
-            <span class="text-gray-400 text-xs ml-1">{{ c.created_at }}</span>
+            <span class="text-gray-400 text-xs ml-1">{{ formatChinaDateTime(c.created_at) }}</span>
             <p class="text-gray-600">{{ c.content }}</p>
           </div>
           <div v-if="codeModal.is_member" class="mt-2">

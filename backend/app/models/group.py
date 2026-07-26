@@ -35,6 +35,8 @@ class GroupJoinRequest(Base):
     status = Column(String(20), default="pending")   # pending|approved|rejected
     decided_by = Column(Integer, ForeignKey("users.id"))
     decided_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Charter(Base):

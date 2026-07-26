@@ -10,7 +10,7 @@
 
 同一套 build_notifications 供「站内消息中心」与「每日邮件摘要」共用。
 """
-from datetime import datetime, timedelta
+from datetime import datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from ..core.db import get_db
@@ -28,14 +28,13 @@ from ..models.version import DataVersion
 from ..models.workspace import Workspace, WorkspaceMember
 from ..models.extras import NotificationState
 from ..models.governance import FeedbackTicket
+from ..core.time import china_iso
 
 router = APIRouter(tags=["notifications"])
 
 
 def _bj(dt):
-    if not dt:
-        return None
-    return (dt + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+    return china_iso(dt)
 
 # 分类元信息：key -> (中文名, 圆点色)
 CATEGORY_META = {
@@ -64,9 +63,13 @@ def build_notifications(db: Session, user: User) -> dict:
         items.append(kw)
 
     # 我管理的数据集 / 课题组
-    ds_admin_ids = [m.dataset_id for m in db.query(DatasetMember).filter(
+    ds_admin_ids = {m.dataset_id for m in db.query(DatasetMember).filter(
         DatasetMember.user_id == user.id,
-        DatasetMember.ds_role.in_(DS_ADMIN_ROLES)).all()]
+        DatasetMember.ds_role.in_(DS_ADMIN_ROLES)).all()}
+    # 兼容历史数据：早期库可能只有 datasets.founder_id，未补 founder 成员行。
+    ds_admin_ids.update(d.id for d in db.query(Dataset).filter(
+        Dataset.founder_id == user.id, Dataset.is_deleted.is_(False)).all())
+    ds_admin_ids = sorted(ds_admin_ids)
     grp_admin_ids = [m.group_id for m in db.query(GroupMember).filter(
         GroupMember.user_id == user.id, GroupMember.status == "active",
         GroupMember.group_role.in_(GROUP_ADMIN_ROLES)).all()]
@@ -84,7 +87,8 @@ def build_notifications(db: Session, user: User) -> dict:
             add(type="dataset_join", level="action", category="todo",
                 title="数据集加入申请",
                 subtitle=f"{uname(r.user_id)} 申请加入「{d.name_zh if d else ''}」",
-                link=f"/datasets/{d.slug}?tab=access" if d else "/", sort=r.id)
+                link=f"/datasets/{d.slug}?tab=access" if d else "/",
+                at_dt=r.created_at, sort=r.id)
         for r in db.query(DownloadRequest).filter(
                 DownloadRequest.dataset_id.in_(ds_admin_ids),
                 DownloadRequest.status == "pending").all():
@@ -93,14 +97,15 @@ def build_notifications(db: Session, user: User) -> dict:
                 title="数据下载申请",
                 subtitle=f"{uname(r.user_id)} 申请下载「{d.name_zh if d else ''}」",
                 link=f"/datasets/{d.slug}?tab=access" if d else "/",
-                at=str(r.created_at) if r.created_at else None, sort=r.id)
+                at_dt=r.created_at, sort=r.id)
         for b in db.query(Bug).filter(
                 Bug.dataset_id.in_(ds_admin_ids), Bug.status == "pending").all():
             d = ds_map.get(b.dataset_id)
             add(type="correction_review", level="action", category="todo",
                 title="勘误待终审",
                 subtitle=f"「{d.name_zh if d else ''}」勘误 #{b.id} 等待审核",
-                link=f"/datasets/{d.slug}?tab=bugs&bug={b.id}" if d else "/", sort=b.id)
+                link=f"/datasets/{d.slug}?tab=bugs&bug={b.id}" if d else "/",
+                at_dt=b.created_at, sort=b.id)
         from ..models.mapping import FileCorrection
         _fc_label = {"codebook": "codebook", "mapping": "对照表"}
         for r in db.query(FileCorrection).filter(
@@ -111,7 +116,7 @@ def build_notifications(db: Session, user: User) -> dict:
                 title=f"{_fc_label.get(r.target, r.target)}勘误待确认",
                 subtitle=f"「{d.name_zh if d else ''}」有一条{_fc_label.get(r.target, r.target)}勘误待采纳",
                 link=f"/datasets/{d.slug}?tab=versions" if d else "/",
-                at=str(r.created_at) if r.created_at else None, sort=r.id)
+                at_dt=r.created_at, sort=r.id)
         from ..models.extras import PermRequest
         from ..models.access import PERM_LABELS_ZH
         for r in db.query(PermRequest).filter(
@@ -122,7 +127,7 @@ def build_notifications(db: Session, user: User) -> dict:
                 title="权限申请待审批",
                 subtitle=f"{uname(r.user_id)} 申请「{PERM_LABELS_ZH.get(r.perm, r.perm)}」",
                 link=f"/datasets/{d.slug}?tab=access" if d else "/",
-                at=str(r.created_at) if r.created_at else None, sort=r.id)
+                at_dt=r.created_at, sort=r.id)
     if grp_admin_ids:
         for r in db.query(GroupJoinRequest).filter(
                 GroupJoinRequest.group_id.in_(grp_admin_ids),
@@ -131,7 +136,8 @@ def build_notifications(db: Session, user: User) -> dict:
             add(type="group_join", level="action", category="todo",
                 title="课题组加入申请",
                 subtitle=f"{uname(r.user_id)} 申请加入「{g.name_zh if g else ''}」",
-                link=f"/groups/{g.slug}" if g else "/", sort=r.id)
+                link=f"/groups/{g.slug}" if g else "/",
+                at_dt=r.created_at, sort=r.id)
         for r in db.query(DatasetGroupRequest).filter(
                 DatasetGroupRequest.group_id.in_(grp_admin_ids),
                 DatasetGroupRequest.status == "pending").all():
@@ -141,7 +147,8 @@ def build_notifications(db: Session, user: User) -> dict:
             add(type="dataset_group_request", level="action", category="todo",
                 title="数据集归属申请",
                 subtitle=f"「{d.name_zh if d else ''}」申请{kind}课题组",
-                link=f"/groups/{g.slug}" if g else "/", sort=r.id)
+                link=f"/groups/{g.slug}" if g else "/",
+                at_dt=r.created_at, sort=r.id)
 
     # ===== access：权限与身份（info）=====
     for r in db.query(JoinRequest).filter(
@@ -153,7 +160,7 @@ def build_notifications(db: Session, user: User) -> dict:
             title="数据集加入申请" + ("已通过" if ok else "被拒绝"),
             subtitle=f"「{d.name_zh if d else ''}」",
             link=f"/datasets/{d.slug}" if d else "/",
-            at=str(r.decided_at) if r.decided_at else None, sort=r.id)
+            at_dt=r.decided_at, sort=r.id)
     for r in db.query(GroupJoinRequest).filter(
             GroupJoinRequest.user_id == user.id,
             GroupJoinRequest.status.in_(["approved", "rejected"])).order_by(
@@ -163,7 +170,7 @@ def build_notifications(db: Session, user: User) -> dict:
             title="课题组加入申请" + ("已通过" if ok else "被拒绝"),
             subtitle=f"「{g.name_zh if g else ''}」",
             link=f"/groups/{g.slug}" if g else "/",
-            at=str(r.decided_at) if r.decided_at else None, sort=r.id)
+            at_dt=r.decided_at, sort=r.id)
     for r in db.query(DownloadRequest).filter(
             DownloadRequest.user_id == user.id,
             DownloadRequest.status.in_(["approved", "rejected"])).order_by(
@@ -173,7 +180,7 @@ def build_notifications(db: Session, user: User) -> dict:
             title="下载申请" + ("已批准" if ok else "被拒绝"),
             subtitle=f"「{d.name_zh if d else ''}」",
             link=f"/datasets/{d.slug}?tab=versions" if d else "/",
-            at=str(r.decided_at) if r.decided_at else None, sort=r.id)
+            at_dt=r.decided_at, sort=r.id)
     # 被设为管理员（当前身份提示）
     for m in db.query(DatasetMember).filter(
             DatasetMember.user_id == user.id,

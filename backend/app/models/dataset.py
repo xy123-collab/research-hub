@@ -1,3 +1,4 @@
+from datetime import datetime
 from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Text, DateTime, JSON
 from ..core.db import Base
 
@@ -52,6 +53,9 @@ class JoinRequest(Base):
     status = Column(String(20), default="pending")
     decided_by = Column(Integer, ForeignKey("users.id"))
     decided_at = Column(DateTime)
+    # 生产初始迁移已有这两列，旧 ORM 漏映射导致消息中心拿不到申请时间。
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Variable(Base):

@@ -6,6 +6,7 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import Icon from './Icon.vue'
+import { formatChinaDateTime } from '../utils/time'
 
 const router = useRouter()
 const open = ref(false)
@@ -26,6 +27,11 @@ async function markAllRead() {
   try { await api.post('/notifications/mark-read'); await load() } catch {}
 }
 
+async function toggleOpen() {
+  open.value = !open.value
+  if (open.value) await load()
+}
+
 function go(it: any) {
   open.value = false
   if (it.link) router.push(it.link)
@@ -36,16 +42,20 @@ const hasAny = computed(() => groups.value.some(g => g.items?.length))
 
 onMounted(() => {
   load()
-  timer = setInterval(load, 60000)
+  timer = setInterval(load, 15000)
+  window.addEventListener('focus', load)
 })
-onUnmounted(() => timer && clearInterval(timer))
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+  window.removeEventListener('focus', load)
+})
 defineExpose({ load })
 </script>
 
 <template>
   <div>
     <!-- 悬浮铃铛（未读用红色圆形数字角标）-->
-    <button class="notif-fab" @click="open = !open" :title="'消息 (' + badgeCount + ')'">
+    <button class="notif-fab" @click="toggleOpen" :title="'消息 (' + badgeCount + ')'">
       <Icon name="bell" class="ico" style="width:22px;height:22px" />
       <span v-if="badgeCount > 0" class="notif-badge">{{ badge }}</span>
     </button>
@@ -80,7 +90,7 @@ defineExpose({ load })
               <span class="min-w-0 flex-1 text-left">
                 <span class="block text-sm text-gray-800">{{ it.title }}
                   <span v-if="it.unread" class="notif-new">新</span>
-                  <span v-if="it.at" class="text-[11px] text-gray-400 font-normal ml-1">{{ it.at }}</span></span>
+                  <span v-if="it.at" class="text-[11px] text-gray-400 font-normal ml-1">{{ formatChinaDateTime(it.at) }}</span></span>
                 <span class="block text-xs text-gray-500 truncate">{{ it.subtitle }}</span>
               </span>
               <span v-if="it.level === 'action'" class="notif-cta">去处理</span>

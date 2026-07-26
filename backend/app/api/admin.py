@@ -26,6 +26,7 @@ from ..models.skill import Skill
 from ..models.extras import CollabSection, SkillComment, PasswordResetToken
 from ..models.authx import InviteCode, InviteCodeUse
 from ..core.config import settings
+from ..core.time import china_iso
 from ..schemas.auth import InviteCodeIn, RegistrationSettingIn
 from ..services import registration as reg
 from ..services.scoring import leaderboard, by_dataset
@@ -58,7 +59,7 @@ def _download_rows(db, query, limit=200):
         "source": row.source, "user_id": row.user_id,
         "user_name": _uname(db, row.user_id), "file_name": row.file_name,
         "location": row.location_label, "detail": row.detail,
-        "downloaded_at": str(row.downloaded_at),
+        "downloaded_at": china_iso(row.downloaded_at),
     } for row in query.order_by(DownloadHistory.downloaded_at.desc()).limit(limit).all()]
 
 
@@ -93,7 +94,8 @@ def export_scope_downloads(kind: str, slug: str, db: Session = Depends(get_db),
     ws.append(["类别", "用户ID", "用户名", "下载内容", "所在位置", "补充信息", "下载时间"])
     for row in rows:
         ws.append([row["category"], row["user_id"], row["user_name"], row["file_name"],
-                   row["location"], row["detail"], row["downloaded_at"][:19]])
+                   row["location"], row["detail"],
+                   row["downloaded_at"].replace("T", " ") if row["downloaded_at"] else ""])
     ws.freeze_panes = "A2"
     widths = [16, 12, 18, 36, 28, 28, 22]
     for i, width in enumerate(widths, 1):
@@ -172,10 +174,10 @@ def dataset_console(slug: str, db: Session = Depends(get_db),
     for v in db.query(DataVersion).filter_by(dataset_id=d.id).order_by(
             DataVersion.id.desc()).limit(5).all():
         recent.append({"type": "version", "text": f"发布版本 {v.version_id}",
-                       "at": str(v.release_date)[:10] if v.release_date else "", "sort": v.id})
+                       "at": str(v.release_date) if v.release_date else "", "sort": v.id})
     for b in db.query(Bug).filter_by(dataset_id=d.id).order_by(Bug.id.desc()).limit(5).all():
         recent.append({"type": "bug", "text": f"勘误 #{b.id}（{b.status}）",
-                       "at": str(b.reviewed_at)[:10] if b.reviewed_at else "", "sort": b.id})
+                       "at": str(b.reviewed_at) if b.reviewed_at else "", "sort": b.id})
     recent.sort(key=lambda x: x["sort"], reverse=True)
     pending = {
         "join_requests": db.query(JoinRequest).filter_by(dataset_id=d.id, status="pending").count(),
@@ -248,7 +250,7 @@ def group_console(slug: str, db: Session = Depends(get_db),
             DataVersion.id.desc()).limit(8).all():
         dd = db.get(Dataset, v.dataset_id)
         recent.append({"type": "version", "text": f"{dd.name_zh if dd else ''} 发布 {v.version_id}",
-                       "at": str(v.release_date)[:10] if v.release_date else "", "sort": v.id})
+                       "at": str(v.release_date) if v.release_date else "", "sort": v.id})
     pending = {"join_requests": db.query(GroupJoinRequest).filter_by(
         group_id=g.id, status="pending").count()}
     group_posts = db.query(Post).filter(Post.group_id == g.id)
@@ -669,7 +671,7 @@ def export_invite_codes(batch_id: str = "", db: Session = Depends(get_db),
     for r in q.all():
         lines.append(",".join([
             r.code, reg.code_state(r), str(r.max_uses or 1), str(r.used_count or 0),
-            r.expires_at.strftime("%Y-%m-%d %H:%M") if r.expires_at else "长期有效",
+            (china_iso(r.expires_at) or "").replace("T", " ") if r.expires_at else "长期有效",
             (r.note or "").replace(",", "，"), r.batch_id or ""]))
     buf = io.BytesIO(("﻿" + "\n".join(lines)).encode("utf-8"))   # BOM：Excel 打开不乱码
     return StreamingResponse(buf, media_type="text/csv",

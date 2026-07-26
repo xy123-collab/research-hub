@@ -113,11 +113,11 @@ def _recent_events(db, d):
     v = db.query(DataVersion).filter_by(dataset_id=d.id).order_by(DataVersion.id.desc()).first()
     if v:
         ev.append({"type": "version", "text": f"发布 {v.version_id}",
-                   "at": str(v.release_date)[:10] if v.release_date else ""})
+                   "at": str(v.release_date) if v.release_date else ""})
     b = db.query(Bug).filter_by(dataset_id=d.id).order_by(Bug.id.desc()).first()
     if b:
         ev.append({"type": "bug", "text": f"勘误 #{b.id}（{b.status}）",
-                   "at": str(b.reviewed_at)[:10] if b.reviewed_at else ""})
+                   "at": str(b.reviewed_at) if b.reviewed_at else ""})
     return ev
 
 

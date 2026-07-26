@@ -7,6 +7,7 @@ import Icon from './Icon.vue'
 import MentionInput from './MentionInput.vue'
 import AuthImage from './AuthImage.vue'
 import { downloadFile } from '../utils/download'
+import { formatChinaDateTime } from '../utils/time'
 
 const props = defineProps<{ post: any; currentUserId?: number }>()
 const emit = defineEmits(['changed', 'edit', 'deleted', 'open-dataset', 'open-group'])
@@ -99,7 +100,7 @@ const isMine = () => props.currentUserId && p.value.author_id === props.currentU
       <router-link :to="`/users/${p.author_id}`" class="text-accent hover:underline font-medium">{{ p.author_name }}</router-link>
       <span class="tag" style="background:#eef2f8;color:#2d4a7c">{{ p.post_type_label }}</span>
       <span v-if="p.status==='resolved'" class="tag" style="background:#e6f4ea;color:#2f7d46">已解决</span>
-      <span class="text-gray-400 text-xs">{{ p.created_at }}</span>
+      <span class="text-gray-400 text-xs">{{ formatChinaDateTime(p.created_at) }}</span>
       <span class="tag ml-auto">{{ p.scope_label || p.visibility }}</span>
     </div>
 
@@ -144,7 +145,7 @@ const isMine = () => props.currentUserId && p.value.author_id === props.currentU
       <div v-for="c in topComments()" :key="c.id" class="mb-2.5">
         <div class="text-sm"><span class="text-accent">{{ c.user_name }}</span>
           <span v-if="c.is_mine" class="tag ml-1" style="background:#eef2f8;color:#2d4a7c">我</span>
-          <span class="text-gray-400 text-xs ml-2">{{ c.created_at }}</span></div>
+          <span class="text-gray-400 text-xs ml-2">{{ formatChinaDateTime(c.created_at) }}</span></div>
         <p class="text-sm text-gray-700 whitespace-pre-line">{{ c.content }}</p>
         <div class="flex gap-3 text-xs mt-0.5">
           <button class="hover:text-accent2" :class="c.liked ? 'text-accent2' : 'text-gray-500'" @click="likeComment(c)">
@@ -155,7 +156,7 @@ const isMine = () => props.currentUserId && p.value.author_id === props.currentU
         <div v-for="r in repliesOf(c.id)" :key="r.id" class="ml-5 mt-1.5 pl-3 border-l-2 border-line">
           <div class="text-sm"><span class="text-accent">{{ r.user_name }}</span>
             <span v-if="r.is_mine" class="tag ml-1" style="background:#eef2f8;color:#2d4a7c">我</span>
-            <span class="text-gray-400 text-xs ml-2">{{ r.created_at }}</span></div>
+            <span class="text-gray-400 text-xs ml-2">{{ formatChinaDateTime(r.created_at) }}</span></div>
           <p class="text-sm text-gray-700 whitespace-pre-line">{{ r.content }}</p>
           <div class="flex gap-3 text-xs mt-0.5">
             <button class="hover:text-accent2" :class="r.liked ? 'text-accent2' : 'text-gray-500'" @click="likeComment(r)">

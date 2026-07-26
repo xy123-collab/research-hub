@@ -6,6 +6,7 @@ import Icon from '../components/Icon.vue'
 import ScopeSelector from '../components/ScopeSelector.vue'
 import MentionInput from '../components/MentionInput.vue'
 import { downloadFile } from '../utils/download'
+import { formatChinaDateTime } from '../utils/time'
 
 const auth = useAuth()
 const view = ref<'sections' | 'skill' | 'generic'>('sections')
@@ -252,7 +253,7 @@ async function deleteSkill() {
           <div class="label-cap mb-2">评论</div>
           <div v-for="c in topComments" :key="c.id" class="mb-3">
             <div class="text-sm"><span class="text-accent">{{ c.user_name }}</span>
-              <span class="text-gray-400 text-xs ml-2">{{ (c.created_at||'').slice(0,16).replace('T',' ') }}</span></div>
+              <span class="text-gray-400 text-xs ml-2">{{ formatChinaDateTime(c.created_at) }}</span></div>
             <p class="text-sm text-gray-700">{{ c.content }}</p>
             <div class="flex gap-2 text-xs mt-0.5">
               <button class="text-gray-500 hover:text-accent" @click="replyTo=c">回复</button>
@@ -261,7 +262,7 @@ async function deleteSkill() {
             <!-- 回复（评论的评论）-->
             <div v-for="r in repliesOf(c.id)" :key="r.id" class="ml-5 mt-2 pl-3 border-l-2 border-line">
               <div class="text-sm"><span class="text-accent">{{ r.user_name }}</span>
-                <span class="text-gray-400 text-xs ml-2">{{ (r.created_at||'').slice(0,16).replace('T',' ') }}</span></div>
+                <span class="text-gray-400 text-xs ml-2">{{ formatChinaDateTime(r.created_at) }}</span></div>
               <p class="text-sm text-gray-700">{{ r.content }}</p>
               <button class="text-gray-400 hover:text-accent2 text-xs" @click="delComment(r)">删除</button>
             </div>

@@ -92,7 +92,7 @@ def get_code(cid: int, db: Session = Depends(get_db), user: User = Depends(get_c
             "can_delete": is_dataset_admin(db, c.dataset_id, user),
             "versions": [{"id": v.id, "version_label": v.version_label, "filename": v.filename,
                           "changelog": v.changelog, "is_current": v.is_current,
-                          "created_at": str(v.created_at)[:10] if v.created_at else ""}
+                          "created_at": str(v.created_at) if v.created_at else ""}
                          for v in versions],
             "grants": [{"user_id": g.user_id, "can_edit": g.can_edit,
                         "can_publish": g.can_publish} for g in grants]}
@@ -253,7 +253,7 @@ def list_code_comments(cid: int, db: Session = Depends(get_db),
         u = db.get(User, cm.user_id)
         out.append({"id": cm.id, "user_id": cm.user_id, "name": u.display_name if u else "",
                     "content": cm.content, "is_correction": cm.is_correction,
-                    "created_at": str(cm.created_at)[:16] if cm.created_at else ""})
+                    "created_at": str(cm.created_at) if cm.created_at else ""})
     return out
 
 

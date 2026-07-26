@@ -4,6 +4,7 @@
 import { ref, watch } from 'vue'
 import api from '../api'
 import Icon from './Icon.vue'
+import { formatChinaDateTime } from '../utils/time'
 
 const props = defineProps<{ open: boolean; datasetId?: number; datasetName?: string }>()
 const emit = defineEmits(['close'])
@@ -46,7 +47,7 @@ watch(onlyThis, () => { if (props.open) load() })
           </thead>
           <tbody>
             <tr v-for="r in items" :key="r.id" class="border-b border-line/60 hover:bg-paper">
-              <td class="py-2 pr-2 text-gray-500 whitespace-nowrap">{{ r.downloaded_at }}</td>
+              <td class="py-2 pr-2 text-gray-500 whitespace-nowrap">{{ formatChinaDateTime(r.downloaded_at) }}</td>
               <td class="pr-2">
                 <a v-if="r.link" :href="'#' + r.link.replace('/#','')" class="text-accent hover:underline break-all">{{ r.file_name }}</a>
                 <span v-else class="break-all">{{ r.file_name }}</span>

@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import { downloadFile } from '../utils/download'
+import { formatChinaDate, formatChinaDateTime, platformTimeMs } from '../utils/time'
 
 const router = useRouter()
 // 我管理的范围（可切换查看不同课题组/数据集）
@@ -119,7 +120,7 @@ const shownDownloads = computed(() => (console_.value?.download_history || [])
   .filter((x:any) => {
     if (downloadPeriod.value === 'all') return true
     const days = downloadPeriod.value === 'week' ? 7 : 30
-    return new Date(x.downloaded_at).getTime() >= Date.now() - days*86400000
+    return platformTimeMs(x.downloaded_at) >= Date.now() - days*86400000
   }))
 const dailyMax = computed(() => Math.max(1, ...(analytics.value?.daily_active || []).map((x:any)=>x.active_users)))
 const yTicks = computed(() => [dailyMax.value, Math.ceil(dailyMax.value/2), 0])
@@ -281,7 +282,7 @@ const inviteStateLabel: any = { available: '可用', used_up: '已用完', expir
             <td class="px-4 py-2 whitespace-nowrap"><span class="tag whitespace-nowrap">{{ x.category }}</span></td>
             <td class="py-2 whitespace-nowrap">{{ x.user_name }} <span class="text-gray-400">ID {{ x.user_id }}</span></td>
             <td class="py-2">{{ x.file_name }}<span v-if="x.detail" class="block text-gray-400">{{ x.detail }}</span></td>
-            <td class="py-2">{{ x.location || '—' }}</td><td class="py-2 pr-4 whitespace-nowrap text-gray-400">{{ x.downloaded_at?.slice(0,19) }}</td>
+            <td class="py-2">{{ x.location || '—' }}</td><td class="py-2 pr-4 whitespace-nowrap text-gray-400">{{ formatChinaDateTime(x.downloaded_at) }}</td>
           </tr><tr v-if="!shownDownloads.length"><td colspan="5" class="py-4 text-center text-gray-400">暂无该类别的下载记录。</td></tr></tbody>
         </table>
         </div>
@@ -310,7 +311,7 @@ const inviteStateLabel: any = { available: '可用', used_up: '已用完', expir
           <div v-for="(e,i) in console_.recent" :key="i" class="px-4 py-2.5 text-sm flex items-center gap-2">
             <span class="dot" :style="{ background: e.type==='version' ? '#2d4a7c' : '#7c2d3a' }"></span>
             <span class="flex-1 truncate">{{ e.text }}</span>
-            <span class="text-gray-400 text-xs">{{ e.at }}</span>
+            <span class="text-gray-400 text-xs">{{ formatChinaDateTime(e.at) }}</span>
           </div>
           <p v-if="!console_.recent.length" class="px-4 py-3 text-gray-400 text-sm">暂无更新。</p>
         </div>
@@ -423,7 +424,7 @@ const inviteStateLabel: any = { available: '可用', used_up: '已用完', expir
           <tbody><tr v-for="x in shownTickets" :key="x.id" class="border-t border-line align-top">
             <td class="py-2">#{{ x.id }}</td><td class="py-2 max-w-xs"><span class="tag">{{ x.category }}</span><p class="mt-1">{{ x.title }}</p><p class="text-gray-400 truncate" :title="x.description">{{ x.description }}</p></td>
             <td class="py-2">{{ x.submitter?.name || '—' }}</td><td class="py-2">{{ x.impact }}</td>
-            <td class="py-2">{{ statusLabel[x.status] || x.status }}</td><td class="py-2 text-gray-400">{{ x.created_at?.slice(0,16) }}</td>
+            <td class="py-2">{{ statusLabel[x.status] || x.status }}</td><td class="py-2 text-gray-400">{{ formatChinaDateTime(x.created_at) }}</td>
             <td class="py-2"><select class="input text-xs w-28" :value="x.status" @change="updateTicket(x, ($event.target as HTMLSelectElement).value)">
               <option v-for="(label,key) in statusLabel" :key="key" :value="key">{{ label }}</option></select></td>
           </tr><tr v-if="!shownTickets.length"><td colspan="7" class="py-4 text-center text-gray-400">暂无反馈工单。</td></tr></tbody>
@@ -483,7 +484,7 @@ const inviteStateLabel: any = { available: '可用', used_up: '已用完', expir
           <div class="flex items-center gap-2 mb-2">
             <b class="text-accent">本次生成 {{ lastBatch.codes.length }} 个</b>
             <span class="text-xs text-gray-500">
-              到期：{{ lastBatch.expires_at ? String(lastBatch.expires_at).slice(0,10) : '长期有效' }}
+              到期：{{ lastBatch.expires_at ? formatChinaDate(lastBatch.expires_at) : '长期有效' }}
             </span>
             <button class="btn-ghost text-xs ml-auto" @click="copyCodes(lastBatch.codes)">一键复制</button>
             <button class="btn-ghost text-xs" @click="disableBatch(lastBatch.batch_id)">整批停用</button>
@@ -514,7 +515,7 @@ const inviteStateLabel: any = { available: '可用', used_up: '已用完', expir
                   <td class="px-3 py-2 font-mono">{{ x.code }}</td>
                   <td><span class="tag">{{ inviteStateLabel[x.state] || x.state }}</span></td>
                   <td>{{ x.used_count }} / {{ x.max_uses }}</td>
-                  <td class="text-gray-400">{{ x.expires_at ? String(x.expires_at).slice(0,10) : '长期' }}</td>
+                  <td class="text-gray-400">{{ x.expires_at ? formatChinaDate(x.expires_at) : '长期' }}</td>
                   <td class="max-w-[160px] truncate" :title="x.note">{{ x.note || '—' }}</td>
                   <td class="text-gray-500">{{ x.used_by.map((u:any)=>u.username).join('、') || '—' }}</td>
                   <td class="pr-3"><button class="text-accent text-xs hover:underline" @click="toggleInvite(x)">
@@ -582,7 +583,7 @@ const inviteStateLabel: any = { available: '可用', used_up: '已用完', expir
         <table class="w-full text-xs">
           <tr v-for="l in audit" :key="l.id" class="border-t border-line first:border-0">
             <td class="py-1">#{{ l.user_id }}</td><td><span class="tag">{{ l.action }}</span></td>
-            <td>{{ l.object_type }} {{ l.object_id }}</td><td class="text-gray-400">{{ l.created_at?.slice(0,19) }}</td>
+            <td>{{ l.object_type }} {{ l.object_id }}</td><td class="text-gray-400">{{ formatChinaDateTime(l.created_at) }}</td>
           </tr>
         </table>
       </div>

@@ -6,6 +6,7 @@ import { downloadFile } from '../utils/download'
 import { useAuth } from '../stores/auth'
 import PostCard from '../components/PostCard.vue'
 import PostComposer from '../components/PostComposer.vue'
+import { formatChinaDate, formatChinaDateTime } from '../utils/time'
 
 const route = useRoute(); const router = useRouter()
 const auth = useAuth()
@@ -152,12 +153,12 @@ const categoryName:Record<string,string>={progress:'重大进展',discussion:'�
 
     <section v-if="tab==='timeline'" class="mt-6 grid md:grid-cols-[320px_1fr] gap-5">
       <div class="card h-fit"><div class="label-cap">记录研究进展</div><select v-model="timelineForm.category" class="input mt-2"><option v-for="(v,k) in categoryName" :key="k" :value="k">{{ v }}</option></select><input v-model="timelineForm.title" class="input mt-2" placeholder="标题"><textarea v-model="timelineForm.body" class="input mt-2" rows="5" placeholder="进展、关键问题、讨论结论或待办"></textarea><input type="file" class="text-xs mt-2" @change="timelineFile=($event.target as HTMLInputElement).files?.[0]||null"><button class="btn-primary w-full mt-3" @click="addTimeline">添加到时间线</button></div>
-      <div class="space-y-3"><article v-for="e in g.timeline" :key="e.id" class="card"><div class="flex gap-2"><span class="tag">{{ categoryName[e.category]||e.category }}</span><span class="text-xs text-gray-400 ml-auto">{{ (e.created_at||'').slice(0,16) }}</span></div><h3 class="mt-2">{{ e.title }}</h3><p class="text-sm text-gray-600 whitespace-pre-wrap mt-1">{{ e.body }}</p><button v-if="e.has_file" class="text-xs text-accent mt-2" @click="downloadFile(`/groups/${slug()}/timeline/${e.id}/file`,e.file_name)">下载附件 · {{ e.file_name }}</button><p class="text-xs text-gray-400 mt-2">{{ e.author_name }}</p></article><p v-if="!g.timeline.length" class="text-gray-400 text-sm">暂无时间线记录。</p></div>
+      <div class="space-y-3"><article v-for="e in g.timeline" :key="e.id" class="card"><div class="flex gap-2"><span class="tag">{{ categoryName[e.category]||e.category }}</span><span class="text-xs text-gray-400 ml-auto">{{ formatChinaDateTime(e.created_at) }}</span></div><h3 class="mt-2">{{ e.title }}</h3><p class="text-sm text-gray-600 whitespace-pre-wrap mt-1">{{ e.body }}</p><button v-if="e.has_file" class="text-xs text-accent mt-2" @click="downloadFile(`/groups/${slug()}/timeline/${e.id}/file`,e.file_name)">下载附件 · {{ e.file_name }}</button><p class="text-xs text-gray-400 mt-2">{{ e.author_name }}</p></article><p v-if="!g.timeline.length" class="text-gray-400 text-sm">暂无时间线记录。</p></div>
     </section>
 
     <section v-if="tab==='files'" class="mt-6">
       <div class="card mb-4 flex items-center gap-3"><input type="file" class="text-sm" @change="projectFile=($event.target as HTMLInputElement).files?.[0]||null"><button class="btn-primary ml-auto" @click="uploadFile">上传文件</button></div>
-      <div class="rounded-lg border border-line bg-white divide-y divide-line"><div v-for="f in g.files" :key="f.id" class="px-4 py-3 flex items-center gap-3 text-sm"><button class="text-accent hover:underline" @click="downloadFile(`/groups/${slug()}/files/${f.id}/download`,f.file_name)">{{ f.file_name }}</button><span class="text-gray-400">{{ f.author_name }} · {{ (f.created_at||'').slice(0,10) }}</span><button class="text-xs text-accent2 ml-auto" @click="delFile(f.id)">删除</button></div></div>
+      <div class="rounded-lg border border-line bg-white divide-y divide-line"><div v-for="f in g.files" :key="f.id" class="px-4 py-3 flex items-center gap-3 text-sm"><button class="text-accent hover:underline" @click="downloadFile(`/groups/${slug()}/files/${f.id}/download`,f.file_name)">{{ f.file_name }}</button><span class="text-gray-400">{{ f.author_name }} · {{ formatChinaDate(f.created_at) }}</span><button class="text-xs text-accent2 ml-auto" @click="delFile(f.id)">删除</button></div></div>
       <p v-if="!g.files.length" class="text-gray-400 text-sm mt-3">暂无共享文件。</p>
     </section>
 

@@ -90,9 +90,15 @@ def test_admin_cannot_self_review_when_multiple_admins(client, founder, member):
 # 消息中心：管理员能看到待办
 def test_notifications_for_admin(client, founder, member):
     # member 申请加入 fiscal（founder=chenmo），chenmo 应收到待办
-    client.post("/api/datasets/fiscal/join-requests", headers=founder)
+    submitted = client.post("/api/datasets/city-fiscal/join-requests", headers=founder)
+    assert submitted.status_code == 200, submitted.text
     notif = client.get("/api/notifications", headers=member).json()
-    assert "action_count" in notif and isinstance(notif["items"], list)
+    matches = [x for x in notif["items"] if
+               x["type"] == "dataset_join" and "地级市财政数据集" in x["subtitle"]]
+    assert notif["action_count"] >= 1 and len(matches) == 1
+    assert matches[0]["level"] == "action"
+    assert matches[0]["link"] == "/datasets/city-fiscal?tab=access"
+    assert matches[0]["at"].endswith("+08:00")
 
 
 # 两级管理员：仅总管理员可增删管理员与转让；转让后原总管理员降为普通管理员

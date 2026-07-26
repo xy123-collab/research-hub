@@ -1,9 +1,9 @@
 """历史下载：本人跨数据集与其它位置的下载记录（时间 + 文件名 + 位置）。"""
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from datetime import timedelta
 from ..core.db import get_db
 from ..core.permissions import get_current_user
+from ..core.time import china_iso
 from ..models.user import User
 from ..models.notify import DownloadHistory
 
@@ -16,7 +16,7 @@ _SOURCE_LABEL = {
 
 
 def _bj(dt):
-    return (dt + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M") if dt else ""
+    return china_iso(dt) or ""
 
 
 @router.get("/me/downloads")

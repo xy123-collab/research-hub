@@ -8,16 +8,13 @@ from ..models.workspace import (Workspace, WorkspaceMember, WorkspaceUpdate,
                                 WorkspaceTodo, WorkspaceNote, WorkspaceFile)
 from ..models.extras import WorkspaceEntry, WORKSPACE_CATEGORIES
 from ..schemas.models import WorkspaceIn, WsUpdateIn, WsTodoIn, WsTodoPatch, WsNoteIn
+from ..core.time import china_iso
 
 router = APIRouter(tags=["workspaces"])
 
 
 def _bj(dt) -> str | None:
-    """把存库的 naive UTC 时间转成北京时间（+8）字符串，供前端直接展示。"""
-    if not dt:
-        return None
-    from datetime import timedelta
-    return (dt + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+    return china_iso(dt)
 
 
 def _can_access(db, ws_id, user) -> bool:
