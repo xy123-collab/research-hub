@@ -83,15 +83,76 @@ def desensitize(raw_key: str, rules: list[dict], unique_id_var: str | None,
 # ---------------- 应用勘误 ----------------
 def apply_corrections_script(items: list[dict], unique_id_var: str) -> str:
     lines = ["* 自动生成的勘误应用脚本（在上一版数据上运行后作为新版发布）",
-             f"* 唯一ID变量：{unique_id_var}"]
+             f"* 唯一ID变量：{unique_id_var}",
+             "* 每项先检查唯一匹配和当前值；assert 失败时 Stata 会停止，避免静默误改。"]
     for it in items:
-        uid = str(it["uid_value"]).replace('"', '')
-        v = it["var_name"]
-        val = str(it["suggested_value"]).replace('"', '')
-        # 数值/字符串两种写法都给出，数值优先
-        lines.append(f'replace {v} = "{val}" if {unique_id_var} == "{uid}"'
-                     f"   // 若为数值请去掉引号：replace {v} = {val} if {unique_id_var}==...")
+        uid = str(it["uid_value"]).replace('"', '""')
+        v = str(it["var_name"]).strip()
+        old = str(it.get("current_value") or "").replace('"', '""')
+        val = str(it.get("suggested_value") or "").replace('"', '""')
+        if it.get("is_new_officer"):
+            lines.extend([
+                "",
+                f"* [人工处理：新增官员] {unique_id_var}={uid}",
+                "* 当前原始数据中没有该 ID；系统不会自动追加字段不完整的空记录。",
+                f"* 待人工补全官员记录后，将 {v} 设置为：{val}",
+            ])
+            continue
+        lines.extend([
+            "",
+            f"* 勘误 #{it.get('bug_id', '')}·第 {it.get('item_seq', '')} 项",
+            f'capture confirm numeric variable {unique_id_var}',
+            "if !_rc {",
+            f'    count if {unique_id_var} == real("{uid}")',
+            "    assert r(N) == 1",
+            f"    capture confirm numeric variable {v}",
+            "    if !_rc {",
+            f'        assert {v} == real("{old}") if {unique_id_var} == real("{uid}")',
+            f'        replace {v} = real("{val}") if {unique_id_var} == real("{uid}")',
+            "    }",
+            "    else {",
+            f'        assert strtrim({v}) == "{old}" if {unique_id_var} == real("{uid}")',
+            f'        replace {v} = "{val}" if {unique_id_var} == real("{uid}")',
+            "    }",
+            "}",
+            "else {",
+            f'    count if strtrim({unique_id_var}) == "{uid}"',
+            "    assert r(N) == 1",
+            f"    capture confirm numeric variable {v}",
+            "    if !_rc {",
+            f'        assert {v} == real("{old}") if strtrim({unique_id_var}) == "{uid}"',
+            f'        replace {v} = real("{val}") if strtrim({unique_id_var}) == "{uid}"',
+            "    }",
+            "    else {",
+            f'        assert strtrim({v}) == "{old}" if strtrim({unique_id_var}) == "{uid}"',
+            f'        replace {v} = "{val}" if strtrim({unique_id_var}) == "{uid}"',
+            "    }",
+            "}",
+        ])
     return "\n".join(lines) + "\n"
+
+
+class CorrectionPreconditionError(ValueError):
+    """数据已变化或唯一 ID 不再唯一时中止整批自动应用。"""
+
+
+def _canonical_scalar(value, numeric: bool) -> str:
+    if value is None:
+        return ""
+    try:
+        import pandas as pd
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    text = str(value).strip()
+    if not numeric:
+        return text
+    try:
+        from decimal import Decimal, InvalidOperation
+        return format(Decimal(text).normalize(), "f")
+    except (InvalidOperation, ValueError):
+        return text
 
 
 def apply_corrections(base_key: str, items: list[dict], unique_id_var: str,
@@ -110,27 +171,52 @@ def apply_corrections(base_key: str, items: list[dict], unique_id_var: str,
         df = read_table_df(raw, _ext_of(base_key))
         if unique_id_var not in df.columns:
             return None, "script", script, []
-        key_str = df[unique_id_var].astype(str)
-        applied = []
+        uid_numeric = pd.api.types.is_numeric_dtype(df[unique_id_var])
+        key_values = df[unique_id_var].map(lambda x: _canonical_scalar(x, uid_numeric))
+        planned = []
+        problems = []
+        # 先验证整批，再做任何赋值，保证失败时不产生半成品。
         for it in items:
             v = it["var_name"]
             if v not in df.columns:
+                problems.append(f"勘误#{it.get('bug_id')}：变量 {v} 不存在")
                 continue
-            mask = key_str == str(it["uid_value"])
-            if not mask.any():
+            uid = _canonical_scalar(it["uid_value"], uid_numeric)
+            mask = key_values == uid
+            matches = int(mask.sum())
+            if matches != 1:
+                problems.append(
+                    f"勘误#{it.get('bug_id')}：{unique_id_var}={it['uid_value']} "
+                    f"匹配到 {matches} 条，要求恰好 1 条")
                 continue
-            # 按列 dtype 尽量转换建议值
-            newval = it["suggested_value"]
             col = df[v]
-            try:
-                if pd.api.types.is_numeric_dtype(col):
+            value_numeric = pd.api.types.is_numeric_dtype(col)
+            actual = _canonical_scalar(col.loc[mask].iloc[0], value_numeric)
+            expected = _canonical_scalar(it.get("current_value"), value_numeric)
+            if actual != expected:
+                problems.append(
+                    f"勘误#{it.get('bug_id')}：{v} 当前值已变为「{actual}」，"
+                    f"不再等于提交时的「{expected}」")
+                continue
+            newval = it["suggested_value"]
+            if value_numeric:
+                try:
                     newval = pd.to_numeric(newval)
-            except Exception:
-                pass
+                except Exception:
+                    problems.append(
+                        f"勘误#{it.get('bug_id')}：建议值「{newval}」不能写入数值变量 {v}")
+                    continue
+            planned.append((it, mask, v, newval))
+        if problems:
+            raise CorrectionPreconditionError("；".join(problems))
+        applied = []
+        for it, mask, v, newval in planned:
             df.loc[mask, v] = newval
             applied.append(it["seq"])
         out = io.BytesIO()
         df.to_stata(out, write_index=False, version=118)
         return out.getvalue(), "server", script, applied
+    except CorrectionPreconditionError:
+        raise
     except Exception:
         return None, "script", script, []

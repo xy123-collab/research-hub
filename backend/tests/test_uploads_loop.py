@@ -6,12 +6,34 @@ def _hdr(client, u, p):
     return {"Authorization": f"Bearer {client.post('/api/auth/login', json={'username':u,'password':p}).json()['access_token']}"}
 
 
+def _create_bug(client, founder, member, suffix, uid="O1", current="1999"):
+    import pandas as pd
+    buf = io.BytesIO()
+    pd.DataFrame({"officerID": [uid], "year": [int(current)]}).to_stata(
+        buf, write_index=False, version=118)
+    buf.seek(0)
+    pub = client.post("/api/datasets/cod/versions",
+                      data={"version_id": f"v-{suffix}", "data_kind": "raw"},
+                      files={"data_file": (f"{suffix}.dta", buf, "application/octet-stream")},
+                      headers=founder)
+    assert pub.status_code == 200, pub.text
+    client.put("/api/datasets/cod/data-config",
+               json={"unique_id_var": "officerID"}, headers=founder)
+    variables = client.get("/api/datasets/cod/variables", headers=founder).json()
+    var_id = next(v["id"] for v in variables if v["var_name"] == "year")
+    response = client.post("/api/datasets/cod/bugs",
+                           json={"officer_id": uid, "variable_id": var_id,
+                                 "current_value": current, "suggested_value": "1998",
+                                 "description_zh": "年份笔误", "evidence": "履历核对"},
+                           headers=member)
+    assert response.status_code == 200, response.text
+    return response.json()["id"]
+
+
 def test_bug_evidence_attachment_upload_download(client):
     founder = _hdr(client, "lixiaoyu", "pass123")
     member = _hdr(client, "chenmo", "pass123")
-    bid = client.post("/api/datasets/cod/bugs",
-                      json={"officer_id": "O9", "description_zh": "带证据的勘误"},
-                      headers=member).json()["id"]
+    bid = _create_bug(client, founder, member, "attachment", uid="O9")
     files = {"file": ("evidence.pdf", io.BytesIO(b"%PDF-1.4 fake"), "application/pdf")}
     r = client.post(f"/api/bugs/{bid}/attachments", files=files, headers=member)
     assert r.status_code == 200
@@ -23,8 +45,9 @@ def test_bug_evidence_attachment_upload_download(client):
 
 
 def test_bad_file_type_rejected(client):
+    founder = _hdr(client, "lixiaoyu", "pass123")
     member = _hdr(client, "chenmo", "pass123")
-    bid = client.post("/api/datasets/cod/bugs", json={"description_zh": "x"}, headers=member).json()["id"]
+    bid = _create_bug(client, founder, member, "bad-attachment", uid="O10")
     files = {"file": ("hack.exe", io.BytesIO(b"MZ"), "application/octet-stream")}
     r = client.post(f"/api/bugs/{bid}/attachments", files=files, headers=member)
     assert r.status_code == 400
@@ -34,12 +57,10 @@ def test_full_core_loop_download_bug_review_finalize_publish_fixed(client):
     founder = _hdr(client, "lixiaoyu", "pass123")
     member = _hdr(client, "chenmo", "pass123")
     # 提交 bug（附证据）
-    bid = client.post("/api/datasets/cod/bugs",
-                      json={"officer_id": "O1", "current_value": "1999",
-                            "suggested_value": "1998", "description_zh": "年份笔误"},
-                      headers=member).json()["id"]
+    bid = _create_bug(client, founder, member, "core-loop", uid="O1")
     # 评审 + 终审采纳
-    client.post(f"/api/bugs/{bid}/reviews", json={"acceptability_score": 8}, headers=founder)
+    client.post(f"/api/bugs/{bid}/reviews",
+                json={"acceptability_score": 8, "comment": "证据充分"}, headers=founder)
     client.post(f"/api/bugs/{bid}/finalize",
                 json={"adopt_level": "full", "final_score": 9}, headers=founder)
     assert client.get(f"/api/bugs/{bid}", headers=member).json()["status"] == "accepted"

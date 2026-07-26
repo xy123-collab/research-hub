@@ -74,11 +74,28 @@ def test_cannot_remove_sole_admin(client, founder):
 
 # 八节 4：多管理员时，管理员不得审核自己提交的勘误
 def test_admin_cannot_self_review_when_multiple_admins(client, founder, member):
+    import io
+    import pandas as pd
     mid = _uid(client, "chenmo")
     # 先把 chenmo 提为管理员（此时数据集有两名管理员）
     assert client.post(f"/api/datasets/cod/admins/{mid}", headers=founder).status_code == 200
+    buf = io.BytesIO()
+    pd.DataFrame({"officerID": ["SELF1"], "year": [2001]}).to_stata(
+        buf, write_index=False, version=118)
+    buf.seek(0)
+    client.post("/api/datasets/cod/versions",
+                data={"version_id": "v-self-review", "data_kind": "raw"},
+                files={"data_file": ("self.dta", buf, "application/octet-stream")},
+                headers=founder)
+    client.put("/api/datasets/cod/data-config",
+               json={"unique_id_var": "officerID"}, headers=founder)
+    variables = client.get("/api/datasets/cod/variables", headers=founder).json()
+    var_id = next(v["id"] for v in variables if v["var_name"] == "year")
     bid = client.post("/api/datasets/cod/bugs",
-                      json={"description_zh": "自审测试"}, headers=member).json()["id"]
+                      json={"officer_id": "SELF1", "variable_id": var_id,
+                            "current_value": "2001", "suggested_value": "2000",
+                            "description_zh": "自审测试", "evidence": "履历核对"},
+                      headers=member).json()["id"]
     # chenmo 审核自己提交的勘误应被拒
     r = client.post(f"/api/bugs/{bid}/finalize",
                     json={"adopt_level": "full", "final_score": 8}, headers=member)

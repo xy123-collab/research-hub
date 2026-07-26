@@ -1,3 +1,4 @@
+from datetime import datetime
 from sqlalchemy import Column, Integer, String, ForeignKey, Text, DateTime, Float
 from ..core.db import Base
 
@@ -18,6 +19,7 @@ class Bug(Base):
     fixed_in_version_id = Column(Integer, ForeignKey("data_versions.id"))
     reviewed_by = Column(Integer, ForeignKey("users.id"))
     reviewed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class BugAttachment(Base):

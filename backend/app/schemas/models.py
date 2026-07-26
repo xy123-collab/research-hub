@@ -53,11 +53,19 @@ class BugIn(BaseModel):
     variable_id: int | None = None
     current_value: str | None = None; suggested_value: str | None = None
     bug_type: str | None = None
-    description_zh: str; description_en: str | None = None; evidence: str | None = None
+    description_zh: str; description_en: str | None = None; evidence: str
+    confirm_new_officer: bool = False
+
+    @field_validator("description_zh", "evidence")
+    @classmethod
+    def _required_bug_text(cls, v):
+        if not (v or "").strip():
+            raise ValueError("说明和证据均为必填")
+        return v.strip()
 
 
 class ReviewIn(BaseModel):
-    acceptability_score: float; comment: str | None = None
+    acceptability_score: float; comment: str
 
     @field_validator("acceptability_score")
     @classmethod
@@ -65,6 +73,13 @@ class ReviewIn(BaseModel):
         if not 0 <= v <= 10:
             raise ValueError("评分需在 0-10 之间")
         return v
+
+    @field_validator("comment")
+    @classmethod
+    def _comment(cls, v):
+        if not (v or "").strip():
+            raise ValueError("请填写评分理由")
+        return v.strip()
 
 
 class FinalizeIn(BaseModel):

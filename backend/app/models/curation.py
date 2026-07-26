@@ -53,7 +53,9 @@ class BugItem(Base):
     var_name = Column(String(80))       # 要改的变量
     current_value = Column(String(300))
     suggested_value = Column(String(300))
-    reason = Column(Text)               # 说明与证据
+    reason = Column(Text)               # 修改说明
+    evidence = Column(Text)             # 证据来源/链接/出处
+    is_new_officer = Column(Boolean, default=False)  # 最新原始版中没有该唯一 ID
     status = Column(String(20), default="pending")   # pending|accepted|rejected|fixed
     ai_score = Column(Float)
     final_score = Column(Float)

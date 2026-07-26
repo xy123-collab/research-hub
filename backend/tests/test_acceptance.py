@@ -93,13 +93,20 @@ def test_verify_flag_draft_does_not_modify_data(client, founder, member):
 
 def test_scoring_review_full_chain_and_contribution(client, founder, member):
     # 评分制审核全链路：提交→成员评分+AI评分→管理员终审→贡献按终审分加权
+    _publish_raw_dta(client, founder, version_id="vscore-raw")
+    client.put("/api/datasets/cod/data-config",
+               json={"unique_id_var": "officerID"}, headers=founder)
+    variables = client.get("/api/datasets/cod/variables", headers=founder).json()
+    var_id = next(v["id"] for v in variables if v["var_name"] == "begin_yr")
     r = client.post("/api/datasets/cod/bugs",
-                    json={"officer_id": "O1", "current_value": "1999",
-                          "suggested_value": "1998", "description_zh": "年份笔误"},
+                    json={"officer_id": "O1", "variable_id": var_id,
+                          "current_value": "2001", "suggested_value": "1998",
+                          "description_zh": "年份笔误", "evidence": "履历核对"},
                     headers=member)
     bid = r.json()["id"]
     assert client.post(f"/api/bugs/{bid}/reviews",
-                       json={"acceptability_score": 8}, headers=founder).status_code == 200
+                       json={"acceptability_score": 8, "comment": "证据充分"},
+                       headers=founder).status_code == 200
     client.post(f"/api/bugs/{bid}/ai-review", headers=founder)
     before = client.get("/api/me/contributions", headers=member).json()["total"]
     fin = client.post(f"/api/bugs/{bid}/finalize",

@@ -15,6 +15,10 @@ const route = useRoute(); const router = useRouter()
 const posts = ref<any[]>([]); const loading = ref(false)
 const hot = ref<any[]>([]); const hotRange = ref('7d')
 const myGroups = ref<any[]>([]); const myDatasets = ref<any[]>([])
+const searchType = ref<'users'|'posts'|'datasets'>('users')
+const searchQ = ref(''); const searchResults = ref<any[]>([])
+const searchLoading = ref(false); const searchOpen = ref(false)
+let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 const TYPES = [
   { v: 'question', label: '研究问题' }, { v: 'data', label: '数据问题' },
@@ -71,6 +75,37 @@ async function loadScopes() {
   } catch {}
 }
 
+async function runSearch() {
+  const q = searchQ.value.trim()
+  if (!q) { searchResults.value = []; searchOpen.value = false; return }
+  searchLoading.value = true
+  try {
+    if (searchType.value === 'users') {
+      searchResults.value = (await api.get('/users/search', { params: { q, limit: 12 } })).data
+    } else if (searchType.value === 'posts') {
+      searchResults.value = (await api.get('/posts/search', { params: { q, limit: 12 } })).data
+    } else {
+      searchResults.value = (await api.get('/datasets/search', {
+        params: { q, limit: 12, public_only: true }
+      })).data
+    }
+    searchOpen.value = true
+  } catch {
+    searchResults.value = []; searchOpen.value = true
+  } finally { searchLoading.value = false }
+}
+watch([searchQ, searchType], () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchOpen.value = !!searchQ.value.trim()
+  searchTimer = setTimeout(runSearch, 300)
+})
+function chooseSearchResult(result: any) {
+  searchOpen.value = false
+  if (searchType.value === 'users') router.push(`/users/${result.id}`)
+  else if (searchType.value === 'datasets') router.push(`/datasets/${result.slug}`)
+  else router.push({ path: '/feed', query: { ...route.query, post: result.id } })
+}
+
 // 定位单条帖子（从热榜/组内动态/消息点进来的 ?post=id）
 const focusPost = ref<any>(null)
 async function loadFocus() {
@@ -79,7 +114,11 @@ async function loadFocus() {
   try { focusPost.value = (await api.get(`/posts/${id}`)).data }
   catch { focusPost.value = null }
 }
-function clearFocus() { focusPost.value = null; router.replace({ query: {} }); readUrl() }
+function clearFocus() {
+  focusPost.value = null
+  const query: any = { ...route.query }; delete query.post
+  router.replace({ query }); readUrl()
+}
 
 onMounted(async () => { readUrl(); await Promise.all([load(), loadHot(), loadScopes(), loadFocus()]) })
 watch(hotRange, loadHot)
@@ -118,6 +157,42 @@ function onDeleted(id: number) { posts.value = posts.value.filter(p => p.id !== 
   <div class="flex items-center justify-between mb-4">
     <h1 class="text-2xl">{{ t('nav.feed') }}</h1>
     <button class="btn-primary" @click="openCompose">＋发布讨论</button>
+  </div>
+
+  <!-- 统一检索：用户 / 帖子 / 公开数据集 -->
+  <div class="card p-3 mb-4 relative z-20">
+    <div class="flex flex-col sm:flex-row gap-2">
+      <div class="flex gap-1 shrink-0">
+        <button v-for="[k,l] in [['users','用户'],['posts','帖子'],['datasets','公开数据集']]" :key="k"
+          :class="['text-sm px-3 py-1.5 rounded', searchType===k ? 'bg-accent text-white' : 'bg-paper text-gray-600']"
+          @click="searchType=k as any">{{ l }}</button>
+      </div>
+      <div class="relative flex-1">
+        <input v-model="searchQ" class="input w-full"
+          :placeholder="searchType==='users' ? '检索姓名、用户名、研究方向或关键词' : searchType==='posts' ? '检索帖子标题、正文或标签' : '检索公开数据集名称、简介或 ID'"
+          @focus="searchQ.trim() && (searchOpen=true)" @keydown.esc="searchOpen=false" />
+        <div v-if="searchOpen" class="absolute left-0 right-0 top-full mt-1 bg-white border border-line rounded-lg shadow-lg max-h-80 overflow-y-auto">
+          <p v-if="searchLoading" class="px-3 py-3 text-sm text-gray-400">检索中…</p>
+          <button v-for="r in searchResults" :key="`${searchType}-${r.id}`"
+            class="w-full text-left px-3 py-2.5 border-b border-line last:border-0 hover:bg-paper"
+            @click="chooseSearchResult(r)">
+            <template v-if="searchType==='users'">
+              <div class="text-sm font-medium">{{ r.display_name }} <span class="font-mono text-xs text-gray-400">@{{ r.username }} · ID {{ r.id }}</span></div>
+              <div class="text-xs text-gray-500 truncate">{{ r.research_direction || r.keywords || '查看个人主页' }}</div>
+            </template>
+            <template v-else-if="searchType==='posts'">
+              <div class="text-sm font-medium">{{ r.title }} <span class="tag ml-1">{{ r.post_type_label }}</span></div>
+              <div class="text-xs text-gray-500 truncate">{{ r.author_name }}<span v-if="r.dataset_name"> · {{ r.dataset_name }}</span> · {{ r.snippet }}</div>
+            </template>
+            <template v-else>
+              <div class="text-sm font-medium">{{ r.name }}</div>
+              <div class="text-xs text-gray-500 truncate">{{ r.description || r.slug }}</div>
+            </template>
+          </button>
+          <p v-if="!searchLoading && !searchResults.length" class="px-3 py-4 text-center text-sm text-gray-400">没有匹配结果。</p>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-[220px_1fr_220px] gap-5 items-start">

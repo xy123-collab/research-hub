@@ -99,6 +99,46 @@ def read_table_schema(key: str) -> list[dict]:
         return []
 
 
+def read_table_column(key: str, column: str):
+    """只读取一列，供唯一 ID 校验使用，避免为一次匹配加载整张宽表。"""
+    import pandas as pd
+    raw = _read_bytes(key)
+    ext = _ext_of(key)
+    bio = io.BytesIO(raw)
+    if ext == "dta":
+        df = pd.read_stata(bio, columns=[column])
+    elif ext == "csv":
+        df = None
+        last_error = None
+        for enc in ("utf-8-sig", "gb18030"):
+            try:
+                bio.seek(0)
+                df = pd.read_csv(bio, encoding=enc, usecols=[column])
+                break
+            except (UnicodeDecodeError, UnicodeError) as exc:
+                last_error = exc
+        if df is None:
+            if last_error:
+                raise last_error
+            bio.seek(0)
+            df = pd.read_csv(
+                bio, encoding="utf-8", encoding_errors="replace", usecols=[column])
+    elif ext in ("xlsx", "xls"):
+        df = pd.read_excel(bio, usecols=[column])
+    elif ext == "parquet":
+        df = pd.read_parquet(bio, columns=[column])
+    elif ext == "mat":
+        df = read_table_df(raw, ext)
+        if column not in df.columns:
+            raise ValueError(f"数据文件中不存在唯一 ID 变量「{column}」")
+        df = df[[column]]
+    else:
+        raise ValueError(f"不支持的数据格式 .{ext}")
+    if column not in df.columns:
+        raise ValueError(f"数据文件中不存在唯一 ID 变量「{column}」")
+    return df[column]
+
+
 def load_table_records(key: str, max_rows: int = SANDBOX_MAX_ROWS) -> tuple[list[dict], dict]:
     """把数据文件前 max_rows 行读成 records（供沙箱构造真实 df）。
     返回 (records, meta)；meta 含 total_rows_loaded / truncated / columns。

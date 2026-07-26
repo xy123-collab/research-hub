@@ -192,6 +192,48 @@ def feed(dataset_id: int | None = None, group_id: int | None = None,
     return out
 
 
+@router.get("/posts/search")
+def search_posts(q: str = "", limit: int = 12, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """检索会进入全站研究讨论区且当前用户有权查看的帖子。"""
+    from sqlalchemy import or_
+    from ..models.dataset import Dataset
+    keyword = (q or "").strip()
+    if not keyword:
+        return []
+    pattern = f"%{keyword}%"
+    tagged = db.query(PostTag.post_id).filter(PostTag.tag.ilike(pattern))
+    rows = db.query(Post).filter(or_(
+        Post.title.ilike(pattern), Post.content_zh.ilike(pattern),
+        Post.content_en.ilike(pattern), Post.id.in_(tagged),
+    )).order_by(Post.id.desc()).limit(200).all()
+    my_groups = {m.group_id for m in db.query(GroupMember).filter_by(
+        user_id=user.id, status="active").all()}
+    out = []
+    for post in rows:
+        # 与全站 feed 使用同一边界：研究项目及其内部数据集帖子不进入搜索。
+        internal = bool(post.group_id)
+        dataset = db.get(Dataset, post.dataset_id) if post.dataset_id else None
+        if not internal and dataset:
+            internal = bool(dataset.group_id)
+        if internal or not _post_visible(db, post, user, my_groups):
+            continue
+        author = db.get(User, post.author_id)
+        title = (post.title or "").strip() or (post.content_zh or "")[:50]
+        body = (post.content_zh or "").strip()
+        out.append({
+            "id": post.id, "title": title,
+            "snippet": body[:120] + ("…" if len(body) > 120 else ""),
+            "author_name": author.display_name if author else "已注销用户",
+            "post_type_label": POST_TYPES.get(post.post_type or "discussion", "讨论"),
+            "dataset_name": dataset.name_zh if dataset else None,
+            "created_at": _bj(post.created_at),
+        })
+        if len(out) >= min(limit, 30):
+            break
+    return out
+
+
 @router.get("/posts/hot")
 def hot_posts(range: str = "7d", limit: int = 10, db: Session = Depends(get_db),
               user: User = Depends(get_current_user)):

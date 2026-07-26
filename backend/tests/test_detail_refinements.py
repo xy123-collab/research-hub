@@ -92,7 +92,8 @@ def test_correction_release_preview_contains_text_and_change_code(client, founde
     bug = client.post("/api/datasets/cod/bugs",
                       json={"officer_id": "甲", "variable_id": var_id,
                             "current_value": "1", "suggested_value": "10",
-                            "description_zh": "指标校正"}, headers=member)
+                            "description_zh": "指标校正",
+                            "evidence": "原始登记表"}, headers=member)
     assert bug.status_code == 200
     detail = client.get(f"/api/bugs/{bug.json()['id']}", headers=founder).json()
     fin = client.post(f"/api/bug-items/{detail['items'][0]['id']}/finalize",
@@ -102,8 +103,10 @@ def test_correction_release_preview_contains_text_and_change_code(client, founde
     preview = client.get("/api/datasets/cod/corrections-release-preview", headers=founder)
     assert preview.status_code == 200, preview.text
     text = preview.json()["changelog_zh"]
-    assert "指标校正" in text and "修改代码" in text
-    assert "replace 指标" in text and "if 编号" in text
+    code = preview.json()["script"]
+    assert "指标校正" in text
+    assert "replace 指标" in code and "if 编号" in code
+    assert preview.json()["preview_hash"]
 
 
 def test_missing_download_file_returns_actionable_error(client, founder, monkeypatch):

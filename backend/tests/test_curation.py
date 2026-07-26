@@ -35,9 +35,17 @@ def test_bug_template_downloads_xlsx(client, member):
 
 def test_batch_correction_integrates_items_and_per_item_finalize(client, founder, member):
     # 批量提交 CSV → 集成为一条含多子项的勘误
-    csv = ("唯一ID值,变量名,当前值,建议值,说明与证据\n"
-           "O1,begin_yr,1999,1998,年份笔误\n"
-           "O2,gender,1,0,性别录错\n").encode("utf-8")
+    data = _make_stata([{"officerID": "O1", "begin_yr": 1999, "gender": 1},
+                        {"officerID": "O2", "begin_yr": 2000, "gender": 1}])
+    client.post("/api/datasets/cod/versions",
+                data={"version_id": "v-batch-check", "data_kind": "raw"},
+                files={"data_file": ("batch.dta", io.BytesIO(data), "application/octet-stream")},
+                headers=founder)
+    client.put("/api/datasets/cod/data-config",
+               json={"unique_id_var": "officerID"}, headers=founder)
+    csv = ("唯一ID值,变量名,当前值,建议值,说明,证据\n"
+           "O1,begin_yr,1999,1998,年份笔误,履历核对\n"
+           "O2,gender,1,0,性别录错,公开简历\n").encode("utf-8")
     files = {"file": ("batch.csv", io.BytesIO(csv), "text/csv")}
     r = client.post("/api/datasets/cod/bugs/batch", data={"title": "批量A"},
                     files=files, headers=member)
@@ -53,28 +61,39 @@ def test_batch_correction_integrates_items_and_per_item_finalize(client, founder
 
 
 def test_apply_corrections_writes_new_version(client, founder, member):
+    slug = "ds-apply-isolated"
+    made = client.post("/api/datasets", json={
+        "slug": slug, "name_zh": "一键勘误隔离测试", "desc_zh": "测试自动应用",
+    }, headers=founder)
+    assert made.status_code == 200, made.text
     # 造一个带 officerID 的原始版本
     data = _make_stata([{"officerID": "A1", "begin_yr": 1999},
                         {"officerID": "A2", "begin_yr": 2000}])
     files = {"data_file": ("v.dta", io.BytesIO(data), "application/octet-stream")}
-    pub = client.post("/api/datasets/cod/versions",
+    pub = client.post(f"/api/datasets/{slug}/versions",
                       data={"version_id": "vA.1", "data_kind": "raw"},
                       files=files, headers=founder)
     assert pub.status_code == 200
     base_id = pub.json()["id"]
     # 设唯一ID
-    client.put("/api/datasets/cod/data-config", json={"unique_id_var": "officerID"}, headers=founder)
+    client.put(f"/api/datasets/{slug}/data-config",
+               json={"unique_id_var": "officerID"}, headers=founder)
     # 批量勘误一条并终审采纳
-    csv = "唯一ID值,变量名,当前值,建议值,说明与证据\nA1,begin_yr,1999,1998,改年份\n".encode("utf-8")
+    csv = "唯一ID值,变量名,当前值,建议值,说明,证据\nA1,begin_yr,1999,1998,改年份,履历核对\n".encode("utf-8")
     files = {"file": ("b.csv", io.BytesIO(csv), "text/csv")}
-    bid = client.post("/api/datasets/cod/bugs/batch", files=files, headers=member).json()["id"]
-    it = client.get(f"/api/bugs/{bid}", headers=member).json()["items"][0]["id"]
+    bid = client.post(
+        f"/api/datasets/{slug}/bugs/batch", files=files, headers=founder).json()["id"]
+    it = client.get(f"/api/bugs/{bid}", headers=founder).json()["items"][0]["id"]
     client.post(f"/api/bug-items/{it}/finalize",
                 json={"adopt_level": "full", "final_score": 9}, headers=founder)
+    preview = client.get(
+        f"/api/datasets/{slug}/corrections-release-preview",
+        params={"base_version_id": base_id}, headers=founder).json()
     # 一键应用到数据 → 生成新版本
-    r = client.post("/api/datasets/cod/apply-corrections",
+    r = client.post(f"/api/datasets/{slug}/apply-corrections",
                     data={"base_version_id": base_id, "new_version_id": "vA.2",
-                          "changelog_zh": "应用勘误"}, headers=founder)
+                          "changelog_zh": "应用勘误",
+                          "preview_hash": preview["preview_hash"]}, headers=founder)
     assert r.status_code == 200 and r.json()["generated"] == "server"
     assert r.json()["applied"] == 1
 

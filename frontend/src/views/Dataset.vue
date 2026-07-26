@@ -29,9 +29,15 @@ async function toggleFollow() {
 const versions = ref<any[]>([]); const bugs = ref<any[]>([]); const vars = ref<any[]>([])
 const codes = ref<any[]>([]); const flags = ref<any[]>([]); const dash = ref<any[]>([])
 const lit = ref<any>({ topics: [], refs: [] }); const acceptedBugs = ref<any[]>([])
-const bugForm = ref<any>({ officer_id: '', variable_id: null, current_value: '', suggested_value: '', description_zh: '' })
+const bugForm = ref<any>({ officer_id: '', variable_id: null, current_value: '', suggested_value: '',
+  description_zh: '', evidence: '', confirm_new_officer: false })
 const bugFile = ref<File | null>(null)
 const bugModal = ref<any>(null)
+const showBugUpload = ref(false); const bugUploadMode = ref<'single'|'batch'>('single')
+const bugUidCheck = ref<any>(null); const bugUidChecking = ref(false)
+const bugStatusFilter = ref<'pending'|'accepted'|'fixed'|'rejected'>('pending')
+const bugDateFilter = ref<'7'|'30'|'all'>('all')
+const reviewScore = ref(5); const reviewReason = ref('')
 const codeModal = ref<any>(null)
 const showPublish = ref(false); const showEdit = ref(false); const showCodeAdd = ref(false)
 const pub = ref<any>({ version_id: '', changelog_zh: '', fixed: [] as number[] })
@@ -115,7 +121,13 @@ async function reloadDetail() { d.value = (await api.get(`/datasets/${slug}`)).d
 async function loadTab(x: string) {
   tab.value = x
   if (x === 'versions') { versions.value = (await api.get(`/datasets/${slug}/versions`)).data; if (d.value.is_member) loadFileCorrections() }
-  if (x === 'bugs') bugs.value = (await api.get(`/datasets/${slug}/bugs`)).data
+  if (x === 'bugs') {
+    bugs.value = (await api.get(`/datasets/${slug}/bugs`)).data
+    if (d.value.is_admin) {
+      if (!versions.value.length) versions.value = (await api.get(`/datasets/${slug}/versions`)).data
+      await loadCorrectionPreview()
+    }
+  }
   if (x === 'code') codes.value = (await api.get(`/datasets/${slug}/code`)).data
   if (x === 'verify') flags.value = (await api.get(`/datasets/${slug}/verify-flags`)).data
   if (x === 'literature') lit.value = (await api.get(`/datasets/${slug}/literature`)).data
@@ -302,24 +314,57 @@ async function doDesensitize() {
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 // ---------- 一键应用已采纳勘误 ----------
-const showApply = ref(false); const applyForm = ref<any>({ base_version_id: null, new_version_id: '', changelog_zh: '' })
-async function openApply() {
-  applyForm.value = { base_version_id: d.value.current_version?.id || null, new_version_id: '', changelog_zh: '' }
+const showApply = ref(false)
+const correctionPreview = ref<any>(null)
+const applyForm = ref<any>({ base_version_id: null, new_version_id: '', changelog_zh: '',
+  script: '', preview_hash: '', auto_count: 0, manual_count: 0, reviewed: false })
+const rawVersions = computed(() => versions.value.filter((v: any) => v.has_data && v.data_kind === 'raw'))
+async function loadCorrectionPreview(baseVersionId?: number | null) {
   try {
-    const preview = (await api.get(`/datasets/${slug}/corrections-release-preview`)).data
-    applyForm.value.changelog_zh = preview.changelog_zh || ''
-    showApply.value = true
-  } catch (e: any) { alert(e.response?.data?.detail || '无法生成勘误发版说明') }
+    const params: any = {}
+    if (baseVersionId) params.base_version_id = baseVersionId
+    correctionPreview.value = (await api.get(
+      `/datasets/${slug}/corrections-release-preview`, { params })).data
+    return correctionPreview.value
+  } catch {
+    correctionPreview.value = null
+    return null
+  }
+}
+async function openApply(baseVersionId?: number | null) {
+  if (!versions.value.length) versions.value = (await api.get(`/datasets/${slug}/versions`)).data
+  const selected = baseVersionId || rawVersions.value[0]?.id || null
+  const preview = await loadCorrectionPreview(selected)
+  if (!preview) { alert('没有可应用的已采纳勘误，或尚未配置唯一 ID/原始版本'); return }
+  applyForm.value = {
+    base_version_id: preview.base_version_id, new_version_id: '',
+    changelog_zh: preview.changelog_zh || '', script: preview.script || '',
+    preview_hash: preview.preview_hash, auto_count: preview.auto_count || 0,
+    manual_count: preview.manual_count || 0, reviewed: false,
+  }
+  showApply.value = true
+}
+async function refreshApplyPreview() {
+  const preview = await loadCorrectionPreview(applyForm.value.base_version_id)
+  if (!preview) { alert('无法生成该基准版本的勘误代码'); return }
+  Object.assign(applyForm.value, {
+    changelog_zh: preview.changelog_zh || '', script: preview.script || '',
+    preview_hash: preview.preview_hash, auto_count: preview.auto_count || 0,
+    manual_count: preview.manual_count || 0, reviewed: false,
+  })
 }
 async function doApply() {
+  if (!applyForm.value.reviewed) { alert('请先审阅代码并勾选确认'); return }
   try {
     const fd = new FormData()
     fd.append('base_version_id', applyForm.value.base_version_id)
     fd.append('new_version_id', applyForm.value.new_version_id)
     fd.append('changelog_zh', applyForm.value.changelog_zh)
+    fd.append('preview_hash', applyForm.value.preview_hash)
     const r = await api.post(`/datasets/${slug}/apply-corrections`, fd)
     if (r.data.generated === 'script') { downloadText(r.data.script, 'apply_corrections.do'); alert(r.data.note) }
-    else alert(`已生成新版本 ${r.data.version_id}，应用 ${r.data.applied} 条勘误`)
+    else alert(`已生成新版本 ${r.data.version_id}，自动应用 ${r.data.applied} 条勘误` +
+      (r.data.manual_remaining ? `；另有 ${r.data.manual_remaining} 条新增官员项待人工处理` : ''))
     showApply.value = false; loadTab('versions'); reloadDetail()
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
@@ -340,19 +385,43 @@ async function saveDataCfg() {
 // ---------- 批量勘误 ----------
 function downloadTemplate() { downloadFile(`/datasets/${slug}/bug-template`, `${slug}_bug_template.xlsx`) }
 const batchFile = ref<File | null>(null)
-async function submitBatch() {
+const batchTitle = ref('')
+const batchValidation = ref<any>(null); const batchConfirmNew = ref(false)
+function selectBatchFile(file: File | null) {
+  batchFile.value = file; batchValidation.value = null; batchConfirmNew.value = false
+}
+async function validateBatch() {
   if (!batchFile.value) { alert('请选择填好的模板文件'); return }
   const fd = new FormData(); fd.append('file', batchFile.value)
   try {
+    batchValidation.value = (await api.post(`/datasets/${slug}/bugs/batch/validate`, fd)).data
+    batchConfirmNew.value = !(batchValidation.value.missing_uid_values || []).length
+  } catch (e: any) { batchValidation.value = null; alert(e.response?.data?.detail || '校验失败') }
+}
+async function submitBatch() {
+  if (!batchFile.value) { alert('请选择填好的模板文件'); return }
+  if (!batchValidation.value) { alert('请先解析并校验批量文件'); return }
+  if (batchValidation.value.missing_uid_values?.length && !batchConfirmNew.value) {
+    alert('请确认列出的 ID 均为新增官员'); return
+  }
+  const fd = new FormData(); fd.append('file', batchFile.value)
+  fd.append('title', batchTitle.value)
+  fd.append('confirmed_new_officer_ids', JSON.stringify(batchValidation.value.missing_uid_values || []))
+  try {
     const r = await api.post(`/datasets/${slug}/bugs/batch`, fd)
-    alert(`已导入 ${r.data.items} 条修改，集成为一条勘误`); batchFile.value = null; loadTab('bugs')
+    alert(`已导入 ${r.data.items} 条修改，集成为一条勘误`)
+    batchFile.value = null; batchValidation.value = null; batchTitle.value = ''
+    showBugUpload.value = false; loadTab('bugs')
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 // 逐条子项终审 / AI
 async function finalizeItem(iid: number, adopt: string, score: number) {
   await api.post(`/bug-items/${iid}/finalize`, { adopt_level: adopt, final_score: score }); openBug(bugModal.value.id)
 }
-async function aiReviewItem(iid: number) { await api.post(`/bug-items/${iid}/ai-review`); openBug(bugModal.value.id) }
+async function aiReviewItem(iid: number) {
+  try { await api.post(`/bug-items/${iid}/ai-review`); openBug(bugModal.value.id) }
+  catch (e: any) { alert(e.response?.data?.detail || 'AI 评分失败') }
+}
 // ---------- 代码库版本/权限/评论 ----------
 const codeVerForm = ref<any>({ version_label: '', changelog: '', source_code: '' }); const codeVerFile = ref<File | null>(null)
 const codeComments = ref<any[]>([]); const codeCommentForm = ref<any>({ content: '', is_correction: false })
@@ -402,25 +471,85 @@ const actColor = (x: string) => x === 'version' ? '#2d4a7c' : x === 'code' ? '#4
 const actLabel = (x: string) => x === 'version' ? '版本' : x === 'code' ? '代码' : '勘误'
 
 // ---------- bug ----------
+const bugStatusLabel: Record<string,string> = {
+  pending: '未确认', accepted: '已采纳未修改', fixed: '已采纳已修改', rejected: '未采纳'
+}
+const filteredBugs = computed(() => {
+  const now = Date.now()
+  const days = bugDateFilter.value === 'all' ? null : Number(bugDateFilter.value)
+  return (bugs.value || []).filter((b: any) => {
+    if (b.status !== bugStatusFilter.value) return false
+    if (days === null) return true
+    const ts = b.created_at ? new Date(b.created_at).getTime() : Number.NaN
+    return Number.isFinite(ts) && now - ts <= days * 86400000
+  }).sort((a: any, b: any) => {
+    const at = a.created_at ? new Date(a.created_at).getTime() : -1
+    const bt = b.created_at ? new Date(b.created_at).getTime() : -1
+    return bt - at || b.id - a.id
+  })
+})
+function resetBugUidCheck() {
+  bugUidCheck.value = null
+  bugForm.value.confirm_new_officer = false
+}
+async function checkBugUid() {
+  const value = (bugForm.value.officer_id || '').trim()
+  if (!value) { bugUidCheck.value = null; return }
+  bugUidChecking.value = true
+  try {
+    bugUidCheck.value = (await api.get(`/datasets/${slug}/bugs/id-check`, {
+      params: { value }
+    })).data
+  } catch (e: any) {
+    bugUidCheck.value = { error: e.response?.data?.detail || '唯一 ID 校验失败' }
+  } finally { bugUidChecking.value = false }
+}
+const canSubmitBug = computed(() => {
+  const f = bugForm.value
+  const uidReady = bugUidCheck.value && !bugUidCheck.value.error &&
+    (bugUidCheck.value.exists || f.confirm_new_officer)
+  return !!(uidReady && f.variable_id && f.description_zh?.trim() && f.evidence?.trim())
+})
 async function submitBug() {
+  if (!canSubmitBug.value) { alert('请完成唯一 ID 校验，并填写说明和证据'); return }
   try {
     const r = await api.post(`/datasets/${slug}/bugs`, bugForm.value)
     if (bugFile.value) {
       const fd = new FormData(); fd.append('file', bugFile.value)
       await api.post(`/bugs/${r.data.id}/attachments`, fd)
     }
-    bugForm.value = { officer_id: '', variable_id: null, current_value: '', suggested_value: '', description_zh: '' }
-    bugFile.value = null; loadTab('bugs')
+    bugForm.value = { officer_id: '', variable_id: null, current_value: '', suggested_value: '',
+      description_zh: '', evidence: '', confirm_new_officer: false }
+    bugUidCheck.value = null; bugFile.value = null; showBugUpload.value = false; loadTab('bugs')
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
-async function openBug(id: number) { bugModal.value = (await api.get(`/bugs/${id}`)).data }
-async function scoreBug(id: number, s: number) {
-  await api.post(`/bugs/${id}/reviews`, { acceptability_score: s }); openBug(id)
+async function openBug(id: number) {
+  bugModal.value = (await api.get(`/bugs/${id}`)).data
+  reviewScore.value = 5; reviewReason.value = ''
 }
-async function aiReviewBug(id: number) { await api.post(`/bugs/${id}/ai-review`); openBug(id) }
+async function scoreBug(id: number) {
+  if (!reviewReason.value.trim()) { alert('请填写评分理由'); return }
+  try {
+    await api.post(`/bugs/${id}/reviews`, {
+      acceptability_score: reviewScore.value, comment: reviewReason.value.trim()
+    })
+    reviewReason.value = ''; await openBug(id); await loadTab('bugs')
+  } catch (e: any) { alert(e.response?.data?.detail || '评分失败') }
+}
+async function aiReviewBug(id: number) {
+  try { await api.post(`/bugs/${id}/ai-review`); openBug(id) }
+  catch (e: any) { alert(e.response?.data?.detail || 'AI 评分失败') }
+}
 async function finalizeBug(id: number, adopt: string, score: number) {
   await api.post(`/bugs/${id}/finalize`, { adopt_level: adopt, final_score: score })
   openBug(id); loadTab('bugs')
+}
+
+async function copyCorrectionScript() {
+  const text = applyForm.value.script || correctionPreview.value?.script || ''
+  if (!text) return
+  try { await navigator.clipboard.writeText(text); alert('修改代码已复制') }
+  catch { downloadText(text, 'apply_corrections.do') }
 }
 
 // ---------- version publish ----------
@@ -959,7 +1088,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
       <div v-else-if="tab==='versions'">
         <div v-if="d.is_admin" class="mb-3 flex flex-wrap gap-2">
           <button class="btn-primary" @click="openPublish">{{ t('ds.publishVersion') }}</button>
-          <button class="btn-ghost" @click="openApply">一键应用已采纳勘误发版</button>
+          <button class="btn-ghost" @click="openApply()">一键应用已采纳勘误发版</button>
           <button class="btn-ghost" @click="openDataCfg">数据处理设置（唯一ID/脱敏规则）</button>
         </div>
         <p class="text-xs text-gray-500 mb-2">数据分类：<b>原始</b>与<b>脱敏</b>同步迭代（有当前推荐版）；<b>样例</b>公开可下、独立不迭代。默认样例置顶、当前版本随后。</p>
@@ -1021,42 +1150,65 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 
       <!-- bugs -->
       <div v-else-if="tab==='bugs'">
-        <!-- 批量勘误 -->
-        <div v-if="d.is_member" class="card mb-4">
-          <div class="label-cap mb-2">批量勘误（Excel/CSV 一次多条，集成为一条勘误）</div>
-          <p class="text-xs text-gray-500 mb-2">先下载模板，按「唯一ID值/变量名/当前值/建议值/说明与证据」填写；导入后系统按行拆分，逐条打分与终审。</p>
-          <div class="flex flex-wrap items-center gap-2">
-            <button class="btn-ghost text-xs" @click="downloadTemplate">下载批量模板</button>
-            <input type="file" accept=".xlsx,.csv" @change="(e:any)=>batchFile=e.target.files[0]" class="text-xs" />
-            <button class="btn-primary text-xs" @click="submitBatch">导入批量勘误</button>
+        <div class="flex items-center justify-between gap-3 mb-3">
+          <p class="text-xs text-gray-500">勘误按上传时间排序；点击任一条可查看详情或参与评分。</p>
+          <button v-if="d.is_member" class="btn-primary shrink-0" @click="showBugUpload=true">＋勘误上传</button>
+        </div>
+
+        <!-- 管理员：已采纳未修改勘误的透明代码入口 -->
+        <div v-if="d.is_admin && correctionPreview" class="card mb-4 border-accent/30">
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <div class="label-cap">已采纳未修改勘误 · 修改代码</div>
+              <p class="text-xs text-gray-500 mt-1">
+                {{ correctionPreview.auto_count }} 条可自动应用
+                <span v-if="correctionPreview.manual_count">；{{ correctionPreview.manual_count }} 条新增官员需人工处理</span>
+              </p>
+            </div>
+            <div class="flex gap-2 shrink-0">
+              <button class="btn-ghost text-xs" @click="downloadText(correctionPreview.script,'apply_corrections.do')">下载 .do</button>
+              <button class="btn-ghost text-xs" @click="copyCorrectionScript">复制代码</button>
+              <button v-if="correctionPreview.auto_count" class="btn-primary text-xs"
+                @click="openApply(correctionPreview.base_version_id)">审阅并一键应用</button>
+            </div>
+          </div>
+          <pre class="mt-3 whitespace-pre-wrap bg-paper border border-line rounded p-3 text-xs max-h-52 overflow-auto">{{ correctionPreview.script }}</pre>
+        </div>
+
+        <div class="card p-3 mb-3">
+          <div class="flex flex-wrap gap-1.5 mb-2">
+            <button v-for="[k,l] in [['pending','未确认'],['accepted','已采纳未修改'],['fixed','已采纳已修改'],['rejected','未采纳']]" :key="k"
+              :class="['text-xs px-2.5 py-1 rounded-full border', bugStatusFilter===k ? 'bg-accent text-white border-accent' : 'border-line text-gray-600']"
+              @click="bugStatusFilter=k as any">{{ l }}</button>
+          </div>
+          <div class="flex flex-wrap gap-1.5 mb-3">
+            <button v-for="[k,l] in [['7','近7日'],['30','近30日'],['all','不限日期']]" :key="k"
+              :class="['text-xs px-2.5 py-1 rounded-full', bugDateFilter===k ? 'bg-paper text-accent' : 'text-gray-500']"
+              @click="bugDateFilter=k as any">{{ l }}</button>
+          </div>
+          <div class="border border-line rounded divide-y divide-line overflow-y-auto" style="max-height:390px">
+            <button v-for="(b,i) in filteredBugs" :key="b.id"
+              class="w-full text-left px-3 py-3 hover:bg-paper flex items-start gap-3"
+              @click="openBug(b.id)">
+              <span class="font-mono text-xs text-gray-400 w-6 shrink-0">{{ i+1 }}</span>
+              <div class="min-w-0 flex-1">
+                <div class="text-sm font-medium truncate">
+                  <span class="font-mono text-xs">{{ b.officer_id || '批量' }}</span>
+                  · {{ b.description_zh }}
+                  <span v-if="b.has_new_officer" class="tag ml-1 border-amber-400 text-amber-700">新增官员</span>
+                </div>
+                <div class="text-xs text-gray-500 mt-1">
+                  提交人：{{ b.reporter_name }} ·
+                  {{ b.created_at ? formatChinaDateTime(b.created_at) : '历史时间未知' }} ·
+                  {{ b.reviewer_count }} 人参与评分
+                </div>
+                <div class="text-[11px] text-accent mt-1">点击打开详情或参与评分</div>
+              </div>
+              <span class="tag shrink-0">{{ bugStatusLabel[b.status] || b.status }}</span>
+            </button>
+            <p v-if="!filteredBugs.length" class="px-3 py-8 text-center text-gray-400 text-sm">该筛选下暂无勘误。</p>
           </div>
         </div>
-        <div v-if="d.is_member" class="card mb-4">
-          <div class="label-cap mb-2">{{ t('ds.submitBug') }}（单条）</div>
-          <div class="grid grid-cols-2 gap-2">
-            <input v-model="bugForm.officer_id" class="input" :placeholder="d.unique_id_var ? (d.unique_id_var + '（唯一ID）') : '唯一ID（管理员未设置）'" />
-            <select v-model="bugForm.variable_id" class="input">
-              <option :value="null">选择变量</option>
-              <option v-for="v in vars" :key="v.id" :value="v.id">{{ v.var_name }}</option>
-            </select>
-            <input v-model="bugForm.current_value" class="input" placeholder="当前值" />
-            <input v-model="bugForm.suggested_value" class="input" placeholder="建议值" />
-          </div>
-          <p class="text-[11px] text-gray-400 mt-1">第一格为唯一ID：{{ d.unique_id_var || '（管理员可在版本库·数据处理设置中指定）' }}，唯一ID本身不可修改。</p>
-          <textarea v-model="bugForm.description_zh" class="input mt-2" placeholder="说明与证据"></textarea>
-          <div class="flex items-center gap-2 mt-2">
-            <input type="file" @change="(e:any)=>bugFile=e.target.files[0]" class="text-xs" />
-            <button class="btn-primary ml-auto" @click="submitBug">{{ t('common.submit') }}</button>
-          </div>
-        </div>
-        <div v-for="b in bugs" :key="b.id" class="card mb-2 flex items-center justify-between cursor-pointer" @click="openBug(b.id)">
-          <div class="text-sm">
-            <span class="font-mono text-xs">{{ b.officer_id }}</span> · {{ b.description_zh }}
-            <span class="text-gray-400">（{{ b.current_value }} → {{ b.suggested_value }}）</span>
-          </div>
-          <span class="tag">{{ b.status }}</span>
-        </div>
-        <p v-if="!bugs.length" class="text-gray-400 text-sm">暂无勘误。评分制审核：成员评分+AI评分→管理员终审。</p>
       </div>
 
       <!-- code -->
@@ -1386,15 +1538,104 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     </div>
 
     <!-- ========== 弹窗 ========== -->
+    <!-- 勘误上传：单条 / 批量统一入口 -->
+    <div v-if="showBugUpload" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div class="bg-white rounded-lg max-w-2xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-lg">勘误上传</h3>
+          <button class="text-gray-400" @click="showBugUpload=false">×</button>
+        </div>
+        <div class="flex gap-1 border-b border-line mb-4 text-sm">
+          <button v-for="[k,l] in [['single','单条提交'],['batch','批量上传']]" :key="k"
+            @click="bugUploadMode=k as any"
+            :class="['px-3 py-1.5', bugUploadMode===k ? 'border-b-2 border-accent text-accent':'text-gray-500']">{{ l }}</button>
+        </div>
+
+        <div v-if="bugUploadMode==='single'">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <input v-model="bugForm.officer_id" class="input"
+              :placeholder="d.unique_id_var ? (d.unique_id_var + '（唯一ID）*') : '唯一ID（管理员未设置）'"
+              @input="resetBugUidCheck" @blur="checkBugUid" />
+            <select v-model="bugForm.variable_id" class="input">
+              <option :value="null">选择变量 *</option>
+              <option v-for="v in vars" :key="v.id" :value="v.id">{{ v.var_name }}</option>
+            </select>
+            <input v-model="bugForm.current_value" class="input" placeholder="当前值" />
+            <input v-model="bugForm.suggested_value" class="input" placeholder="建议值" />
+          </div>
+          <p v-if="bugUidChecking" class="text-xs text-gray-400 mt-1">正在核对唯一 ID…</p>
+          <p v-else-if="bugUidCheck?.error" class="text-xs text-red-600 mt-1">{{ bugUidCheck.error }}</p>
+          <p v-else-if="bugUidCheck?.exists" class="text-xs text-emerald-700 mt-1">
+            已在原始版本 {{ bugUidCheck.source_version }} 中找到该 ID。
+          </p>
+          <div v-else-if="bugUidCheck && !bugUidCheck.exists" class="mt-2 p-2 rounded bg-amber-50 border border-amber-200">
+            <p class="text-xs text-amber-800">现有数据中没有该 ID。请先检查是否填错；若确为新增官员，再勾选确认。</p>
+            <label class="flex items-center gap-2 text-sm mt-2">
+              <input type="checkbox" v-model="bugForm.confirm_new_officer" />
+              我确认这是新增官员
+            </label>
+          </div>
+          <label class="label-cap mt-3">修改说明 *</label>
+          <textarea v-model="bugForm.description_zh" class="input mt-1" rows="3"
+            placeholder="说明为什么需要修改"></textarea>
+          <label class="label-cap mt-3">证据 *</label>
+          <textarea v-model="bugForm.evidence" class="input mt-1" rows="3"
+            placeholder="填写证据来源、链接、出处或核对依据"></textarea>
+          <label class="label-cap mt-3">证据附件（可选）</label>
+          <input type="file" @change="(e:any)=>bugFile=e.target.files[0]" class="text-xs mt-1 block" />
+          <div class="flex justify-end gap-2 mt-4">
+            <button class="btn-ghost" @click="showBugUpload=false">取消</button>
+            <button class="btn-primary" :disabled="!canSubmitBug" @click="submitBug">提交勘误</button>
+          </div>
+        </div>
+
+        <div v-else>
+          <p class="text-xs text-gray-500 mb-3">下载最新模板，分别填写“说明”和“证据”。上传后必须先校验唯一 ID，再确认提交。</p>
+          <input v-model="batchTitle" class="input mb-2" placeholder="批量勘误标题（可选）" />
+          <div class="flex flex-wrap items-center gap-2">
+            <button class="btn-ghost text-xs" @click="downloadTemplate">下载最新模板</button>
+            <input type="file" accept=".xlsx,.csv"
+              @change="(e:any)=>selectBatchFile(e.target.files[0] || null)" class="text-xs" />
+            <button class="btn-primary text-xs" @click="validateBatch">解析并校验</button>
+          </div>
+          <div v-if="batchValidation" class="mt-3 p-3 rounded bg-paper border border-line text-sm">
+            <p>已校验 {{ batchValidation.rows }} 行；依据原始版本 {{ batchValidation.source_version }}。</p>
+            <template v-if="batchValidation.missing_uid_values?.length">
+              <p class="text-amber-700 mt-2">以下 ID 在现有数据中不存在：</p>
+              <p class="font-mono text-xs mt-1 break-words">{{ batchValidation.missing_uid_values.join('、') }}</p>
+              <label class="flex items-center gap-2 mt-2">
+                <input type="checkbox" v-model="batchConfirmNew" />
+                我确认以上均为新增官员
+              </label>
+            </template>
+            <p v-else class="text-emerald-700 mt-2">全部唯一 ID 均在现有数据中找到。</p>
+          </div>
+          <div class="flex justify-end gap-2 mt-4">
+            <button class="btn-ghost" @click="showBugUpload=false">取消</button>
+            <button class="btn-primary"
+              :disabled="!batchValidation || (batchValidation.missing_uid_values?.length && !batchConfirmNew)"
+              @click="submitBatch">确认导入</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- bug 详情 -->
     <div v-if="bugModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-lg w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <div class="flex items-center justify-between">
-          <h3 class="text-lg">勘误 #{{ bugModal.id }} <span class="tag ml-1">{{ bugModal.status }}</span></h3>
+          <h3 class="text-lg">勘误 #{{ bugModal.id }} <span class="tag ml-1">{{ bugStatusLabel[bugModal.status] || bugModal.status }}</span></h3>
           <button @click="bugModal=null" class="text-gray-400">×</button>
         </div>
-        <p class="text-sm mt-2">提交人：<router-link :to="`/users/${bugModal.reporter.id}`" class="text-accent">{{ bugModal.reporter.name }}</router-link></p>
-        <p class="text-sm mt-1">{{ bugModal.description_zh }}</p>
+        <p class="text-sm mt-2">提交人：<router-link :to="`/users/${bugModal.reporter.id}`" class="text-accent">{{ bugModal.reporter.name }}</router-link>
+          <span class="text-gray-400"> · {{ bugModal.created_at ? formatChinaDateTime(bugModal.created_at) : '历史时间未知' }} · {{ bugModal.reviewer_count }} 人参与评分</span>
+        </p>
+        <div class="mt-2 p-2 rounded bg-paper">
+          <div class="label-cap">修改说明</div>
+          <p class="text-sm mt-1 whitespace-pre-wrap">{{ bugModal.description_zh }}</p>
+          <div class="label-cap mt-2">证据</div>
+          <p class="text-sm mt-1 whitespace-pre-wrap">{{ bugModal.evidence || '历史记录未单独保存证据' }}</p>
+        </div>
         <p v-if="bugModal.fixed_in_version" class="text-xs text-accent mt-1">已在版本 {{ bugModal.fixed_in_version }} 修复</p>
 
         <!-- 逐条修改项（批量或单条统一按子项确认）-->
@@ -1404,11 +1645,14 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <div class="flex items-center gap-2 flex-wrap">
               <span class="font-mono text-xs">{{ it.uid_value }}</span>
               <span class="text-gray-500">{{ it.var_name }}：{{ it.current_value }} → <b>{{ it.suggested_value }}</b></span>
+              <span v-if="it.is_new_officer" class="tag border-amber-400 text-amber-700">新增官员·需人工补全</span>
               <span class="tag ml-auto">{{ it.status }}</span>
             </div>
-            <p v-if="it.reason" class="text-xs text-gray-500 mt-1">{{ it.reason }}</p>
+            <p v-if="it.reason" class="text-xs text-gray-500 mt-1">说明：{{ it.reason }}</p>
+            <p v-if="it.evidence" class="text-xs text-gray-500 mt-1">证据：{{ it.evidence }}</p>
             <div class="flex items-center gap-2 mt-1 flex-wrap">
               <span v-if="it.ai_score!=null" class="text-xs text-gray-400">AI {{ it.ai_score }}/10</span>
+              <span v-if="it.ai_reason" class="text-xs text-gray-500">理由：{{ it.ai_reason }}</span>
               <span v-if="it.final_score!=null" class="text-xs text-accent">终审 {{ it.final_score }}/10（{{ it.adopt_level }}）</span>
               <template v-if="d.is_admin && it.status==='pending'">
                 <button class="btn-ghost text-[11px]" @click="aiReviewItem(it.id)">AI评分</button>
@@ -1433,9 +1677,14 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
         <div v-if="d.is_member && bugModal.status==='pending'" class="mt-3 border-t border-line pt-3">
           <div class="label-cap mb-1">我来评分（0-10）</div>
-          <div class="flex gap-1 flex-wrap">
-            <button v-for="s in [0,2,4,6,8,10]" :key="s" class="btn-ghost text-xs" @click="scoreBug(bugModal.id, s)">{{ s }}</button>
+          <div class="flex items-center gap-3">
+            <input v-model.number="reviewScore" type="range" min="0" max="10" step="1" class="flex-1" />
+            <span class="font-mono text-lg text-accent w-12 text-center">{{ reviewScore }}/10</span>
+          </div>
+          <textarea v-model="reviewReason" class="input mt-2" rows="2" placeholder="评分理由（必填）"></textarea>
+          <div class="flex justify-end gap-2 mt-2">
             <button class="btn-ghost text-xs" @click="aiReviewBug(bugModal.id)">触发 AI 评分</button>
+            <button class="btn-primary text-xs" :disabled="!reviewReason.trim()" @click="scoreBug(bugModal.id)">确认评分</button>
           </div>
         </div>
         <div v-if="d.is_admin && bugModal.status==='pending'" class="mt-3 border-t border-line pt-3">
@@ -1734,18 +1983,37 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
 
     <!-- 一键应用已采纳勘误发版 -->
     <div v-if="showApply" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div class="bg-white rounded-lg max-w-md w-full p-6 m-4">
+      <div class="bg-white rounded-lg max-w-3xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
         <h3 class="text-lg mb-1">应用已采纳勘误 → 生成新版本</h3>
-        <p class="text-xs text-gray-500 mb-3">按唯一ID+变量名定位单元格，自动改上一版数据。需先在「数据处理设置」指定唯一ID。数据过大将回退为脚本。</p>
+        <p class="text-xs text-gray-500 mb-3">请先核对下面的实际 Stata 修改代码。系统只自动处理已有唯一 ID 的项目；新增官员继续保留为人工处理。</p>
         <label class="label-cap">基准版本</label>
-        <select v-model="applyForm.base_version_id" class="input mb-2">
-          <option v-for="v in versions.filter(x=>x.has_data)" :key="v.id" :value="v.id">{{ v.version_id }}（{{ kindLabel[v.data_kind] }}）</option>
+        <select v-model="applyForm.base_version_id" class="input mb-2" @change="refreshApplyPreview">
+          <option v-for="v in rawVersions" :key="v.id" :value="v.id">{{ v.version_id }}（原始数据）</option>
         </select>
         <input v-model="applyForm.new_version_id" class="input mb-2 font-mono" placeholder="新版本号，如 v1.1.0" />
-        <textarea v-model="applyForm.changelog_zh" class="input mb-2 font-mono text-xs" rows="12" placeholder="系统将默认填入勘误文字说明和修改代码，可在发版前补充。"></textarea>
+        <label class="label-cap">版本说明</label>
+        <textarea v-model="applyForm.changelog_zh" class="input mb-3 text-xs" rows="6"
+          placeholder="系统已填入勘误摘要，可补充说明；实际执行代码由服务器单独留档。"></textarea>
+        <div class="flex items-center justify-between gap-2 mb-1">
+          <div class="label-cap">实际修改代码（只读）</div>
+          <div class="flex gap-2">
+            <button class="btn-ghost text-xs" @click="downloadText(applyForm.script,'apply_corrections.do')">下载 .do</button>
+            <button class="btn-ghost text-xs" @click="copyCorrectionScript">复制代码</button>
+          </div>
+        </div>
+        <p class="text-xs text-gray-500 mb-2">
+          自动应用 {{ applyForm.auto_count }} 条
+          <span v-if="applyForm.manual_count">；{{ applyForm.manual_count }} 条新增官员项不会自动执行</span>
+        </p>
+        <pre class="whitespace-pre-wrap bg-paper border border-line rounded p-3 text-xs max-h-72 overflow-auto">{{ applyForm.script }}</pre>
+        <label class="flex items-start gap-2 text-sm mt-3 p-2 rounded border border-line">
+          <input type="checkbox" v-model="applyForm.reviewed" class="mt-0.5" />
+          <span>我已检查上述代码，确认系统可按该代码自动修改已有 ID 项；新增官员项继续人工处理。</span>
+        </label>
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showApply=false">取消</button>
-          <button class="btn-primary" @click="doApply">应用并发版</button>
+          <button class="btn-primary" :disabled="!applyForm.reviewed || !applyForm.new_version_id.trim() || !applyForm.auto_count"
+            @click="doApply">确认应用并发版</button>
         </div>
       </div>
     </div>

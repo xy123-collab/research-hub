@@ -78,7 +78,8 @@ def wall(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
 
 
 @router.get("/datasets/search")
-def search_datasets(q: str = "", limit: int = 10, db: Session = Depends(get_db),
+def search_datasets(q: str = "", limit: int = 10, public_only: bool = False,
+                    db: Session = Depends(get_db),
                     user: User = Depends(get_current_user)):
     """检索可关联的数据集。
 
@@ -88,23 +89,35 @@ def search_datasets(q: str = "", limit: int = 10, db: Session = Depends(get_db),
     from sqlalchemy import or_
     from ..models.group import GroupMember
     q = (q or "").strip()
-    member_ids = [m.dataset_id for m in db.query(DatasetMember).filter_by(user_id=user.id).all()]
-    project_ids = [m.group_id for m in db.query(GroupMember).filter_by(
-        user_id=user.id, status="active").all()]
-    query = db.query(Dataset).filter(
-        Dataset.is_deleted == False,
-        or_(
-            (Dataset.group_id.is_(None) &
-             or_(Dataset.is_public == True, Dataset.id.in_(member_ids or [-1]))),
-            Dataset.group_id.in_(project_ids or [-1])
-        ))
+    if public_only:
+        query = db.query(Dataset).filter(
+            Dataset.is_deleted == False, Dataset.is_public == True,
+            Dataset.group_id.is_(None))
+    else:
+        member_ids = [m.dataset_id for m in db.query(DatasetMember).filter_by(
+            user_id=user.id).all()]
+        project_ids = [m.group_id for m in db.query(GroupMember).filter_by(
+            user_id=user.id, status="active").all()]
+        query = db.query(Dataset).filter(
+            Dataset.is_deleted == False,
+            or_(
+                (Dataset.group_id.is_(None) &
+                 or_(Dataset.is_public == True, Dataset.id.in_(member_ids or [-1]))),
+                Dataset.group_id.in_(project_ids or [-1])
+            ))
     if q:
-        conds = [Dataset.name_zh.ilike(f"%{q}%")]
+        pattern = f"%{q}%"
+        conds = [
+            Dataset.name_zh.ilike(pattern), Dataset.name_en.ilike(pattern),
+            Dataset.desc_zh.ilike(pattern), Dataset.desc_en.ilike(pattern),
+            Dataset.slug.ilike(pattern),
+        ]
         if q.isdigit():
             conds.append(Dataset.id == int(q))
         query = query.filter(or_(*conds))
     rows = query.order_by(Dataset.id.desc()).limit(min(limit, 20)).all()
-    return [{"id": d.id, "slug": d.slug, "name": d.name_zh} for d in rows]
+    return [{"id": d.id, "slug": d.slug, "name": d.name_zh,
+             "name_en": d.name_en, "description": d.desc_zh} for d in rows]
 
 
 def _recent_events(db, d):
@@ -420,12 +433,21 @@ async def publish_version(slug: str, version_id: str = Form(...),
         var_sync = sync_variables_from_version(db, d, v)
     # 核心闭环最后一环：本次修复的已采纳勘误标 fixed + fixed_in_version_id
     from ..models.correction import Bug
+    from ..models.curation import BugItem
     fixed = []
     for raw in [x.strip() for x in fixed_bug_ids.split(",") if x.strip()]:
         bug = db.get(Bug, int(raw))
         if bug and bug.dataset_id == d.id and bug.status == "accepted":
-            bug.status = "fixed"; bug.fixed_in_version_id = v.id
-            fixed.append(bug.id)
+            children = db.query(BugItem).filter_by(bug_id=bug.id).all()
+            for item in children:
+                if item.status == "accepted":
+                    item.status = "fixed"
+                    item.applied_in_version = v.id
+            remaining = {item.status for item in children}
+            if not remaining.intersection({"pending", "accepted"}):
+                bug.status = "fixed"
+                bug.fixed_in_version_id = v.id
+                fixed.append(bug.id)
     write_audit(db, user.id, "version.publish", "dataset", d.id,
                 {"version": version_id, "fixed_bugs": fixed})
     db.commit()

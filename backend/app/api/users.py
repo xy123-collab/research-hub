@@ -41,17 +41,29 @@ def _profile_extra(db: Session, uid: int) -> UserProfile:
 @router.get("/users/search")
 def search_users(q: str = "", limit: int = 20, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
-    """按姓名 / 用户名 / ID 检索平台全体成员（用于邀请/授权）。"""
+    """按姓名、用户名、ID、研究方向或关键词检索平台成员。"""
     q = (q or "").strip()
-    query = db.query(User).filter(User.status != "left")
+    query = db.query(User).outerjoin(UserProfile, UserProfile.user_id == User.id).filter(
+        User.status != "left")
     if q:
-        conds = [User.display_name.ilike(f"%{q}%"), User.username.ilike(f"%{q}%")]
+        pattern = f"%{q}%"
+        conds = [
+            User.display_name.ilike(pattern), User.username.ilike(pattern),
+            UserProfile.research_direction.ilike(pattern),
+            UserProfile.keywords.ilike(pattern),
+        ]
         if q.isdigit():
             conds.append(User.id == int(q))
         query = query.filter(or_(*conds))
     rows = query.order_by(User.id).limit(min(limit, 50)).all()
-    return [{"id": u.id, "display_name": u.display_name, "username": u.username,
-             "avatar": u.avatar} for u in rows]
+    out = []
+    for u in rows:
+        profile = db.get(UserProfile, u.id)
+        out.append({"id": u.id, "display_name": u.display_name, "username": u.username,
+                    "avatar": u.avatar,
+                    "research_direction": profile.research_direction if profile else None,
+                    "keywords": profile.keywords if profile else None})
+    return out
 
 
 @router.get("/me/collab-scopes")
