@@ -99,3 +99,67 @@ def test_code_file_upload(client):
     assert r.status_code == 200
     cid = r.json()["id"]
     assert "merge 1:1" in client.get(f"/api/code/{cid}", headers=founder).json()["source_code"]
+
+
+def test_code_submission_accepts_any_file_or_pasted_text_or_both(client):
+    founder = _hdr(client, "lixiaoyu", "pass123")
+
+    # 任意格式文件可单独提交，二进制内容原样保存并下载。
+    doc_bytes = b"PK\x03\x04\x00binary-docx"
+    r = client.post(
+        "/api/datasets/cod/code/upload",
+        data={"title_zh": "说明文档", "lang": "其他"},
+        files={"file": ("处理说明.docx", io.BytesIO(doc_bytes),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        headers=founder,
+    )
+    assert r.status_code == 200
+    cid = r.json()["id"]
+    downloaded = client.get(f"/api/code/{cid}/download", headers=founder)
+    assert downloaded.status_code == 200 and downloaded.content == doc_bytes
+
+    # 粘贴文本可单独提交。
+    pasted = client.post(
+        "/api/datasets/cod/code/upload",
+        data={"title_zh": "粘贴脚本", "lang": "Python", "source_code": "print('ok')"},
+        headers=founder,
+    )
+    assert pasted.status_code == 200
+    pasted_id = pasted.json()["id"]
+    pasted_detail = client.get(f"/api/code/{pasted_id}", headers=founder).json()
+    assert pasted_detail["source_code"] == "print('ok')"
+    assert client.get(f"/api/code/{pasted_id}/download", headers=founder).content == b"print('ok')"
+
+    # 两种方式可共存：原文件用于下载，粘贴文本用于在线预览。
+    both = client.post(
+        "/api/datasets/cod/code/upload",
+        data={"title_zh": "文件与说明", "lang": "其他", "source_code": "配套处理说明"},
+        files={"file": ("readme.md", io.BytesIO(b"# raw file"), "text/markdown")},
+        headers=founder,
+    )
+    assert both.status_code == 200
+    both_id = both.json()["id"]
+    assert client.get(f"/api/code/{both_id}", headers=founder).json()["source_code"] == "配套处理说明"
+    assert client.get(f"/api/code/{both_id}/download", headers=founder).content == b"# raw file"
+
+    # 发布后续版本时同样支持两种方式并存，文件下载与文本预览各自保留。
+    version = client.post(
+        f"/api/code/{both_id}/versions",
+        data={"version_label": "v2", "changelog": "补充处理说明",
+              "source_code": "更新后的在线预览"},
+        files={"file": ("appendix.doc", io.BytesIO(b"binary-v2"), "application/msword")},
+        headers=founder,
+    )
+    assert version.status_code == 200
+    assert client.get(f"/api/code/{both_id}", headers=founder).json()["source_code"] == "更新后的在线预览"
+    assert client.get(
+        f"/api/code/{both_id}/download?vid={version.json()['id']}",
+        headers=founder,
+    ).content == b"binary-v2"
+
+    empty = client.post(
+        "/api/datasets/cod/code/upload",
+        data={"title_zh": "空提交", "lang": "其他"},
+        headers=founder,
+    )
+    assert empty.status_code == 400

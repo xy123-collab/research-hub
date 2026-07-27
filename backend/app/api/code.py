@@ -17,6 +17,30 @@ from ..models.extras import ContentTombstone
 from ..schemas.models import CodeIn, CodeBugIn, ReviewIn, FinalizeIn
 
 router = APIRouter(tags=["code"])
+_INITIAL_VERSION = "__initial__"
+
+
+def _text_preview(raw: bytes) -> str:
+    """尽力生成纯文本预览；DOC/DOCX 等二进制文件只原样存储，不强行解码。"""
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if not text:
+            return ""
+        readable = sum(ch.isprintable() or ch in "\r\n\t" for ch in text)
+        if readable / len(text) >= 0.9:
+            return text
+    return ""
+
+
+def _pasted_filename(lang: str) -> str:
+    return {
+        "Stata": "pasted-code.do",
+        "Python": "pasted-code.py",
+        "R": "pasted-code.r",
+    }.get(lang, "pasted-code.txt")
 
 
 def _code_deleted(db: Session, cid: int) -> bool:
@@ -93,7 +117,7 @@ def get_code(cid: int, db: Session = Depends(get_db), user: User = Depends(get_c
             "versions": [{"id": v.id, "version_label": v.version_label, "filename": v.filename,
                           "changelog": v.changelog, "is_current": v.is_current,
                           "created_at": str(v.created_at) if v.created_at else ""}
-                         for v in versions],
+                         for v in versions if v.version_label != _INITIAL_VERSION],
             "grants": [{"user_id": g.user_id, "can_edit": g.can_edit,
                         "can_publish": g.can_publish} for g in grants]}
 
@@ -151,14 +175,18 @@ def publish_code_version(cid: int, version_label: str = Form(...), changelog: st
         raise HTTPException(400, "请写清本次修改内容")
     if db.query(CodeVersion).filter_by(script_id=cid, version_label=version_label).first():
         raise HTTPException(400, f"版本 {version_label} 已存在")
+    if file is None and not source_code.strip():
+        raise HTTPException(400, "请上传文件或粘贴代码，至少完成一种方式")
     filename = c.filename; key = None; src = source_code
     if file is not None:
+        from ..services.uploads import validate_upload
+        checked = validate_upload(file, allow_any_type=True)
+        if checked["size"] > 5 * 1024 * 1024:
+            raise HTTPException(400, "上传文件过大（>5MB）")
         raw = file.file.read()
-        try:
-            src = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            src = raw.decode("latin-1", errors="replace")
-        filename = file.filename
+        if not source_code.strip():
+            src = _text_preview(raw)
+        filename = checked["filename"]
         key = f"code/{cid}/{version_label}/{filename}"
         from ..services.uploads import save_stored_file
         save_stored_file(key, io.BytesIO(raw))
@@ -193,33 +221,31 @@ def download_code(cid: int, vid: int | None = None, db: Session = Depends(get_db
     filename = c.filename or f"code_{cid}.txt"
     data = (c.source_code or "").encode("utf-8")
     from ..services.downloads import log_download
+    from ..services.uploads import attachment_headers, open_stored_file
     from ..models.dataset import Dataset as _DS
     _d = db.get(_DS, c.dataset_id)
     _label = _d.name_zh if _d else "处理代码"
     _link = f"/#/datasets/{_d.slug}?tab=code" if _d else ""
-    if vid:
-        v = db.get(CodeVersion, vid)
-        if v and v.script_id == cid:
-            filename = v.filename or filename
-            data = (v.source_code or "").encode("utf-8")
-            if v.file_path:
-                from ..services.uploads import open_stored_file
-                stream = open_stored_file(v.file_path)
-                log_download(db, user_id=user.id, source="code", dataset_id=c.dataset_id,
-                             location_label=_label, detail=f"处理代码·{v.version_label or ''}",
-                             file_name=filename, link=_link)
-                write_audit(db, user.id, "code.download", "code", cid)
-                db.commit()
-                return StreamingResponse(stream,
-                                         media_type="application/octet-stream",
-                    headers={"Content-Disposition": f'attachment; filename="code_{vid}"'})
-    safe = f"code_{cid}.txt"
+    v = db.get(CodeVersion, vid) if vid else db.query(CodeVersion).filter_by(
+        script_id=cid, is_current=True).order_by(CodeVersion.id.desc()).first()
+    if v and v.script_id == cid:
+        filename = v.filename or filename
+        data = (v.source_code or "").encode("utf-8")
+        if v.file_path:
+            stream = open_stored_file(v.file_path)
+            log_download(db, user_id=user.id, source="code", dataset_id=c.dataset_id,
+                         location_label=_label, detail=f"处理代码·{v.version_label or ''}",
+                         file_name=filename, link=_link)
+            write_audit(db, user.id, "code.download", "code", cid)
+            db.commit()
+            return StreamingResponse(stream, media_type="application/octet-stream",
+                                     headers=attachment_headers(filename))
     log_download(db, user_id=user.id, source="code", dataset_id=c.dataset_id,
-                 location_label=_label, detail="处理代码", file_name=safe, link=_link)
+                 location_label=_label, detail="处理代码", file_name=filename, link=_link)
     write_audit(db, user.id, "code.download", "code", cid)
     db.commit()
     return StreamingResponse(io.BytesIO(data), media_type="text/plain; charset=utf-8",
-                             headers={"Content-Disposition": f'attachment; filename="{safe}"'})
+                             headers=attachment_headers(filename))
 
 
 # -------- 作者授予修改/重发权限 --------
@@ -353,22 +379,40 @@ from fastapi import UploadFile, File, Form  # noqa: E402
 
 @router.post("/datasets/{slug}/code/upload")
 def upload_code(slug: str, title_zh: str = Form(...), lang: str = Form("Python"),
-                desc_zh: str = Form(""), file: UploadFile = File(...),
+                desc_zh: str = Form(""), file: UploadFile | None = File(None),
+                source_code: str = Form(""),
                 db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    from ..services.uploads import save_upload, CODE_EXT
+    from ..services.uploads import validate_upload, save_stored_file
     d = _ds(db, slug)
     if not is_dataset_member(db, d.id, user):
         raise HTTPException(403, "需为数据集成员")
-    raw = file.file.read()
-    try:
-        source = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        source = raw.decode("latin-1", errors="replace")
-    if len(raw) > 5 * 1024 * 1024:
-        raise HTTPException(400, "代码文件过大（>5MB）")
-    c = CodeScript(dataset_id=d.id, author_id=user.id, filename=file.filename,
+    if file is None and not source_code.strip():
+        raise HTTPException(400, "请上传文件或粘贴代码，至少完成一种方式")
+
+    raw = None
+    filename = _pasted_filename(lang)
+    source = source_code
+    if file is not None:
+        # 处理代码允许任意文件格式；平台不按扩展名或所选语言做匹配校验。
+        checked = validate_upload(file, allow_any_type=True)
+        if checked["size"] > 5 * 1024 * 1024:
+            raise HTTPException(400, "上传文件过大（>5MB）")
+        raw = file.file.read()
+        filename = checked["filename"]
+        if not source_code.strip():
+            source = _text_preview(raw)
+
+    c = CodeScript(dataset_id=d.id, author_id=user.id, filename=filename,
                    lang=lang, title_zh=title_zh, desc_zh=desc_zh, source_code=source)
     db.add(c); db.flush()
+    if raw is not None:
+        key = f"code/{c.id}/initial/{filename}"
+        save_stored_file(key, io.BytesIO(raw))
+        db.add(CodeVersion(
+            script_id=c.id, version_label=_INITIAL_VERSION, filename=filename,
+            file_path=key, source_code=source, changelog="初次提交",
+            created_by=user.id, created_at=datetime.utcnow(), is_current=True,
+        ))
     record_contribution(db, user.id, "code_add", "code", c.id, d.id, weight=20)
     write_audit(db, user.id, "code.upload", "code", c.id)
     db.commit()

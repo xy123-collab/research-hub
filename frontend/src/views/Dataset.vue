@@ -573,9 +573,13 @@ async function openCode(id: number) {
   codeComments.value = (await api.get(`/code/${id}/comments`)).data
 }
 async function publishCodeVer() {
+  if (!codeVerFile.value && !codeVerForm.value.source_code.trim()) {
+    alert('请上传文件或粘贴代码，至少完成一种方式'); return
+  }
   const fd = new FormData()
   fd.append('version_label', codeVerForm.value.version_label); fd.append('changelog', codeVerForm.value.changelog)
-  if (codeVerFile.value) fd.append('file', codeVerFile.value); else fd.append('source_code', codeVerForm.value.source_code)
+  if (codeVerFile.value) fd.append('file', codeVerFile.value)
+  if (codeVerForm.value.source_code.trim()) fd.append('source_code', codeVerForm.value.source_code)
   try {
     await api.post(`/code/${codeModal.value.id}/versions`, fd)
     showCodeVer.value = false; codeVerForm.value = { version_label: '', changelog: '', source_code: '' }; codeVerFile.value = null
@@ -869,14 +873,15 @@ async function removeMember(uid: number) {
 // ---------- code ----------
 async function addCode() {
   try {
-    if (codeFile.value) {
-      const fd = new FormData()
-      fd.append('title_zh', codeAdd.value.title_zh); fd.append('lang', codeAdd.value.lang)
-      fd.append('desc_zh', codeAdd.value.desc_zh); fd.append('file', codeFile.value)
-      await api.post(`/datasets/${slug}/code/upload`, fd)
-    } else {
-      await api.post(`/datasets/${slug}/code`, codeAdd.value)
+    if (!codeFile.value && !codeAdd.value.source_code.trim()) {
+      alert('请上传文件或粘贴代码，至少完成一种方式'); return
     }
+    const fd = new FormData()
+    fd.append('title_zh', codeAdd.value.title_zh); fd.append('lang', codeAdd.value.lang)
+    fd.append('desc_zh', codeAdd.value.desc_zh)
+    if (codeFile.value) fd.append('file', codeFile.value)
+    if (codeAdd.value.source_code.trim()) fd.append('source_code', codeAdd.value.source_code)
+    await api.post(`/datasets/${slug}/code/upload`, fd)
     showCodeAdd.value = false; codeFile.value = null
     codeAdd.value = { title_zh: '', lang: 'Python', desc_zh: '', source_code: '' }; loadTab('code')
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
@@ -2160,9 +2165,11 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <h3 class="text-lg mb-3">发布代码新版本</h3>
         <input v-model="codeVerForm.version_label" class="input mb-2 font-mono" placeholder="版本号，如 v2" />
         <textarea v-model="codeVerForm.changelog" class="input mb-2" placeholder="本次修改内容（必填）"></textarea>
-        <label class="label-cap">上传新代码文件（或下方粘贴）</label>
+        <label class="label-cap">方式一：上传新文件（支持任意格式）</label>
         <input type="file" @change="(e:any)=>codeVerFile=e.target.files[0]" class="text-xs mb-2 block" />
-        <textarea v-model="codeVerForm.source_code" class="input font-mono text-xs" rows="4" placeholder="粘贴新代码（上传文件时可留空）"></textarea>
+        <label class="label-cap">方式二：直接粘贴代码</label>
+        <textarea v-model="codeVerForm.source_code" class="input font-mono text-xs" rows="4" placeholder="粘贴代码"></textarea>
+        <p class="text-xs text-gray-400 mt-1">两种方式可同时使用，也可任选其一；平台不校验文件格式与所选语言是否匹配。</p>
         <div class="flex justify-end gap-2 mt-3">
           <button class="btn-ghost" @click="showCodeVer=false">取消</button>
           <button class="btn-primary" @click="publishCodeVer">发布</button>
@@ -2242,13 +2249,14 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <h3 class="text-lg mb-3">提交处理代码</h3>
         <div class="flex gap-2 mb-2">
           <input v-model="codeAdd.title_zh" class="input" placeholder="标题" />
-          <select v-model="codeAdd.lang" class="input w-32"><option>Stata</option><option>Python</option><option>R</option></select>
+          <select v-model="codeAdd.lang" class="input w-32"><option>Stata</option><option>Python</option><option>R</option><option>其他</option></select>
         </div>
         <input v-model="codeAdd.desc_zh" class="input mb-2" placeholder="说明" />
-        <label class="label-cap">方式一：上传代码文件</label>
+        <label class="label-cap">方式一：上传文件（支持 DOC、MD 等任意格式）</label>
         <input type="file" @change="(e:any)=>codeFile=e.target.files[0]" class="text-xs mb-2 block" />
         <label class="label-cap">方式二：直接粘贴代码</label>
-        <textarea v-model="codeAdd.source_code" class="input font-mono text-xs" rows="5" placeholder="粘贴代码（上传文件时可留空）"></textarea>
+        <textarea v-model="codeAdd.source_code" class="input font-mono text-xs" rows="5" placeholder="粘贴代码"></textarea>
+        <p class="text-xs text-gray-400 mt-1">两种方式可同时使用，也可任选其一；平台不校验文件格式与所选语言是否匹配。</p>
         <div class="flex justify-end gap-2 mt-3">
           <button class="btn-ghost" @click="showCodeAdd=false">取消</button>
           <button class="btn-primary" @click="addCode">提交</button>
