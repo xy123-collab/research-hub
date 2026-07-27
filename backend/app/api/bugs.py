@@ -244,11 +244,7 @@ def list_bugs(slug: str, db: Session = Depends(get_db), user: User = Depends(get
             "has_new_officer": any(bool(it.is_new_officer) for it in items),
             "has_manual_only": (
                 b.bug_type == "unstructured"
-                or any(
-                    bool(it.is_new_officer)
-                    or bool(it.uid_var and it.uid_var != _uid_var(db, d.id))
-                    for it in items
-                )
+                or any(bool(it.is_new_officer) for it in items)
             ),
             "can_delete": (
                 b.reporter_id == user.id and b.status == "pending"
@@ -361,9 +357,16 @@ def _var_name(db, variable_id):
 
 
 # ============ 批量勘误：模板下载 + Excel/CSV 导入 ============
-BATCH_COLS = ["ID变量名", "唯一ID值", "变量名", "当前值", "建议值", "说明", "证据"]
-BATCH_REQUIRED = ["唯一ID值", "变量名", "说明", "证据"]
-LEGACY_BATCH_COLS = ["唯一ID值", "变量名", "当前值", "建议值", "说明", "证据"]
+LOCATOR_VAR_COL = "定位唯一id"
+LOCATOR_VALUE_COL = "定位id的值"
+BATCH_COLS = [
+    LOCATOR_VAR_COL, LOCATOR_VALUE_COL,
+    "变量名", "当前值", "建议值", "说明", "证据",
+]
+BATCH_REQUIRED = [LOCATOR_VALUE_COL, "变量名", "说明", "证据"]
+LEGACY_LOCATOR_VAR_COL = "ID变量名"
+LEGACY_LOCATOR_VALUE_COL = "唯一ID值"
+COMMON_BATCH_COLS = ["变量名", "当前值", "建议值", "说明", "证据"]
 
 
 @router.get("/datasets/{slug}/bug-template")
@@ -378,10 +381,9 @@ def bug_template(slug: str, db: Session = Depends(get_db),
     ws = wb.active; ws.title = "勘误"
     ws.append(BATCH_COLS)
     notes = {
-        "ID变量名": f"可留空，默认使用管理员推荐的「{uidv or '尚未设置'}」。"
-                    "如填写其他 ID 变量，提交前必须额外确认，且平台只提示管理员手工处理。",
-        "唯一ID值": f"该数据集的唯一标识变量是「{uidv or '未设置，请管理员先在数据设置中指定'}」。"
-                   "填该行记录对应的唯一ID取值（唯一ID本身不可被修改）。",
+        LOCATOR_VAR_COL: f"可留空，默认使用管理员推荐的「{uidv or '尚未设置'}」。"
+                         "如填写其他定位 ID，提交前必须额外确认；只要最新数据中恰好匹配一行，仍可安全一键应用。",
+        LOCATOR_VALUE_COL: "填写本行用于定位记录的 ID 值。",
         "变量名": "要修改的变量名（须与数据集变量一致）。",
         "当前值": "该单元格现在的值。",
         "建议值": "建议改成的值。",
@@ -400,11 +402,11 @@ def bug_template(slug: str, db: Session = Depends(get_db),
         "批量勘误填写说明：",
         "1. 每一行是一个独立勘误；提交后会在勘误列表中分别显示、分别打分和分别终审。",
         "2. 上传文件后先逐行校验；有问题的行会显示具体原因，可删除问题行后再提交其余行。",
-        f"3. 唯一ID变量：{uidv or '（管理员尚未设置，请先在数据集设置里指定唯一ID）'}，用于定位要改的记录。",
-        "4. 「ID变量名」可留空；如不用管理员推荐 ID，须填写变量名并在上传页额外确认。",
+        f"3. 管理员推荐定位 ID：{uidv or '（管理员尚未设置，请先在数据集设置里指定唯一ID）'}。",
+        "4. 第一列「定位唯一id」可留空；如不用管理员推荐 ID，须填写变量名并在上传页额外确认。",
         "5. ID 变量本身不允许被修改；要修改的变量名须与「变量清单」页一致。",
         "6. 「说明」和「证据」是两个独立必填列，旧版合并列模板不再接受。",
-        "7. 系统会用「ID变量名、唯一ID值、变量名、当前值、建议值」与全部历史勘误查重。",
+        "7. 系统会用「定位唯一id、定位id的值、变量名、当前值、建议值」与全部历史勘误查重。",
         "8. 支持 .xlsx / .csv，列顺序：" + "、".join(BATCH_COLS) + "。",
     ]:
         ws3.append([line])
@@ -423,7 +425,9 @@ def _validate_batch_rows(db: Session, dataset: Dataset, rows: list[dict],
     header = set(rows[0].keys())
     if "说明与证据" in header:
         raise HTTPException(400, "这是旧版批量模板。请重新下载模板，将「说明」和「证据」分列填写")
-    missing_cols = [col for col in LEGACY_BATCH_COLS if col not in header]
+    missing_cols = [col for col in COMMON_BATCH_COLS if col not in header]
+    if LOCATOR_VALUE_COL not in header and LEGACY_LOCATOR_VALUE_COL not in header:
+        missing_cols.insert(0, LOCATOR_VALUE_COL)
     if missing_cols:
         raise HTTPException(400, "批量模板缺少列：" + "、".join(missing_cols))
     context = _uid_context(db, dataset.id)
@@ -436,8 +440,18 @@ def _validate_batch_rows(db: Session, dataset: Dataset, rows: list[dict],
     for row_no, row in enumerate(rows, start=2):
         if included_row_numbers is not None and row_no not in included_row_numbers:
             continue
-        cleaned = {key: str(row.get(key, "") if row.get(key) is not None else "").strip()
-                   for key in BATCH_COLS}
+        cleaned = {
+            LOCATOR_VAR_COL: str(
+                row.get(LOCATOR_VAR_COL, row.get(LEGACY_LOCATOR_VAR_COL, "")) or ""
+            ).strip(),
+            LOCATOR_VALUE_COL: str(
+                row.get(LOCATOR_VALUE_COL, row.get(LEGACY_LOCATOR_VALUE_COL, "")) or ""
+            ).strip(),
+            **{
+                key: str(row.get(key, "") if row.get(key) is not None else "").strip()
+                for key in COMMON_BATCH_COLS
+            },
+        }
         problems = []
         missing = [col for col in BATCH_REQUIRED if not cleaned[col]]
         if missing:
@@ -445,7 +459,7 @@ def _validate_batch_rows(db: Session, dataset: Dataset, rows: list[dict],
         if cleaned["变量名"] not in variables:
             problems.append(f"变量「{cleaned['变量名']}」不在当前变量清单")
         uid_check = None
-        selected_uid_var = cleaned["ID变量名"] or context["recommended_uid_var"]
+        selected_uid_var = cleaned[LOCATOR_VAR_COL] or context["recommended_uid_var"]
         row_context = contexts.get(selected_uid_var)
         if row_context is None:
             try:
@@ -456,10 +470,10 @@ def _validate_batch_rows(db: Session, dataset: Dataset, rows: list[dict],
         if cleaned["变量名"] in {
                 context["recommended_uid_var"], selected_uid_var}:
             problems.append("不能修改管理员推荐或本次选用的 ID 变量本身")
-        if cleaned["唯一ID值"]:
+        if cleaned[LOCATOR_VALUE_COL]:
             if row_context is not None:
                 try:
-                    uid_check = _check_uid(row_context, cleaned["唯一ID值"])
+                    uid_check = _check_uid(row_context, cleaned[LOCATOR_VALUE_COL])
                 except HTTPException as exc:
                     problems.append(str(exc.detail))
         if uid_check and row_context and cleaned["变量名"] in variables:
@@ -517,6 +531,13 @@ def validate_bug_batch(slug: str, file: UploadFile = File(...),
     return {"rows": len(checked),
             "valid_rows": sum(1 for item in checked if item["valid"]),
             "invalid_rows": sum(1 for item in checked if not item["valid"]),
+            "problem_rows": sum(
+                1 for item in checked
+                if (not item["valid"]
+                    or bool(item["uid"] and not item["uid"]["exists"])
+                    or bool(item["uid_context"]
+                            and item["uid_context"]["uses_alternative_id"]))
+            ),
             "items": [_public_batch_item(item) for item in checked],
             "unique_id_var": context["unique_id_var"],
             "source_version": context["version"].version_id,
@@ -605,7 +626,7 @@ def submit_bug_batch(slug: str, file: UploadFile = File(...), title: str = Form(
         db.add(b); db.flush()
         db.add(BugItem(bug_id=b.id, dataset_id=d.id, seq=1,
                        uid_var=item["uid_context"]["unique_id_var"],
-                       uid_value=r["唯一ID值"], var_name=r["变量名"],
+                       uid_value=r[LOCATOR_VALUE_COL], var_name=r["变量名"],
                        current_value=r["当前值"], suggested_value=r["建议值"],
                        reason=r["说明"], evidence=r["证据"],
                        is_new_officer=not item["uid"]["exists"], status="pending"))
@@ -965,9 +986,7 @@ def bug_detail(bid: int, db: Session = Depends(get_db), user: User = Depends(get
                        "uid_var": it.uid_var or recommended_uid_var,
                        "uses_alternative_id": bool(
                            it.uid_var and it.uid_var != recommended_uid_var),
-                       "manual_only": bool(
-                           it.is_new_officer
-                           or (it.uid_var and it.uid_var != recommended_uid_var)),
+                       "manual_only": bool(it.is_new_officer),
                        "uid_value": it.uid_value,
                        "var_name": it.var_name, "current_value": it.current_value,
                        "suggested_value": it.suggested_value, "reason": it.reason,
@@ -1185,33 +1204,16 @@ def _accepted_release_material(db: Session, dataset_id: int, unique_id_var: str,
                 "current_value": it.current_value, "suggested_value": it.suggested_value,
                 "reason": it.reason, "evidence": it.evidence,
                 "is_new_officer": bool(it.is_new_officer)} for it in items]
-    auto_payload = [
-        it for it in payload
-        if not it["is_new_officer"] and it["uid_var"] == unique_id_var
-    ]
-    manual_payload = [it for it in payload if it not in auto_payload]
-    script = apply_corrections_script(auto_payload, unique_id_var) if auto_payload else ""
-    manual_script_lines = []
-    for it in manual_payload:
-        if it["is_new_officer"]:
-            label = "人工处理：新增官员/记录"
-        else:
-            label = f"人工处理：使用非推荐 ID 变量 {it['uid_var']}"
-        manual_script_lines.extend([
-            "",
-            f"* [{label}] 勘误 #{it['bug_id']}·第 {it['item_seq']} 项",
-            f"* {it['uid_var']}={it['uid_value']}；{it['var_name']}："
-            f"{it.get('current_value') or ''} -> {it.get('suggested_value') or ''}",
-        ])
-    if manual_script_lines:
-        script = (script.rstrip() + "\n" + "\n".join(manual_script_lines)).lstrip()
+    auto_payload = [it for it in payload if not it["is_new_officer"]]
+    manual_payload = [it for it in payload if it["is_new_officer"]]
+    script = apply_corrections_script(payload, unique_id_var) if payload else ""
     lines = [f"本版本自动应用 {len(auto_payload)} 条已采纳勘误；"
              f"{len(manual_payload)} 条勘误保留为人工处理："]
     for it in payload:
         if it["is_new_officer"]:
             mode = "人工处理·新增官员/记录"
         elif it["uid_var"] != unique_id_var:
-            mode = f"人工处理·非推荐 ID（{it['uid_var']}）"
+            mode = f"自动应用·非推荐 ID（{it['uid_var']}）"
         else:
             mode = "自动应用"
         reason = f"；说明：{it['reason']}" if it.get("reason") else ""
@@ -1286,8 +1288,8 @@ def apply_corrections_endpoint(slug: str, base_version_id: int = Form(...),
         raise HTTPException(409, "已采纳勘误或基准版本在预览后发生变化，请重新打开并审阅代码")
     if not payload and manual:
         return {"generated": "script", "script": script, "manual_remaining": len(manual),
-                "note": "待处理项均需人工修改（新增记录或使用了非推荐 ID）。"
-                        "系统不会自动改数；请人工处理后再发布原始版本。"}
+                "note": "待处理项均为新增主体或新增记录，系统不会自动追加不完整记录。"
+                        "请人工处理后再发布原始版本。"}
     if not payload:
         raise HTTPException(400, "没有待应用的已采纳勘误项")
     try:

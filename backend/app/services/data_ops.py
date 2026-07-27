@@ -82,10 +82,14 @@ def desensitize(raw_key: str, rules: list[dict], unique_id_var: str | None,
 
 # ---------------- 应用勘误 ----------------
 def apply_corrections_script(items: list[dict], unique_id_var: str) -> str:
+    locator_vars = list(dict.fromkeys(
+        str(it.get("uid_var") or unique_id_var).strip() for it in items
+    ))
     lines = ["* 自动生成的勘误应用脚本（在上一版数据上运行后作为新版发布）",
-             f"* 唯一ID变量：{unique_id_var}",
+             f"* 本批定位 ID：{'、'.join(locator_vars) or unique_id_var}",
              "* 每项先检查唯一匹配和当前值；assert 失败时 Stata 会停止，避免静默误改。"]
     for it in items:
+        uid_var = str(it.get("uid_var") or unique_id_var).strip()
         uid = str(it["uid_value"]).replace('"', '""')
         v = str(it["var_name"]).strip()
         old = str(it.get("current_value") or "").replace('"', '""')
@@ -93,7 +97,7 @@ def apply_corrections_script(items: list[dict], unique_id_var: str) -> str:
         if it.get("is_new_officer"):
             lines.extend([
                 "",
-                f"* [人工处理：新增官员] {unique_id_var}={uid}",
+                f"* [人工处理：新增官员] {uid_var}={uid}",
                 "* 当前原始数据中没有该 ID；系统不会自动追加字段不完整的空记录。",
                 f"* 待人工补全官员记录后，将 {v} 设置为：{val}",
             ])
@@ -101,31 +105,32 @@ def apply_corrections_script(items: list[dict], unique_id_var: str) -> str:
         lines.extend([
             "",
             f"* 勘误 #{it.get('bug_id', '')}·第 {it.get('item_seq', '')} 项",
-            f'capture confirm numeric variable {unique_id_var}',
+            f"* 定位：{uid_var}={uid}",
+            f'capture confirm numeric variable {uid_var}',
             "if !_rc {",
-            f'    count if {unique_id_var} == real("{uid}")',
+            f'    count if {uid_var} == real("{uid}")',
             "    assert r(N) == 1",
             f"    capture confirm numeric variable {v}",
             "    if !_rc {",
-            f'        assert {v} == real("{old}") if {unique_id_var} == real("{uid}")',
-            f'        replace {v} = real("{val}") if {unique_id_var} == real("{uid}")',
+            f'        assert {v} == real("{old}") if {uid_var} == real("{uid}")',
+            f'        replace {v} = real("{val}") if {uid_var} == real("{uid}")',
             "    }",
             "    else {",
-            f'        assert strtrim({v}) == "{old}" if {unique_id_var} == real("{uid}")',
-            f'        replace {v} = "{val}" if {unique_id_var} == real("{uid}")',
+            f'        assert strtrim({v}) == "{old}" if {uid_var} == real("{uid}")',
+            f'        replace {v} = "{val}" if {uid_var} == real("{uid}")',
             "    }",
             "}",
             "else {",
-            f'    count if strtrim({unique_id_var}) == "{uid}"',
+            f'    count if strtrim({uid_var}) == "{uid}"',
             "    assert r(N) == 1",
             f"    capture confirm numeric variable {v}",
             "    if !_rc {",
-            f'        assert {v} == real("{old}") if strtrim({unique_id_var}) == "{uid}"',
-            f'        replace {v} = real("{val}") if strtrim({unique_id_var}) == "{uid}"',
+            f'        assert {v} == real("{old}") if strtrim({uid_var}) == "{uid}"',
+            f'        replace {v} = real("{val}") if strtrim({uid_var}) == "{uid}"',
             "    }",
             "    else {",
-            f'        assert strtrim({v}) == "{old}" if strtrim({unique_id_var}) == "{uid}"',
-            f'        replace {v} = "{val}" if strtrim({unique_id_var}) == "{uid}"',
+            f'        assert strtrim({v}) == "{old}" if strtrim({uid_var}) == "{uid}"',
+            f'        replace {v} = "{val}" if strtrim({uid_var}) == "{uid}"',
             "    }",
             "}",
         ])
@@ -158,7 +163,8 @@ def _canonical_scalar(value, numeric: bool) -> str:
 def apply_corrections(base_key: str, items: list[dict], unique_id_var: str,
                       script_only: bool = False):
     """把已采纳勘误子项应用到 base 版本数据。
-    返回 (new_bytes|None, source, script, applied_seqs)。按唯一ID+变量名定位单元格。"""
+    返回 (new_bytes|None, source, script, applied_seqs)。
+    每项可用自己的 uid_var + uid_value 定位单元格。"""
     script = apply_corrections_script(items, unique_id_var)
     if script_only or not unique_id_var:
         return None, "script", script, []
@@ -169,24 +175,31 @@ def apply_corrections(base_key: str, items: list[dict], unique_id_var: str,
         from .introspect import read_table_df, _ext_of
         import pandas as pd
         df = read_table_df(raw, _ext_of(base_key))
-        if unique_id_var not in df.columns:
-            return None, "script", script, []
-        uid_numeric = pd.api.types.is_numeric_dtype(df[unique_id_var])
-        key_values = df[unique_id_var].map(lambda x: _canonical_scalar(x, uid_numeric))
+        locator_cache = {}
         planned = []
         problems = []
         # 先验证整批，再做任何赋值，保证失败时不产生半成品。
         for it in items:
             v = it["var_name"]
+            uid_var = str(it.get("uid_var") or unique_id_var).strip()
+            if uid_var not in df.columns:
+                problems.append(f"勘误#{it.get('bug_id')}：定位 ID 变量 {uid_var} 不存在")
+                continue
             if v not in df.columns:
                 problems.append(f"勘误#{it.get('bug_id')}：变量 {v} 不存在")
                 continue
+            if uid_var not in locator_cache:
+                uid_numeric = pd.api.types.is_numeric_dtype(df[uid_var])
+                key_values = df[uid_var].map(
+                    lambda x: _canonical_scalar(x, uid_numeric))
+                locator_cache[uid_var] = (uid_numeric, key_values)
+            uid_numeric, key_values = locator_cache[uid_var]
             uid = _canonical_scalar(it["uid_value"], uid_numeric)
             mask = key_values == uid
             matches = int(mask.sum())
             if matches != 1:
                 problems.append(
-                    f"勘误#{it.get('bug_id')}：{unique_id_var}={it['uid_value']} "
+                    f"勘误#{it.get('bug_id')}：{uid_var}={it['uid_value']} "
                     f"匹配到 {matches} 条，要求恰好 1 条")
                 continue
             col = df[v]

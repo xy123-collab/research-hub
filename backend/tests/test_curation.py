@@ -31,6 +31,10 @@ def test_bug_template_downloads_xlsx(client, member):
     r = client.get("/api/datasets/cod/bug-template", headers=member)
     assert r.status_code == 200
     assert r.content[:2] == b"PK"   # xlsx=zip
+    from openpyxl import load_workbook
+    ws = load_workbook(io.BytesIO(r.content), read_only=True)["勘误"]
+    headers = [cell.value for cell in next(ws.iter_rows())]
+    assert headers[:2] == ["定位唯一id", "定位id的值"]
 
 
 def test_batch_correction_creates_independent_bugs(client, founder, member):

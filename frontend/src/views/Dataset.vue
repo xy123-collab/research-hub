@@ -396,9 +396,13 @@ const batchValidation = ref<any>(null); const batchConfirmNew = ref(false)
 const batchConfirmAlternative = ref(false)
 const batchRows = computed<any[]>(() => batchValidation.value?.items || [])
 const batchInvalidRows = computed(() => batchRows.value.filter((row: any) => !row.valid))
+const batchProblemRows = computed(() =>
+  batchRows.value.filter((row: any) =>
+    !row.valid || row.is_new_officer || row.uses_alternative_id)
+)
 const batchMissingIds = computed(() => Array.from(new Set(
   batchRows.value.filter((row: any) => row.valid && row.is_new_officer)
-    .map((row: any) => row['唯一ID值'])
+    .map((row: any) => row['定位id的值'])
 )))
 const batchAlternativeRows = computed(() =>
   batchRows.value.filter((row: any) => row.valid && row.uses_alternative_id)
@@ -1701,7 +1705,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <div v-if="bugUploadMode==='single'">
           <p class="text-xs text-gray-500 mb-3">
             管理员推荐使用 <b class="font-mono">{{ d.unique_id_var || '（尚未设置）' }}</b> 定位记录。
-            如本条勘误更适合使用其他 ID，可改选，但须确认定位口径，且由管理员手工修改。
+            如本条勘误更适合使用其他 ID，可改选；确认定位口径且最新数据中恰好匹配一行后，同样支持安全一键应用。
           </p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <select v-model="bugForm.uid_var" class="input" @change="resetBugUidCheck">
@@ -1725,7 +1729,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <input type="checkbox" v-model="bugForm.confirm_alternative_id" class="mt-0.5" />
             <span>我确认本条没有使用管理员推荐的 <b class="font-mono">{{ d.unique_id_var }}</b>，
               而是使用 <b class="font-mono">{{ bugForm.uid_var }}</b> 定位；我已核对该口径没有问题。
-              此类勘误由管理员手工修改，不进入一键自动应用。</span>
+              系统仍会在一键应用前重新检查该 ID 恰好匹配一行及当前值一致。</span>
           </label>
           <p v-if="bugUidChecking" class="text-xs text-gray-400 mt-1">正在核对唯一 ID…</p>
           <p v-else-if="bugUidCheck?.error" class="text-xs text-red-600 mt-1">{{ bugUidCheck.error }}</p>
@@ -1765,19 +1769,21 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <div v-if="batchValidation" class="mt-3 p-3 rounded bg-paper border border-line text-sm">
             <p>
               已解析 {{ batchValidation.rows }} 行；当前保留 {{ batchRows.length }} 行，
-              其中 {{ batchInvalidRows.length }} 行有问题。依据原始版本 {{ batchValidation.source_version }}。
+              其中 <span class="font-semibold text-red-600">{{ batchProblemRows.length }}</span>
+              行有问题或需要确认。依据原始版本 {{ batchValidation.source_version }}。
             </p>
             <div class="mt-3 border border-line rounded divide-y divide-line max-h-64 overflow-y-auto bg-white">
               <div v-for="row in batchRows" :key="row.row_no"
-                :class="['p-2 flex items-start gap-2', row.valid ? '' : 'bg-red-50']">
+                :class="['p-2 flex items-start gap-2',
+                  !row.valid ? 'bg-red-50' : (row.is_new_officer || row.uses_alternative_id ? 'bg-amber-50' : '')]">
                 <span class="font-mono text-xs text-gray-400 shrink-0">第{{ row.row_no }}行</span>
                 <div class="min-w-0 flex-1">
                   <p class="text-xs">
-                    <span class="font-mono">{{ row['ID变量名'] || d.unique_id_var }}={{ row['唯一ID值'] }}</span> ·
+                    <span class="font-mono">{{ row['定位唯一id'] || d.unique_id_var }}={{ row['定位id的值'] }}</span> ·
                     {{ row['变量名'] }}：{{ row['当前值'] }} → {{ row['建议值'] }}
                   </p>
                   <p class="text-xs text-gray-500 mt-1">{{ row['说明'] }}</p>
-                  <p v-if="row.uses_alternative_id && row.valid" class="text-xs text-amber-700 mt-1">本行未使用管理员推荐 ID，将由管理员手工处理。</p>
+                  <p v-if="row.uses_alternative_id && row.valid" class="text-xs text-amber-700 mt-1">本行未使用管理员推荐 ID，需确认定位口径；唯一匹配时仍可一键应用。</p>
                   <p v-if="row.is_new_officer && row.valid" class="text-xs text-amber-700 mt-1">现有数据无此 ID，需确认新增主体或记录。</p>
                   <p v-for="problem in row.problems" :key="problem" class="text-xs text-red-600 mt-1">问题：{{ problem }}</p>
                 </div>
@@ -1797,18 +1803,14 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <p class="text-amber-700 mt-2">第 {{ batchAlternativeRows.map((row:any)=>row.row_no).join('、') }} 行未使用管理员推荐 ID。</p>
               <label class="flex items-start gap-2 mt-2">
                 <input type="checkbox" v-model="batchConfirmAlternative" class="mt-0.5" />
-                <span>我已核对这些行的 ID 定位口径没有问题，并理解它们不会进入一键自动应用。</span>
+                <span>我已核对这些行的 ID 定位口径没有问题；系统会在一键应用前再次检查每项恰好匹配一行。</span>
               </label>
             </template>
-            <p v-else-if="batchRows.length && !batchInvalidRows.length" class="text-emerald-700 mt-2">保留行均已通过校验。</p>
+            <p v-if="batchRows.length && !batchProblemRows.length" class="text-emerald-700 mt-2">保留行均已通过校验。</p>
           </div>
           <div class="flex justify-end gap-2 mt-4">
             <button class="btn-ghost" @click="showBugUpload=false">取消</button>
-            <button class="btn-primary"
-              :disabled="!batchValidation || !batchRows.length || !!batchInvalidRows.length ||
-                (!!batchMissingIds.length && !batchConfirmNew) ||
-                (!!batchAlternativeRows.length && !batchConfirmAlternative)"
-              @click="submitBatch">确认导入</button>
+            <button class="btn-primary" @click="submitBatch">确认导入</button>
           </div>
         </div>
 
@@ -1877,7 +1879,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <span class="font-mono text-xs">{{ it.uid_var }}={{ it.uid_value }}</span>
               <span class="text-gray-500">{{ it.var_name }}：{{ it.current_value }} → <b>{{ it.suggested_value }}</b></span>
               <span v-if="it.is_new_officer" class="tag border-amber-400 text-amber-700">新增主体/记录·需人工补全</span>
-              <span v-else-if="it.uses_alternative_id" class="tag border-amber-400 text-amber-700">非推荐 ID·需人工修改</span>
+              <span v-else-if="it.uses_alternative_id" class="tag border-amber-400 text-amber-700">非推荐 ID·可安全一键应用</span>
               <span class="tag ml-auto">{{ it.status }}</span>
             </div>
             <p v-if="it.reason" class="text-xs text-gray-500 mt-1">说明：{{ it.reason }}</p>
@@ -1912,7 +1914,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               </template>
             </div>
           </div>
-          <p class="text-[11px] text-gray-400">采用管理员推荐 ID 且可唯一定位的项目，采纳后可进入一键应用；其余项目由管理员手工修改。</p>
+          <p class="text-[11px] text-gray-400">使用任一已确认定位 ID 且可唯一匹配的项目，采纳后可进入一键应用；新增记录与非格式化勘误由管理员手工修改。</p>
         </div>
         <div v-if="bugModal.attachments.length" class="mt-2">
           <div class="label-cap">证据附件</div>
@@ -1961,7 +1963,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <div class="mt-4 rounded border border-line bg-paper p-2 text-xs text-gray-600">
           本条使用 ID 变量：<b class="font-mono">{{ partialEdit.uid_var }}</b>
           <span v-if="partialEdit.uid_var!==d.unique_id_var" class="text-amber-700">
-            （非管理员推荐 ID，仍由管理员手工修改）
+            （非管理员推荐 ID；唯一匹配时仍可一键应用）
           </span>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
@@ -2293,7 +2295,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     <div v-if="showApply" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-3xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
         <h3 class="text-lg mb-1">应用已采纳勘误 → 生成新版本</h3>
-        <p class="text-xs text-gray-500 mb-3">请先核对下面的实际 Stata 修改代码。系统只自动处理使用管理员推荐 ID 且可唯一定位的项目；其余项目继续保留为人工处理。</p>
+        <p class="text-xs text-gray-500 mb-3">请先核对下面的实际 Stata 修改代码。管理员推荐 ID 和已确认的其他定位 ID 都可自动处理；每项执行前都会重新检查恰好匹配一行及当前值一致。</p>
         <label class="label-cap">基准版本</label>
         <select v-model="applyForm.base_version_id" class="input mb-2" @change="refreshApplyPreview">
           <option v-for="v in rawVersions" :key="v.id" :value="v.id">{{ v.version_id }}（原始数据）</option>
@@ -2316,7 +2318,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <pre class="whitespace-pre-wrap bg-paper border border-line rounded p-3 text-xs max-h-72 overflow-auto">{{ applyForm.script }}</pre>
         <label class="flex items-start gap-2 text-sm mt-3 p-2 rounded border border-line">
           <input type="checkbox" v-model="applyForm.reviewed" class="mt-0.5" />
-          <span>我已检查上述代码，确认系统只自动修改安全项；新增记录或使用非推荐 ID 的项目继续人工处理。</span>
+          <span>我已检查上述代码，确认系统只自动修改可唯一定位且当前值一致的项目；新增主体或新增记录继续人工处理。</span>
         </label>
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showApply=false">取消</button>

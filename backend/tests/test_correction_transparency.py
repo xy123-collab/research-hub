@@ -95,6 +95,7 @@ def test_batch_validation_separates_evidence_and_marks_new_officer(client, found
     assert checked.json()["missing_uid_values"] == ["B2"]
     assert checked.json()["valid_rows"] == 2
     assert checked.json()["invalid_rows"] == 0
+    assert checked.json()["problem_rows"] == 1
 
     blocked = client.post(
         f"/api/datasets/{slug}/bugs/batch",
@@ -126,11 +127,12 @@ def test_batch_validation_separates_evidence_and_marks_new_officer(client, found
     assert legacy.status_code == 400 and "旧版" in legacy.json()["detail"]
 
 
-def test_alternative_id_requires_confirmation_and_stays_manual(client, founder):
+def test_alternative_id_requires_confirmation_and_supports_safe_apply(client, founder):
     slug = "ds-correction-alternative-id"
     base_id, variables = _new_dataset(client, founder, slug, [
         {"rowID": "R1", "officerID": "O1", "year": 2001},
         {"rowID": "R2", "officerID": "O2", "year": 2002},
+        {"rowID": "R3", "officerID": "O3", "year": 2003},
     ])
     client.put(
         f"/api/datasets/{slug}/data-config",
@@ -166,17 +168,50 @@ def test_alternative_id_requires_confirmation_and_stays_manual(client, founder):
         f"/api/bug-items/{item_id}/finalize",
         json={"adopt_level": "full", "final_score": 9}, headers=founder,
     ).status_code == 200
+    recommended = client.post(
+        f"/api/datasets/{slug}/bugs",
+        json={
+            "uid_var": "rowID", "officer_id": "R3",
+            "variable_id": variables["year"], "current_value": "2003",
+            "suggested_value": "2004", "description_zh": "另一行年份有误",
+            "evidence": "公开履历",
+        },
+        headers=founder,
+    )
+    assert recommended.status_code == 200
+    recommended_item = client.get(
+        f"/api/bugs/{recommended.json()['id']}", headers=founder
+    ).json()["items"][0]["id"]
+    assert client.post(
+        f"/api/bug-items/{recommended_item}/finalize",
+        json={"adopt_level": "full", "final_score": 9}, headers=founder,
+    ).status_code == 200
     preview = client.get(
         f"/api/datasets/{slug}/corrections-release-preview",
         params={"base_version_id": base_id}, headers=founder,
     )
     assert preview.status_code == 200
-    assert preview.json()["auto_count"] == 0
-    assert preview.json()["manual_count"] == 1
-    assert "非推荐 ID" in preview.json()["script"]
+    assert preview.json()["auto_count"] == 2
+    assert preview.json()["manual_count"] == 0
+    assert "定位：officerID=O1" in preview.json()["script"]
+    assert "定位：rowID=R3" in preview.json()["script"]
+    applied = client.post(
+        f"/api/datasets/{slug}/apply-corrections",
+        data={
+            "base_version_id": base_id,
+            "new_version_id": "v2-alternative-id",
+            "preview_hash": preview.json()["preview_hash"],
+        },
+        headers=founder,
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["applied"] == 2
+    assert client.get(
+        f"/api/bugs/{submitted.json()['id']}", headers=founder
+    ).json()["status"] == "fixed"
 
     csv = (
-        "ID变量名,唯一ID值,变量名,当前值,建议值,说明,证据\n"
+        "定位唯一id,定位id的值,变量名,当前值,建议值,说明,证据\n"
         "officerID,O2,year,2002,2003,批量年份校正,公开履历\n"
     ).encode("utf-8")
     batch_checked = client.post(
@@ -202,7 +237,7 @@ def test_alternative_id_requires_confirmation_and_stays_manual(client, founder):
     batch_detail = client.get(
         f"/api/bugs/{batch_submitted.json()['id']}", headers=founder).json()
     assert batch_detail["items"][0]["uid_var"] == "officerID"
-    assert batch_detail["items"][0]["manual_only"] is True
+    assert batch_detail["items"][0]["manual_only"] is False
 
 
 def test_unstructured_correction_is_required_and_never_auto_applied(client, founder):
