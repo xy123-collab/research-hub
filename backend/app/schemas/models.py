@@ -57,6 +57,7 @@ class BugIn(BaseModel):
     description_zh: str; description_en: str | None = None; evidence: str
     confirm_new_officer: bool = False
     confirm_alternative_id: bool = False
+    confirm_non_unique_id: bool = False
 
     @field_validator("description_zh", "evidence")
     @classmethod
@@ -100,6 +101,7 @@ class ReviewIn(BaseModel):
 class FinalizeIn(BaseModel):
     adopt_level: str  # full|partial|reject
     final_score: float; comment: str | None = None
+    confirm_multi_row_apply: bool = False
 
     @field_validator("adopt_level")
     @classmethod
@@ -125,6 +127,7 @@ class PartialFinalizeIn(BaseModel):
     reason: str
     confirm_new_officer: bool = False
     confirm_alternative_id: bool = False
+    confirm_multi_row_apply: bool = False
     final_score: float = 6
     comment: str | None = None
 

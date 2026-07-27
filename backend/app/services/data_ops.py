@@ -87,19 +87,27 @@ def apply_corrections_script(items: list[dict], unique_id_var: str) -> str:
     ))
     lines = ["* 自动生成的勘误应用脚本（在上一版数据上运行后作为新版发布）",
              f"* 本批定位 ID：{'、'.join(locator_vars) or unique_id_var}",
-             "* 每项先检查唯一匹配和当前值；assert 失败时 Stata 会停止，避免静默误改。"]
+             "* 每项先检查匹配行数和全部匹配行的当前值；assert 失败时 Stata 会停止，避免静默误改。"]
     for it in items:
         uid_var = str(it.get("uid_var") or unique_id_var).strip()
         uid = str(it["uid_value"]).replace('"', '""')
         v = str(it["var_name"]).strip()
         old = str(it.get("current_value") or "").replace('"', '""')
         val = str(it.get("suggested_value") or "").replace('"', '""')
+        expected_matches = int(it.get("uid_match_count") or 1)
         if it.get("is_new_officer"):
             lines.extend([
                 "",
                 f"* [人工处理：新增官员] {uid_var}={uid}",
                 "* 当前原始数据中没有该 ID；系统不会自动追加字段不完整的空记录。",
                 f"* 待人工补全官员记录后，将 {v} 设置为：{val}",
+            ])
+            continue
+        if expected_matches > 1 and not it.get("allow_multi_row_apply"):
+            lines.extend([
+                "",
+                f"* [人工处理：非唯一定位] {uid_var}={uid}",
+                f"* 当前匹配 {expected_matches} 行，但管理员尚未确认一次修改多行。",
             ])
             continue
         lines.extend([
@@ -109,7 +117,7 @@ def apply_corrections_script(items: list[dict], unique_id_var: str) -> str:
             f'capture confirm numeric variable {uid_var}',
             "if !_rc {",
             f'    count if {uid_var} == real("{uid}")',
-            "    assert r(N) == 1",
+            f"    assert r(N) == {expected_matches}",
             f"    capture confirm numeric variable {v}",
             "    if !_rc {",
             f'        assert {v} == real("{old}") if {uid_var} == real("{uid}")',
@@ -122,7 +130,7 @@ def apply_corrections_script(items: list[dict], unique_id_var: str) -> str:
             "}",
             "else {",
             f'    count if strtrim({uid_var}) == "{uid}"',
-            "    assert r(N) == 1",
+            f"    assert r(N) == {expected_matches}",
             f"    capture confirm numeric variable {v}",
             "    if !_rc {",
             f'        assert {v} == real("{old}") if strtrim({uid_var}) == "{uid}"',
@@ -197,19 +205,28 @@ def apply_corrections(base_key: str, items: list[dict], unique_id_var: str,
             uid = _canonical_scalar(it["uid_value"], uid_numeric)
             mask = key_values == uid
             matches = int(mask.sum())
-            if matches != 1:
+            expected_matches = int(it.get("uid_match_count") or 1)
+            if expected_matches > 1 and not it.get("allow_multi_row_apply"):
+                problems.append(
+                    f"勘误#{it.get('bug_id')}：定位 ID 匹配 {expected_matches} 行，"
+                    "但管理员尚未确认一次修改多行")
+                continue
+            if matches != expected_matches:
                 problems.append(
                     f"勘误#{it.get('bug_id')}：{uid_var}={it['uid_value']} "
-                    f"匹配到 {matches} 条，要求恰好 1 条")
+                    f"匹配到 {matches} 条，管理员确认时为 {expected_matches} 条")
                 continue
             col = df[v]
             value_numeric = pd.api.types.is_numeric_dtype(col)
-            actual = _canonical_scalar(col.loc[mask].iloc[0], value_numeric)
             expected = _canonical_scalar(it.get("current_value"), value_numeric)
-            if actual != expected:
+            actual_values = {
+                _canonical_scalar(value, value_numeric) for value in col.loc[mask]
+            }
+            if actual_values != {expected}:
+                actual = "、".join(sorted(actual_values))
                 problems.append(
-                    f"勘误#{it.get('bug_id')}：{v} 当前值已变为「{actual}」，"
-                    f"不再等于提交时的「{expected}」")
+                    f"勘误#{it.get('bug_id')}：匹配行中的 {v} 当前值为「{actual}」，"
+                    f"并非全部等于提交时的「{expected}」")
                 continue
             newval = it["suggested_value"]
             if value_numeric:

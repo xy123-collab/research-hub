@@ -276,6 +276,118 @@ def test_unstructured_correction_is_required_and_never_auto_applied(client, foun
     assert "没有待应用" in preview.json()["detail"]
 
 
+def test_non_unique_locator_requires_uploader_and_admin_confirmation(client, founder):
+    slug = "ds-correction-non-unique-id"
+    base_id, variables = _new_dataset(client, founder, slug, [
+        {"rowID": "R1", "officerID": "6476", "year": 2001},
+        {"rowID": "R2", "officerID": "6476", "year": 2001},
+        {"rowID": "R3", "officerID": "6476", "year": 2001},
+    ])
+    checked = client.get(
+        f"/api/datasets/{slug}/bugs/id-check",
+        params={"value": "6476"}, headers=founder,
+    )
+    assert checked.status_code == 200
+    assert checked.json()["count"] == 3
+    assert checked.json()["exists"] is True
+    assert checked.json()["is_unique"] is False
+
+    body = {
+        "officer_id": "6476", "variable_id": variables["year"],
+        "current_value": "2001", "suggested_value": "2000",
+        "description_zh": "该官员全部履历年份需统一修正",
+        "evidence": "官方履历",
+    }
+    blocked = client.post(
+        f"/api/datasets/{slug}/bugs", json=body, headers=founder)
+    assert blocked.status_code == 409
+    assert "匹配到 3 条；唯一 ID 不唯一" in blocked.json()["detail"]
+    submitted = client.post(
+        f"/api/datasets/{slug}/bugs",
+        json={**body, "confirm_non_unique_id": True}, headers=founder,
+    )
+    assert submitted.status_code == 200
+    detail = client.get(
+        f"/api/bugs/{submitted.json()['id']}", headers=founder).json()
+    item = detail["items"][0]
+    assert item["uid_match_count"] == 3
+    assert item["allow_multi_row_apply"] is False
+
+    admin_blocked = client.post(
+        f"/api/bug-items/{item['id']}/finalize",
+        json={"adopt_level": "full", "final_score": 9}, headers=founder,
+    )
+    assert admin_blocked.status_code == 409
+    assert "一次会修改 3 行" in admin_blocked.json()["detail"]
+    accepted = client.post(
+        f"/api/bug-items/{item['id']}/finalize",
+        json={
+            "adopt_level": "full", "final_score": 9,
+            "confirm_multi_row_apply": True,
+        },
+        headers=founder,
+    )
+    assert accepted.status_code == 200
+    reviewed = client.get(
+        f"/api/bugs/{submitted.json()['id']}", headers=founder).json()
+    assert reviewed["items"][0]["allow_multi_row_apply"] is True
+
+    preview = client.get(
+        f"/api/datasets/{slug}/corrections-release-preview",
+        params={"base_version_id": base_id}, headers=founder,
+    )
+    assert preview.status_code == 200
+    assert preview.json()["auto_count"] == 1
+    assert "assert r(N) == 3" in preview.json()["script"]
+    applied = client.post(
+        f"/api/datasets/{slug}/apply-corrections",
+        data={
+            "base_version_id": base_id, "new_version_id": "v2-multi-row",
+            "preview_hash": preview.json()["preview_hash"],
+        },
+        headers=founder,
+    )
+    assert applied.status_code == 200, applied.text
+    downloaded = client.get(
+        f"/api/datasets/{slug}/versions/{applied.json()['id']}/download?file=data",
+        headers=founder,
+    )
+    assert downloaded.status_code == 200
+    import pandas as pd
+    result = pd.read_stata(io.BytesIO(downloaded.content))
+    assert result["year"].tolist() == [2000, 2000, 2000]
+
+    csv = (
+        "定位唯一id,定位id的值,变量名,当前值,建议值,说明,证据\n"
+        "officerID,6476,year,2000,1999,再次统一修正,官方履历\n"
+    ).encode("utf-8")
+    batch_check = client.post(
+        f"/api/datasets/{slug}/bugs/batch/validate",
+        files={"file": ("multi.csv", io.BytesIO(csv), "text/csv")},
+        headers=founder,
+    )
+    assert batch_check.status_code == 200
+    assert batch_check.json()["non_unique_id_rows"] == [2]
+    assert batch_check.json()["problem_rows"] == 1
+    batch_blocked = client.post(
+        f"/api/datasets/{slug}/bugs/batch",
+        data={"confirmed_alternative_id_rows": json.dumps([2])},
+        files={"file": ("multi.csv", io.BytesIO(csv), "text/csv")},
+        headers=founder,
+    )
+    assert batch_blocked.status_code == 409
+    batch_submitted = client.post(
+        f"/api/datasets/{slug}/bugs/batch",
+        data={
+            "confirmed_alternative_id_rows": json.dumps([2]),
+            "confirmed_non_unique_id_rows": json.dumps([2]),
+        },
+        files={"file": ("multi.csv", io.BytesIO(csv), "text/csv")},
+        headers=founder,
+    )
+    assert batch_submitted.status_code == 200
+
+
 def test_duplicate_detection_batch_row_removal_and_pending_delete(client, founder):
     slug = "ds-correction-deduplicate"
     _, variables = _new_dataset(client, founder, slug, [

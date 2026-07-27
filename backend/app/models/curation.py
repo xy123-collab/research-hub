@@ -57,6 +57,8 @@ class BugItem(Base):
     reason = Column(Text)               # 修改说明
     evidence = Column(Text)             # 证据来源/链接/出处
     is_new_officer = Column(Boolean, default=False)  # 最新原始版中没有该唯一 ID
+    uid_match_count = Column(Integer)   # 提交/终审时该定位 ID 在最新原始版中的匹配行数
+    allow_multi_row_apply = Column(Boolean, default=False)  # 管理员已确认可一次修改多行
     status = Column(String(20), default="pending")   # pending|accepted|rejected|fixed
     ai_score = Column(Float)
     final_score = Column(Float)

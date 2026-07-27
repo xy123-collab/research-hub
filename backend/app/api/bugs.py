@@ -102,11 +102,10 @@ def _check_uid(context: dict, value) -> dict:
         raise HTTPException(400, f"请填写{context['unique_id_var']}（唯一 ID）")
     normalized = _canonical_uid(raw, context["numeric"])
     count = int(context["counts"].get(normalized, 0))
-    if count > 1:
-        raise HTTPException(
-            400, f"{context['unique_id_var']}={raw} 在最新原始版本中匹配到 {count} 条；"
-                 "唯一 ID 不唯一，请管理员先修正数据或配置")
-    return {"value": raw, "normalized": normalized, "count": count, "exists": count == 1}
+    return {
+        "value": raw, "normalized": normalized, "count": count,
+        "exists": count >= 1, "is_unique": count == 1,
+    }
 
 
 def _match_text(value) -> str:
@@ -288,6 +287,10 @@ def submit_bug(slug: str, body: dict, db: Session = Depends(get_db),
                  f"「{context['recommended_uid_var']}」。请确认已理解定位口径后再提交")
     uid_value = body.officer_id or body.term_id or ""
     check = _check_uid(context, uid_value)
+    if check["count"] > 1 and not body.confirm_non_unique_id:
+        raise HTTPException(
+            409, f"{context['unique_id_var']}={check['value']} 在最新原始版本中匹配到 "
+                 f"{check['count']} 条；唯一 ID 不唯一。请确认这种多行匹配符合数据结构后再提交")
     if not check["exists"] and not body.confirm_new_officer:
         raise HTTPException(
             409, f"最新原始版本中没有 {context['unique_id_var']}={check['value']}。"
@@ -306,6 +309,7 @@ def submit_bug(slug: str, body: dict, db: Session = Depends(get_db),
         raise HTTPException(409, "重复勘误，无法提交：" + _duplicate_message(duplicate))
     data = body.model_dump(exclude={
         "uid_var", "confirm_new_officer", "confirm_alternative_id",
+        "confirm_non_unique_id",
     })
     b = Bug(dataset_id=d.id, reporter_id=user.id, status="pending",
             created_at=datetime.utcnow(), **data)
@@ -316,10 +320,12 @@ def submit_bug(slug: str, body: dict, db: Session = Depends(get_db),
                    var_name=var.var_name,
                    current_value=body.current_value, suggested_value=body.suggested_value,
                    reason=body.description_zh, evidence=body.evidence,
-                   is_new_officer=not check["exists"], status="pending"))
+                   is_new_officer=not check["exists"],
+                   uid_match_count=check["count"], status="pending"))
     write_audit(db, user.id, "bug.submit", "bug", b.id,
                 {"is_new_officer": not check["exists"],
                  "uid_var": context["unique_id_var"],
+                 "uid_match_count": check["count"],
                  "uses_alternative_id": context["uses_alternative_id"],
                  "checked_version": context["version"].version_id})
     db.commit()
@@ -382,7 +388,7 @@ def bug_template(slug: str, db: Session = Depends(get_db),
     ws.append(BATCH_COLS)
     notes = {
         LOCATOR_VAR_COL: f"可留空，默认使用管理员推荐的「{uidv or '尚未设置'}」。"
-                         "如填写其他定位 ID，提交前必须额外确认；只要最新数据中恰好匹配一行，仍可安全一键应用。",
+                         "如填写其他定位 ID，提交前必须额外确认。匹配多行时还需上传者和管理员分别确认修改行数。",
         LOCATOR_VALUE_COL: "填写本行用于定位记录的 ID 值。",
         "变量名": "要修改的变量名（须与数据集变量一致）。",
         "当前值": "该单元格现在的值。",
@@ -404,10 +410,11 @@ def bug_template(slug: str, db: Session = Depends(get_db),
         "2. 上传文件后先逐行校验；有问题的行会显示具体原因，可删除问题行后再提交其余行。",
         f"3. 管理员推荐定位 ID：{uidv or '（管理员尚未设置，请先在数据集设置里指定唯一ID）'}。",
         "4. 第一列「定位唯一id」可留空；如不用管理员推荐 ID，须填写变量名并在上传页额外确认。",
-        "5. ID 变量本身不允许被修改；要修改的变量名须与「变量清单」页一致。",
-        "6. 「说明」和「证据」是两个独立必填列，旧版合并列模板不再接受。",
-        "7. 系统会用「定位唯一id、定位id的值、变量名、当前值、建议值」与全部历史勘误查重。",
-        "8. 支持 .xlsx / .csv，列顺序：" + "、".join(BATCH_COLS) + "。",
+        "5. 定位 ID 可匹配多行，但上传者须确认其不唯一符合数据结构；管理员采纳时会再次确认一次修改行数。",
+        "6. ID 变量本身不允许被修改；要修改的变量名须与「变量清单」页一致。",
+        "7. 「说明」和「证据」是两个独立必填列，旧版合并列模板不再接受。",
+        "8. 系统会用「定位唯一id、定位id的值、变量名、当前值、建议值」与全部历史勘误查重。",
+        "9. 支持 .xlsx / .csv，列顺序：" + "、".join(BATCH_COLS) + "。",
     ]:
         ws3.append([line])
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
@@ -505,6 +512,8 @@ def _public_batch_item(item: dict) -> dict:
         "problems": item["problems"],
         "uid_exists": bool(uid and uid["exists"]),
         "is_new_officer": bool(uid and not uid["exists"]),
+        "uid_match_count": int(uid["count"]) if uid else 0,
+        "is_non_unique_id": bool(uid and uid["count"] > 1),
         "uses_alternative_id": bool(
             item.get("uid_context")
             and item["uid_context"]["uses_alternative_id"]
@@ -535,6 +544,7 @@ def validate_bug_batch(slug: str, file: UploadFile = File(...),
                 1 for item in checked
                 if (not item["valid"]
                     or bool(item["uid"] and not item["uid"]["exists"])
+                    or bool(item["uid"] and item["uid"]["count"] > 1)
                     or bool(item["uid_context"]
                             and item["uid_context"]["uses_alternative_id"]))
             ),
@@ -545,6 +555,10 @@ def validate_bug_batch(slug: str, file: UploadFile = File(...),
             "alternative_id_rows": [
                 item["row_no"] for item in checked
                 if item["valid"] and item["uid_context"]["uses_alternative_id"]
+            ],
+            "non_unique_id_rows": [
+                item["row_no"] for item in checked
+                if item["valid"] and item["uid"] and item["uid"]["count"] > 1
             ]}
 
 
@@ -552,6 +566,7 @@ def validate_bug_batch(slug: str, file: UploadFile = File(...),
 def submit_bug_batch(slug: str, file: UploadFile = File(...), title: str = Form(""),
                      confirmed_new_officer_ids: str = Form("[]"),
                      confirmed_alternative_id_rows: str = Form("[]"),
+                     confirmed_non_unique_id_rows: str = Form("[]"),
                      included_row_numbers: str = Form(""),
                      db: Session = Depends(get_db),
                      user: User = Depends(get_current_user)):
@@ -573,6 +588,12 @@ def submit_bug_batch(slug: str, file: UploadFile = File(...), title: str = Form(
         }
     except Exception:
         raise HTTPException(400, "非推荐 ID 确认参数格式错误，请重新校验批量文件")
+    try:
+        confirmed_non_unique_rows = {
+            int(x) for x in json.loads(confirmed_non_unique_id_rows or "[]")
+        }
+    except Exception:
+        raise HTTPException(400, "非唯一 ID 确认参数格式错误，请重新校验批量文件")
     known_rows = set(range(2, len(rows) + 2))
     try:
         requested = (
@@ -609,6 +630,14 @@ def submit_bug_batch(slug: str, file: UploadFile = File(...), title: str = Form(
         raise HTTPException(
             409, "以下行没有使用管理员推荐的唯一 ID，请确认定位口径后再提交："
                  + "、".join(str(row_no) for row_no in unconfirmed_alternative[:20]))
+    non_unique_rows = {
+        item["row_no"] for item in selected if item["uid"]["count"] > 1
+    }
+    unconfirmed_non_unique = sorted(non_unique_rows - confirmed_non_unique_rows)
+    if unconfirmed_non_unique:
+        raise HTTPException(
+            409, "以下行的定位 ID 匹配到多条记录，请确认这种不唯一符合数据结构后再提交："
+                 + "、".join(str(row_no) for row_no in unconfirmed_non_unique[:20]))
     variables = {v.var_name: v for v in db.query(Variable).filter_by(
         dataset_id=d.id, enabled=True).all()}
     created_ids = []
@@ -629,12 +658,14 @@ def submit_bug_batch(slug: str, file: UploadFile = File(...), title: str = Form(
                        uid_value=r[LOCATOR_VALUE_COL], var_name=r["变量名"],
                        current_value=r["当前值"], suggested_value=r["建议值"],
                        reason=r["说明"], evidence=r["证据"],
-                       is_new_officer=not item["uid"]["exists"], status="pending"))
+                       is_new_officer=not item["uid"]["exists"],
+                       uid_match_count=item["uid"]["count"], status="pending"))
         created_ids.append(b.id)
         write_audit(db, user.id, "bug.submit.batch.item", "bug", b.id, {
             "source_row": item["row_no"],
             "is_new_officer": not item["uid"]["exists"],
             "uid_var": item["uid_context"]["unique_id_var"],
+            "uid_match_count": item["uid"]["count"],
             "uses_alternative_id": item["uid_context"]["uses_alternative_id"],
             "checked_version": context["version"].version_id,
         })
@@ -679,6 +710,10 @@ def edit_bug(bid: int, body: BugIn, db: Session = Depends(get_db),
         raise HTTPException(
             409, "本次没有使用管理员推荐的唯一 ID，请明确确认定位口径后再保存")
     check = _check_uid(context, body.officer_id or body.term_id)
+    if check["count"] > 1 and not body.confirm_non_unique_id:
+        raise HTTPException(
+            409, f"{context['unique_id_var']}={check['value']} 匹配到 {check['count']} 条；"
+                 "请确认这种不唯一符合数据结构后再保存")
     if not check["exists"] and not body.confirm_new_officer:
         raise HTTPException(409, "该 ID 不存在；若确为新增主体或新增记录，请勾选确认后再保存")
     var = db.get(Variable, body.variable_id) if body.variable_id else None
@@ -695,7 +730,10 @@ def edit_bug(bid: int, body: BugIn, db: Session = Depends(get_db),
     if duplicate:
         raise HTTPException(409, "重复勘误，无法保存：" + _duplicate_message(duplicate))
     for k, v in body.model_dump(
-            exclude={"uid_var", "confirm_new_officer", "confirm_alternative_id"},
+            exclude={
+                "uid_var", "confirm_new_officer", "confirm_alternative_id",
+                "confirm_non_unique_id",
+            },
             exclude_none=True).items():
         setattr(b, k, v)
     if item:
@@ -707,6 +745,8 @@ def edit_bug(bid: int, body: BugIn, db: Session = Depends(get_db),
         item.reason = body.description_zh
         item.evidence = body.evidence
         item.is_new_officer = not check["exists"]
+        item.uid_match_count = check["count"]
+        item.allow_multi_row_apply = False
     db.commit()
     return {"ok": True}
 
@@ -844,6 +884,17 @@ def finalize_bug(bid: int, body: FinalizeIn, db: Session = Depends(get_db),
         raise HTTPException(
             409, "部分采纳不能直接确认；请先修改唯一值、变量、当前值、建议值或理由，"
                  "再从部分采纳编辑页确认")
+    pending_items = db.query(BugItem).filter_by(bug_id=bid, status="pending").all()
+    multi_items = [
+        item for item in pending_items
+        if (item.uid_match_count or 0) > 1
+    ]
+    if (body.adopt_level != "reject" and multi_items
+            and not body.confirm_multi_row_apply):
+        total_rows = sum(item.uid_match_count or 0 for item in multi_items)
+        raise HTTPException(
+            409, f"该勘误含 {len(multi_items)} 个非唯一定位项，预计一次修改 "
+                 f"{total_rows} 行。请管理员确认后再采纳")
     # 八节 4：管理员本人提交的勘误，若还有其他管理员，应由另一名管理员审核
     self_review = (b.reporter_id == user.id)
     if self_review and count_dataset_admins(db, b.dataset_id) > 1:
@@ -854,12 +905,15 @@ def finalize_bug(bid: int, body: FinalizeIn, db: Session = Depends(get_db),
     b.status = "accepted" if body.adopt_level != "reject" else "rejected"
     b.reviewed_by = user.id; b.reviewed_at = datetime.utcnow()
     child_status = "accepted" if body.adopt_level != "reject" else "rejected"
-    for item in db.query(BugItem).filter_by(bug_id=bid, status="pending").all():
+    for item in pending_items:
         item.status = child_status
         item.adopt_level = body.adopt_level
         item.final_score = body.final_score
         item.reviewed_by = user.id
         item.reviewed_at = datetime.utcnow()
+        item.allow_multi_row_apply = bool(
+            body.adopt_level != "reject" and (item.uid_match_count or 0) > 1
+        )
     if body.adopt_level != "reject":
         # 报告人贡献按终审分加权
         record_contribution(db, b.reporter_id, "bug_accepted", "bug", bid,
@@ -987,6 +1041,11 @@ def bug_detail(bid: int, db: Session = Depends(get_db), user: User = Depends(get
                        "uses_alternative_id": bool(
                            it.uid_var and it.uid_var != recommended_uid_var),
                        "manual_only": bool(it.is_new_officer),
+                       "uid_match_count": (
+                           it.uid_match_count if it.uid_match_count is not None
+                           else (0 if it.is_new_officer else 1)
+                       ),
+                       "allow_multi_row_apply": bool(it.allow_multi_row_apply),
                        "uid_value": it.uid_value,
                        "var_name": it.var_name, "current_value": it.current_value,
                        "suggested_value": it.suggested_value, "reason": it.reason,
@@ -1054,6 +1113,11 @@ def finalize_item(iid: int, body: FinalizeIn, db: Session = Depends(get_db),
         raise HTTPException(
             409, "部分采纳不能直接确认；请先进入修改页面并实际修改勘误内容")
     b = db.get(Bug, it.bug_id)
+    if (body.adopt_level != "reject" and (it.uid_match_count or 0) > 1
+            and not body.confirm_multi_row_apply):
+        raise HTTPException(
+            409, f"该定位 ID 匹配 {it.uid_match_count} 行；采纳后一次会修改 "
+                 f"{it.uid_match_count} 行，请管理员确认")
     # 自审校验：本人提交且存在其他管理员时须由他人审
     if b and b.reporter_id == user.id and count_dataset_admins(db, it.dataset_id) > 1:
         raise HTTPException(403, "这是你本人提交的勘误，请由另一名管理员审核")
@@ -1061,6 +1125,9 @@ def finalize_item(iid: int, body: FinalizeIn, db: Session = Depends(get_db),
     it.final_score = body.final_score
     it.status = "accepted" if body.adopt_level != "reject" else "rejected"
     it.reviewed_by = user.id; it.reviewed_at = datetime.utcnow()
+    it.allow_multi_row_apply = bool(
+        body.adopt_level != "reject" and (it.uid_match_count or 0) > 1
+    )
     if body.adopt_level != "reject" and b:
         record_contribution(db, b.reporter_id, "bug_accepted", "bug_item", iid,
                             it.dataset_id, weight=body.final_score)
@@ -1092,6 +1159,10 @@ def finalize_item_partial(iid: int, body: PartialFinalizeIn,
 
     context = _uid_context(db, it.dataset_id, body.uid_var or it.uid_var)
     uid_check = _check_uid(context, body.uid_value)
+    if uid_check["count"] > 1 and not body.confirm_multi_row_apply:
+        raise HTTPException(
+            409, f"修改后的定位 ID 匹配 {uid_check['count']} 行；采纳后一次会修改 "
+                 f"{uid_check['count']} 行，请管理员确认")
     if not uid_check["exists"] and not body.confirm_new_officer:
         raise HTTPException(
             409, f"最新原始版本中没有 {context['unique_id_var']}={uid_check['value']}。"
@@ -1139,6 +1210,8 @@ def finalize_item_partial(iid: int, body: PartialFinalizeIn,
     it.suggested_value = body.suggested_value
     it.reason = body.reason
     it.is_new_officer = not uid_check["exists"]
+    it.uid_match_count = uid_check["count"]
+    it.allow_multi_row_apply = uid_check["count"] > 1
     it.status = "accepted"
     it.adopt_level = "partial"
     it.final_score = body.final_score
@@ -1203,15 +1276,29 @@ def _accepted_release_material(db: Session, dataset_id: int, unique_id_var: str,
                 "uid_value": it.uid_value, "var_name": it.var_name,
                 "current_value": it.current_value, "suggested_value": it.suggested_value,
                 "reason": it.reason, "evidence": it.evidence,
-                "is_new_officer": bool(it.is_new_officer)} for it in items]
-    auto_payload = [it for it in payload if not it["is_new_officer"]]
-    manual_payload = [it for it in payload if it["is_new_officer"]]
+                "is_new_officer": bool(it.is_new_officer),
+                "uid_match_count": (
+                    it.uid_match_count if it.uid_match_count is not None
+                    else (0 if it.is_new_officer else 1)
+                ),
+                "allow_multi_row_apply": bool(it.allow_multi_row_apply)}
+               for it in items]
+    auto_payload = [
+        it for it in payload
+        if (not it["is_new_officer"]
+            and (it["uid_match_count"] <= 1 or it["allow_multi_row_apply"]))
+    ]
+    manual_payload = [it for it in payload if it not in auto_payload]
     script = apply_corrections_script(payload, unique_id_var) if payload else ""
     lines = [f"本版本自动应用 {len(auto_payload)} 条已采纳勘误；"
              f"{len(manual_payload)} 条勘误保留为人工处理："]
     for it in payload:
         if it["is_new_officer"]:
             mode = "人工处理·新增官员/记录"
+        elif it["uid_match_count"] > 1 and not it["allow_multi_row_apply"]:
+            mode = f"人工处理·非唯一定位（匹配 {it['uid_match_count']} 行）"
+        elif it["uid_match_count"] > 1:
+            mode = f"自动应用·管理员已确认修改 {it['uid_match_count']} 行"
         elif it["uid_var"] != unique_id_var:
             mode = f"自动应用·非推荐 ID（{it['uid_var']}）"
         else:

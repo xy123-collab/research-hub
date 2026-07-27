@@ -30,7 +30,8 @@ const versions = ref<any[]>([]); const bugs = ref<any[]>([]); const vars = ref<a
 const codes = ref<any[]>([]); const flags = ref<any[]>([]); const dash = ref<any[]>([])
 const lit = ref<any>({ topics: [], refs: [] }); const acceptedBugs = ref<any[]>([])
 const bugForm = ref<any>({ uid_var: '', officer_id: '', variable_id: null, current_value: '', suggested_value: '',
-  description_zh: '', evidence: '', confirm_new_officer: false, confirm_alternative_id: false })
+  description_zh: '', evidence: '', confirm_new_officer: false,
+  confirm_alternative_id: false, confirm_non_unique_id: false })
 const bugFile = ref<File | null>(null)
 const unstructuredBugForm = ref<any>({ issue: '', suggestion: '', evidence: '' })
 const unstructuredBugFile = ref<File | null>(null)
@@ -394,11 +395,12 @@ const batchFile = ref<File | null>(null)
 const batchTitle = ref('')
 const batchValidation = ref<any>(null); const batchConfirmNew = ref(false)
 const batchConfirmAlternative = ref(false)
+const batchConfirmNonUnique = ref(false)
 const batchRows = computed<any[]>(() => batchValidation.value?.items || [])
 const batchInvalidRows = computed(() => batchRows.value.filter((row: any) => !row.valid))
 const batchProblemRows = computed(() =>
   batchRows.value.filter((row: any) =>
-    !row.valid || row.is_new_officer || row.uses_alternative_id)
+    !row.valid || row.is_new_officer || row.uses_alternative_id || row.is_non_unique_id)
 )
 const batchMissingIds = computed(() => Array.from(new Set(
   batchRows.value.filter((row: any) => row.valid && row.is_new_officer)
@@ -407,9 +409,13 @@ const batchMissingIds = computed(() => Array.from(new Set(
 const batchAlternativeRows = computed(() =>
   batchRows.value.filter((row: any) => row.valid && row.uses_alternative_id)
 )
+const batchNonUniqueRows = computed(() =>
+  batchRows.value.filter((row: any) => row.valid && row.is_non_unique_id)
+)
 function selectBatchFile(file: File | null) {
   batchFile.value = file; batchValidation.value = null
   batchConfirmNew.value = false; batchConfirmAlternative.value = false
+  batchConfirmNonUnique.value = false
 }
 async function validateBatch() {
   if (!batchFile.value) { alert('请选择填好的模板文件'); return }
@@ -418,6 +424,7 @@ async function validateBatch() {
     batchValidation.value = (await api.post(`/datasets/${slug}/bugs/batch/validate`, fd)).data
     batchConfirmNew.value = !batchMissingIds.value.length
     batchConfirmAlternative.value = !batchAlternativeRows.value.length
+    batchConfirmNonUnique.value = !batchNonUniqueRows.value.length
   } catch (e: any) { batchValidation.value = null; alert(e.response?.data?.detail || '校验失败') }
 }
 function removeBatchRow(rowNo: number) {
@@ -427,6 +434,7 @@ function removeBatchRow(rowNo: number) {
   )
   batchConfirmNew.value = !batchMissingIds.value.length
   batchConfirmAlternative.value = !batchAlternativeRows.value.length
+  batchConfirmNonUnique.value = !batchNonUniqueRows.value.length
 }
 async function submitBatch() {
   if (!batchFile.value) { alert('请选择填好的模板文件'); return }
@@ -439,24 +447,40 @@ async function submitBatch() {
   if (batchAlternativeRows.value.length && !batchConfirmAlternative.value) {
     alert('请确认非推荐 ID 行的定位口径没有问题'); return
   }
+  if (batchNonUniqueRows.value.length && !batchConfirmNonUnique.value) {
+    alert('请确认多行匹配的定位 ID 确实允许不唯一'); return
+  }
   const fd = new FormData(); fd.append('file', batchFile.value)
   fd.append('title', batchTitle.value)
   fd.append('confirmed_new_officer_ids', JSON.stringify(batchMissingIds.value))
   fd.append('confirmed_alternative_id_rows',
     JSON.stringify(batchAlternativeRows.value.map((row: any) => row.row_no)))
+  fd.append('confirmed_non_unique_id_rows',
+    JSON.stringify(batchNonUniqueRows.value.map((row: any) => row.row_no)))
   fd.append('included_row_numbers', JSON.stringify(batchRows.value.map((row: any) => row.row_no)))
   try {
     const r = await api.post(`/datasets/${slug}/bugs/batch`, fd)
     alert(`已分别导入 ${r.data.items} 条独立勘误，可逐条查看、评分和终审`)
     batchFile.value = null; batchValidation.value = null; batchTitle.value = ''
     batchConfirmAlternative.value = false
+    batchConfirmNonUnique.value = false
     showBugUpload.value = false; loadTab('bugs')
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 // 逐条子项终审 / AI
-async function finalizeItem(iid: number, adopt: string, score: number) {
+async function finalizeItem(it: any, adopt: string, score: number) {
+  let confirmMulti = false
+  if (adopt !== 'reject' && Number(it.uid_match_count || 0) > 1) {
+    confirmMulti = confirm(
+      `该定位 ID 匹配 ${it.uid_match_count} 行。采纳后，一键应用会一次修改这 ${it.uid_match_count} 行，是否确认采纳？`
+    )
+    if (!confirmMulti) return
+  }
   try {
-    await api.post(`/bug-items/${iid}/finalize`, { adopt_level: adopt, final_score: score })
+    await api.post(`/bug-items/${it.id}/finalize`, {
+      adopt_level: adopt, final_score: score,
+      confirm_multi_row_apply: confirmMulti
+    })
     await openBug(bugModal.value.id); await loadTab('bugs')
   } catch (e: any) { alert(e.response?.data?.detail || '终审失败') }
 }
@@ -469,9 +493,14 @@ function openPartialEditor(it: any) {
   }
   partialEdit.value = {
     item_id: it.id, ...partialOriginal.value,
-    confirm_new_officer: !!it.is_new_officer
+    confirm_new_officer: !!it.is_new_officer,
+    uid_match_count: Number(it.uid_match_count || (it.is_new_officer ? 0 : 1))
   }
-  partialUidCheck.value = it.is_new_officer ? { exists: false } : { exists: true }
+  partialUidCheck.value = {
+    exists: !it.is_new_officer,
+    is_unique: Number(it.uid_match_count || 1) === 1,
+    count: Number(it.uid_match_count || (it.is_new_officer ? 0 : 1))
+  }
   showPartialEdit.value = true
 }
 function resetPartialUidCheck() {
@@ -507,6 +536,13 @@ async function confirmPartialEdit() {
   if (!canConfirmPartial.value) {
     alert('请至少实际修改一项，并完成唯一 ID 校验及必填内容'); return
   }
+  let confirmMulti = false
+  if ((partialUidCheck.value?.count || 0) > 1) {
+    confirmMulti = confirm(
+      `该定位 ID 当前匹配 ${partialUidCheck.value.count} 行。确认部分采纳后，一键应用会一次修改这 ${partialUidCheck.value.count} 行，是否继续？`
+    )
+    if (!confirmMulti) return
+  }
   try {
     await api.post(`/bug-items/${partialEdit.value.item_id}/finalize-partial`, {
       uid_value: partialEdit.value.uid_value,
@@ -516,6 +552,7 @@ async function confirmPartialEdit() {
       suggested_value: partialEdit.value.suggested_value,
       reason: partialEdit.value.reason,
       confirm_new_officer: partialEdit.value.confirm_new_officer,
+      confirm_multi_row_apply: confirmMulti,
       final_score: 6
     })
     showPartialEdit.value = false
@@ -603,6 +640,7 @@ function resetBugUidCheck() {
   bugUidCheck.value = null
   bugForm.value.confirm_new_officer = false
   bugForm.value.confirm_alternative_id = false
+  bugForm.value.confirm_non_unique_id = false
 }
 async function checkBugUid() {
   const value = (bugForm.value.officer_id || '').trim()
@@ -619,13 +657,26 @@ async function checkBugUid() {
 const canSubmitBug = computed(() => {
   const f = bugForm.value
   const uidReady = bugUidCheck.value && !bugUidCheck.value.error &&
-    (bugUidCheck.value.exists || f.confirm_new_officer)
+    (bugUidCheck.value.exists || f.confirm_new_officer) &&
+    (bugUidCheck.value.count <= 1 || f.confirm_non_unique_id)
   const alternativeReady = !usesAlternativeBugId.value || f.confirm_alternative_id
   return !!(uidReady && alternativeReady && f.variable_id &&
     f.description_zh?.trim() && f.evidence?.trim())
 })
 async function submitBug() {
-  if (!canSubmitBug.value) { alert('请完成唯一 ID 校验，并填写说明和证据'); return }
+  if (!bugUidCheck.value || bugUidCheck.value.error) {
+    alert('请先填写定位 ID，并完成 ID 校验'); return
+  }
+  if (bugUidCheck.value.count > 1 && !bugForm.value.confirm_non_unique_id) {
+    alert(`该定位 ID 匹配 ${bugUidCheck.value.count} 行，请先确认这种不唯一符合数据结构`); return
+  }
+  if (!bugUidCheck.value.exists && !bugForm.value.confirm_new_officer) {
+    alert('请确认这是新增主体或新增记录'); return
+  }
+  if (usesAlternativeBugId.value && !bugForm.value.confirm_alternative_id) {
+    alert('请确认使用非管理员推荐 ID 的定位口径'); return
+  }
+  if (!canSubmitBug.value) { alert('请完整填写修改变量、说明和证据'); return }
   try {
     const r = await api.post(`/datasets/${slug}/bugs`, bugForm.value)
     if (bugFile.value) {
@@ -635,7 +686,7 @@ async function submitBug() {
     bugForm.value = { uid_var: d.value?.unique_id_var || '', officer_id: '',
       variable_id: null, current_value: '', suggested_value: '',
       description_zh: '', evidence: '', confirm_new_officer: false,
-      confirm_alternative_id: false }
+      confirm_alternative_id: false, confirm_non_unique_id: false }
     bugUidCheck.value = null; bugFile.value = null; showBugUpload.value = false; loadTab('bugs')
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
@@ -680,8 +731,23 @@ async function finalizeBug(id: number, adopt: string, score: number) {
     }
     openPartialEditor(bugModal.value.items[0]); return
   }
+  let confirmMulti = false
+  const multiItems = (bugModal.value?.items || []).filter(
+    (it: any) => Number(it.uid_match_count || 0) > 1
+  )
+  if (adopt !== 'reject' && multiItems.length) {
+    const rows = multiItems.reduce(
+      (sum: number, it: any) => sum + Number(it.uid_match_count || 0), 0)
+    confirmMulti = confirm(
+      `该勘误包含 ${multiItems.length} 个非唯一定位项，采纳后一次共会修改 ${rows} 行。是否确认采纳？`
+    )
+    if (!confirmMulti) return
+  }
   try {
-    await api.post(`/bugs/${id}/finalize`, { adopt_level: adopt, final_score: score })
+    await api.post(`/bugs/${id}/finalize`, {
+      adopt_level: adopt, final_score: score,
+      confirm_multi_row_apply: confirmMulti
+    })
     await openBug(id); await loadTab('bugs')
   } catch (e: any) { alert(e.response?.data?.detail || '终审失败') }
 }
@@ -1705,7 +1771,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <div v-if="bugUploadMode==='single'">
           <p class="text-xs text-gray-500 mb-3">
             管理员推荐使用 <b class="font-mono">{{ d.unique_id_var || '（尚未设置）' }}</b> 定位记录。
-            如本条勘误更适合使用其他 ID，可改选；确认定位口径且最新数据中恰好匹配一行后，同样支持安全一键应用。
+            如本条勘误更适合使用其他 ID，可改选。定位值允许匹配多行，但上传者和管理员都须确认预计修改行数。
           </p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <select v-model="bugForm.uid_var" class="input" @change="resetBugUidCheck">
@@ -1729,13 +1795,24 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <input type="checkbox" v-model="bugForm.confirm_alternative_id" class="mt-0.5" />
             <span>我确认本条没有使用管理员推荐的 <b class="font-mono">{{ d.unique_id_var }}</b>，
               而是使用 <b class="font-mono">{{ bugForm.uid_var }}</b> 定位；我已核对该口径没有问题。
-              系统仍会在一键应用前重新检查该 ID 恰好匹配一行及当前值一致。</span>
+              系统仍会在一键应用前重新检查匹配行数及这些行的当前值。</span>
           </label>
           <p v-if="bugUidChecking" class="text-xs text-gray-400 mt-1">正在核对唯一 ID…</p>
           <p v-else-if="bugUidCheck?.error" class="text-xs text-red-600 mt-1">{{ bugUidCheck.error }}</p>
-          <p v-else-if="bugUidCheck?.exists" class="text-xs text-emerald-700 mt-1">
+          <p v-else-if="bugUidCheck?.is_unique" class="text-xs text-emerald-700 mt-1">
             已在原始版本 {{ bugUidCheck.source_version }} 中找到该 ID。
           </p>
+          <div v-else-if="bugUidCheck?.count > 1"
+            class="mt-2 p-2 rounded bg-amber-50 border border-amber-200">
+            <p class="text-xs text-amber-800">
+              {{ bugForm.uid_var }}={{ bugForm.officer_id }} 在最新原始版本中匹配到
+              <b>{{ bugUidCheck.count }}</b> 条；唯一 ID 不唯一。
+            </p>
+            <label class="flex items-start gap-2 text-sm mt-2">
+              <input type="checkbox" v-model="bugForm.confirm_non_unique_id" class="mt-0.5" />
+              <span>我确认该 ID 匹配多行符合数据结构；若管理员采纳，一键应用将一次修改这 {{ bugUidCheck.count }} 行。</span>
+            </label>
+          </div>
           <div v-else-if="bugUidCheck && !bugUidCheck.exists" class="mt-2 p-2 rounded bg-amber-50 border border-amber-200">
             <p class="text-xs text-amber-800">现有数据中没有该 ID。请先检查是否填错；若确为新增主体或新增记录，再勾选确认。</p>
             <label class="flex items-center gap-2 text-sm mt-2">
@@ -1753,7 +1830,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <input type="file" @change="(e:any)=>bugFile=e.target.files[0]" class="text-xs mt-1 block" />
           <div class="flex justify-end gap-2 mt-4">
             <button class="btn-ghost" @click="showBugUpload=false">取消</button>
-            <button class="btn-primary" :disabled="!canSubmitBug" @click="submitBug">提交勘误</button>
+            <button class="btn-primary" @click="submitBug">提交勘误</button>
           </div>
         </div>
 
@@ -1775,7 +1852,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <div class="mt-3 border border-line rounded divide-y divide-line max-h-64 overflow-y-auto bg-white">
               <div v-for="row in batchRows" :key="row.row_no"
                 :class="['p-2 flex items-start gap-2',
-                  !row.valid ? 'bg-red-50' : (row.is_new_officer || row.uses_alternative_id ? 'bg-amber-50' : '')]">
+                  !row.valid ? 'bg-red-50' : (row.is_new_officer || row.uses_alternative_id || row.is_non_unique_id ? 'bg-amber-50' : '')]">
                 <span class="font-mono text-xs text-gray-400 shrink-0">第{{ row.row_no }}行</span>
                 <div class="min-w-0 flex-1">
                   <p class="text-xs">
@@ -1783,7 +1860,11 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
                     {{ row['变量名'] }}：{{ row['当前值'] }} → {{ row['建议值'] }}
                   </p>
                   <p class="text-xs text-gray-500 mt-1">{{ row['说明'] }}</p>
-                  <p v-if="row.uses_alternative_id && row.valid" class="text-xs text-amber-700 mt-1">本行未使用管理员推荐 ID，需确认定位口径；唯一匹配时仍可一键应用。</p>
+                  <p v-if="row.uses_alternative_id && row.valid" class="text-xs text-amber-700 mt-1">本行未使用管理员推荐 ID，需确认定位口径；核对匹配行数后仍可一键应用。</p>
+                  <p v-if="row.is_non_unique_id && row.valid" class="text-xs text-amber-700 mt-1">
+                    问题：{{ row['定位唯一id'] || d.unique_id_var }}={{ row['定位id的值'] }}
+                    在最新原始版本中匹配到 {{ row.uid_match_count }} 条；唯一 ID 不唯一。
+                  </p>
                   <p v-if="row.is_new_officer && row.valid" class="text-xs text-amber-700 mt-1">现有数据无此 ID，需确认新增主体或记录。</p>
                   <p v-for="problem in row.problems" :key="problem" class="text-xs text-red-600 mt-1">问题：{{ problem }}</p>
                 </div>
@@ -1803,7 +1884,16 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <p class="text-amber-700 mt-2">第 {{ batchAlternativeRows.map((row:any)=>row.row_no).join('、') }} 行未使用管理员推荐 ID。</p>
               <label class="flex items-start gap-2 mt-2">
                 <input type="checkbox" v-model="batchConfirmAlternative" class="mt-0.5" />
-                <span>我已核对这些行的 ID 定位口径没有问题；系统会在一键应用前再次检查每项恰好匹配一行。</span>
+                <span>我已核对这些行的 ID 定位口径没有问题；系统会在一键应用前再次检查匹配行数及当前值。</span>
+              </label>
+            </template>
+            <template v-if="batchNonUniqueRows.length">
+              <p class="text-amber-700 mt-2">
+                第 {{ batchNonUniqueRows.map((row:any)=>row.row_no).join('、') }} 行的定位 ID 匹配多条记录。
+              </p>
+              <label class="flex items-start gap-2 mt-2">
+                <input type="checkbox" v-model="batchConfirmNonUnique" class="mt-0.5" />
+                <span>我确认这些 ID 允许不唯一；管理员采纳时将再次确认每项一次修改的行数。</span>
               </label>
             </template>
             <p v-if="batchRows.length && !batchProblemRows.length" class="text-emerald-700 mt-2">保留行均已通过校验。</p>
@@ -1879,6 +1969,9 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <span class="font-mono text-xs">{{ it.uid_var }}={{ it.uid_value }}</span>
               <span class="text-gray-500">{{ it.var_name }}：{{ it.current_value }} → <b>{{ it.suggested_value }}</b></span>
               <span v-if="it.is_new_officer" class="tag border-amber-400 text-amber-700">新增主体/记录·需人工补全</span>
+              <span v-else-if="it.uid_match_count > 1" class="tag border-red-300 text-red-700">
+                非唯一 ID·一次修改 {{ it.uid_match_count }} 行
+              </span>
               <span v-else-if="it.uses_alternative_id" class="tag border-amber-400 text-amber-700">非推荐 ID·可安全一键应用</span>
               <span class="tag ml-auto">{{ it.status }}</span>
             </div>
@@ -1908,13 +2001,13 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <span v-if="it.final_score!=null" class="text-xs text-accent">终审 {{ it.final_score }}/10（{{ it.adopt_level }}）</span>
               <template v-if="d.is_admin && it.status==='pending'">
                 <button class="btn-ghost text-[11px]" @click="aiReviewItem(it.id)">AI评分</button>
-                <button class="btn-primary text-[11px]" @click="finalizeItem(it.id,'full',9)">采纳(9)</button>
+                <button class="btn-primary text-[11px]" @click="finalizeItem(it,'full',9)">采纳(9)</button>
                 <button class="btn-ghost text-[11px]" @click="openPartialEditor(it)">部分(需修改)</button>
-                <button class="btn-ghost text-[11px]" @click="finalizeItem(it.id,'reject',0)">拒绝</button>
+                <button class="btn-ghost text-[11px]" @click="finalizeItem(it,'reject',0)">拒绝</button>
               </template>
             </div>
           </div>
-          <p class="text-[11px] text-gray-400">使用任一已确认定位 ID 且可唯一匹配的项目，采纳后可进入一键应用；新增记录与非格式化勘误由管理员手工修改。</p>
+          <p class="text-[11px] text-gray-400">使用任一已确认定位 ID 的项目均可进入一键应用；多行匹配须由上传者和管理员双重确认，新增记录与非格式化勘误仍由管理员手工修改。</p>
         </div>
         <div v-if="bugModal.attachments.length" class="mt-2">
           <div class="label-cap">证据附件</div>
@@ -1963,7 +2056,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <div class="mt-4 rounded border border-line bg-paper p-2 text-xs text-gray-600">
           本条使用 ID 变量：<b class="font-mono">{{ partialEdit.uid_var }}</b>
           <span v-if="partialEdit.uid_var!==d.unique_id_var" class="text-amber-700">
-            （非管理员推荐 ID；唯一匹配时仍可一键应用）
+            （非管理员推荐 ID；确认匹配行数后仍可一键应用）
           </span>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
@@ -1990,7 +2083,10 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
         <p v-if="partialUidChecking" class="text-xs text-gray-400 mt-2">正在核对唯一 ID…</p>
         <p v-else-if="partialUidCheck?.error" class="text-xs text-red-600 mt-2">{{ partialUidCheck.error }}</p>
-        <p v-else-if="partialUidCheck?.exists" class="text-xs text-emerald-700 mt-2">唯一 ID 已在最新原始版本中找到。</p>
+        <p v-else-if="partialUidCheck?.is_unique" class="text-xs text-emerald-700 mt-2">唯一 ID 已在最新原始版本中找到。</p>
+        <p v-else-if="partialUidCheck?.count > 1" class="text-xs text-amber-700 mt-2">
+          该定位 ID 匹配 {{ partialUidCheck.count }} 行；确认部分采纳时会再次提示一次修改行数。
+        </p>
         <label v-else-if="partialUidCheck && !partialUidCheck.exists"
           class="flex items-center gap-2 text-sm mt-2 p-2 rounded bg-amber-50 border border-amber-200">
           <input type="checkbox" v-model="partialEdit.confirm_new_officer" />
@@ -2295,7 +2391,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     <div v-if="showApply" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-3xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
         <h3 class="text-lg mb-1">应用已采纳勘误 → 生成新版本</h3>
-        <p class="text-xs text-gray-500 mb-3">请先核对下面的实际 Stata 修改代码。管理员推荐 ID 和已确认的其他定位 ID 都可自动处理；每项执行前都会重新检查恰好匹配一行及当前值一致。</p>
+        <p class="text-xs text-gray-500 mb-3">请先核对下面的实际 Stata 修改代码。管理员推荐 ID 和已确认的其他定位 ID 都可自动处理；每项执行前都会重新检查实际匹配数与管理员确认数一致，且所有匹配行的当前值符合预期。</p>
         <label class="label-cap">基准版本</label>
         <select v-model="applyForm.base_version_id" class="input mb-2" @change="refreshApplyPreview">
           <option v-for="v in rawVersions" :key="v.id" :value="v.id">{{ v.version_id }}（原始数据）</option>
