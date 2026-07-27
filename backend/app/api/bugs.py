@@ -17,7 +17,9 @@ from ..models.dataset import Dataset, Variable
 from ..models.version import DataVersion
 from ..models.correction import Bug, CorrectionReview, CorrectionFinal
 from ..models.curation import BugItem, VersionExtra, DatasetDataConfig
-from ..schemas.models import BugIn, ReviewIn, FinalizeIn, PartialFinalizeIn
+from ..schemas.models import (
+    BugIn, UnstructuredBugIn, ReviewIn, FinalizeIn, PartialFinalizeIn,
+)
 from ..core.time import china_iso
 
 router = APIRouter(tags=["bugs"])
@@ -65,12 +67,17 @@ def _canonical_uid(value, numeric: bool) -> str:
         return text
 
 
-def _uid_context(db: Session, dataset_id: int) -> dict:
-    """读取最新原始版本唯一 ID 列，并建立规范化计数索引。"""
+def _uid_context(db: Session, dataset_id: int, requested_var: str | None = None) -> dict:
+    """读取本次选用的 ID 列，并建立规范化计数索引。"""
     cfg = db.get(DatasetDataConfig, dataset_id)
-    uid_var = cfg.unique_id_var if cfg else None
-    if not uid_var:
+    recommended_var = cfg.unique_id_var if cfg else None
+    if not recommended_var:
         raise HTTPException(400, "管理员尚未设置唯一 ID 变量，请先到版本库的「数据处理设置」配置")
+    uid_var = str(requested_var or recommended_var).strip()
+    variable = db.query(Variable).filter_by(
+        dataset_id=dataset_id, var_name=uid_var, enabled=True).first()
+    if not variable:
+        raise HTTPException(400, f"ID 变量「{uid_var}」不在当前变量清单")
     version = _latest_raw_version(db, dataset_id)
     if not version:
         raise HTTPException(400, "还没有可用于核对唯一 ID 的原始数据版本，请管理员先发布原始数据")
@@ -84,8 +91,9 @@ def _uid_context(db: Session, dataset_id: int) -> dict:
         raise HTTPException(
             400, f"无法读取最新原始版本「{version.version_id}」的唯一 ID：{exc}。"
                  "请检查文件是否仍在 COS、格式是否正确及唯一 ID 配置") from exc
-    return {"unique_id_var": uid_var, "version": version,
-            "numeric": numeric, "counts": counts}
+    return {"unique_id_var": uid_var, "recommended_uid_var": recommended_var,
+            "uses_alternative_id": uid_var != recommended_var,
+            "version": version, "numeric": numeric, "counts": counts}
 
 
 def _check_uid(context: dict, value) -> dict:
@@ -106,8 +114,9 @@ def _match_text(value) -> str:
 
 
 def _bug_signature(context: dict, uid_value, var_name, current_value, suggested_value) -> tuple:
-    """重复勘误只按唯一值、变量、当前值、建议值四项匹配。"""
+    """重复勘误按 ID 变量、ID 值、修改变量、当前值、建议值匹配。"""
     return (
+        context["unique_id_var"],
         _canonical_uid(uid_value, context["numeric"]),
         _match_text(var_name),
         _match_text(current_value),
@@ -120,6 +129,24 @@ def _duplicate_index(db: Session, dataset_id: int, context: dict,
                      exclude_item_id: int | None = None) -> dict[tuple, dict]:
     """覆盖所有状态的历史勘误；部分采纳后同时索引原始内容和管理员修改内容。"""
     index: dict[tuple, dict] = {}
+    contexts = {context["unique_id_var"]: context}
+
+    def context_for(uid_var: str | None) -> dict:
+        selected = (uid_var or context["recommended_uid_var"]).strip()
+        if selected not in contexts:
+            try:
+                contexts[selected] = _uid_context(db, dataset_id, selected)
+            except HTTPException:
+                # 历史勘误使用的 ID 变量可能已在后续版本中停用；仍保留文本口径
+                # 参与历史查重，但不能因此阻断当前版本的新提交。
+                contexts[selected] = {
+                    "unique_id_var": selected,
+                    "recommended_uid_var": context["recommended_uid_var"],
+                    "uses_alternative_id": selected != context["recommended_uid_var"],
+                    "numeric": False,
+                }
+        return contexts[selected]
+
     item_bug_ids = set()
     rows = db.query(BugItem, Bug).join(Bug, Bug.id == BugItem.bug_id).filter(
         BugItem.dataset_id == dataset_id).all()
@@ -129,14 +156,15 @@ def _duplicate_index(db: Session, dataset_id: int, context: dict,
             continue
         meta = {"bug_id": bug.id, "item_id": item.id,
                 "status": item.status or bug.status or "pending"}
+        item_context = context_for(item.uid_var)
         current = _bug_signature(
-            context, item.uid_value, item.var_name,
+            item_context, item.uid_value, item.var_name,
             item.current_value, item.suggested_value,
         )
         index.setdefault(current, meta)
         if item.original_uid_value is not None:
             original = _bug_signature(
-                context, item.original_uid_value, item.original_var_name,
+                item_context, item.original_uid_value, item.original_var_name,
                 item.original_current_value, item.original_suggested_value,
             )
             index.setdefault(original, meta)
@@ -146,6 +174,8 @@ def _duplicate_index(db: Session, dataset_id: int, context: dict,
         dataset_id=dataset_id).all()}
     for bug in db.query(Bug).filter_by(dataset_id=dataset_id).all():
         if bug.id in item_bug_ids or bug.id == exclude_bug_id:
+            continue
+        if bug.bug_type == "unstructured":
             continue
         signature = _bug_signature(
             context, bug.officer_id or bug.term_id,
@@ -203,12 +233,23 @@ def list_bugs(slug: str, db: Session = Depends(get_db), user: User = Depends(get
             "id": b.id, "officer_id": b.officer_id, "term_id": b.term_id,
             "current_value": b.current_value, "suggested_value": b.suggested_value,
             "description_zh": b.description_zh,
+            "correction_type": (
+                "unstructured" if b.bug_type == "unstructured" else "structured"
+            ),
             "status": _effective_bug_status(items, b.status),
             "reporter_id": b.reporter_id,
             "reporter_name": reporter.display_name if reporter else "已注销用户",
             "created_at": china_iso(b.created_at),
             "reviewer_count": reviewer_count,
             "has_new_officer": any(bool(it.is_new_officer) for it in items),
+            "has_manual_only": (
+                b.bug_type == "unstructured"
+                or any(
+                    bool(it.is_new_officer)
+                    or bool(it.uid_var and it.uid_var != _uid_var(db, d.id))
+                    for it in items
+                )
+            ),
             "can_delete": (
                 b.reporter_id == user.id and b.status == "pending"
                 and all(it.status == "pending" for it in items)
@@ -219,13 +260,16 @@ def list_bugs(slug: str, db: Session = Depends(get_db), user: User = Depends(get
 
 @router.get("/datasets/{slug}/bugs/id-check")
 def check_bug_uid(slug: str, value: str, db: Session = Depends(get_db),
+                  id_var: str | None = None,
                   user: User = Depends(get_current_user)):
     d = _ds(db, slug)
     if not is_dataset_member(db, d.id, user):
         raise HTTPException(403, "需为数据集成员")
-    context = _uid_context(db, d.id)
+    context = _uid_context(db, d.id, id_var)
     result = _check_uid(context, value)
     return {"unique_id_var": context["unique_id_var"],
+            "recommended_unique_id_var": context["recommended_uid_var"],
+            "uses_alternative_id": context["uses_alternative_id"],
             "source_version": context["version"].version_id, **result}
 
 
@@ -241,39 +285,74 @@ def submit_bug(slug: str, body: dict, db: Session = Depends(get_db),
         body = BugIn.model_validate(body)
     except Exception as exc:
         raise HTTPException(422, "请完整填写勘误说明和证据") from exc
-    context = _uid_context(db, d.id)
+    context = _uid_context(db, d.id, body.uid_var)
+    if context["uses_alternative_id"] and not body.confirm_alternative_id:
+        raise HTTPException(
+            409, f"本次选择的 ID 变量「{context['unique_id_var']}」不是管理员推荐的"
+                 f"「{context['recommended_uid_var']}」。请确认已理解定位口径后再提交")
     uid_value = body.officer_id or body.term_id or ""
     check = _check_uid(context, uid_value)
     if not check["exists"] and not body.confirm_new_officer:
         raise HTTPException(
             409, f"最新原始版本中没有 {context['unique_id_var']}={check['value']}。"
-                 "请确认 ID 是否填错；若确为新增官员，请勾选确认后再提交")
+                 "请确认 ID 是否填错；若确为新增主体或新增记录，请勾选确认后再提交")
     var = db.get(Variable, body.variable_id) if body.variable_id else None
     if not var or var.dataset_id != d.id or not var.enabled:
         raise HTTPException(400, "请选择本数据集当前有效的勘误变量")
-    if var.var_name == context["unique_id_var"]:
-        raise HTTPException(400, "唯一 ID 变量本身不能作为勘误修改对象")
+    if var.var_name in {
+            context["unique_id_var"], context["recommended_uid_var"]}:
+        raise HTTPException(400, "管理员推荐或本次选用的 ID 变量本身不能作为勘误修改对象")
     duplicate = _duplicate_index(db, d.id, context).get(_bug_signature(
         context, check["value"], var.var_name,
         body.current_value, body.suggested_value,
     ))
     if duplicate:
         raise HTTPException(409, "重复勘误，无法提交：" + _duplicate_message(duplicate))
-    data = body.model_dump(exclude={"confirm_new_officer"})
+    data = body.model_dump(exclude={
+        "uid_var", "confirm_new_officer", "confirm_alternative_id",
+    })
     b = Bug(dataset_id=d.id, reporter_id=user.id, status="pending",
             created_at=datetime.utcnow(), **data)
     db.add(b); db.flush()
     # 单条勘误也建一个子项，统一按子项打分/终审/应用
-    db.add(BugItem(bug_id=b.id, dataset_id=d.id, seq=1, uid_value=check["value"],
+    db.add(BugItem(bug_id=b.id, dataset_id=d.id, seq=1,
+                   uid_var=context["unique_id_var"], uid_value=check["value"],
                    var_name=var.var_name,
                    current_value=body.current_value, suggested_value=body.suggested_value,
                    reason=body.description_zh, evidence=body.evidence,
                    is_new_officer=not check["exists"], status="pending"))
     write_audit(db, user.id, "bug.submit", "bug", b.id,
                 {"is_new_officer": not check["exists"],
+                 "uid_var": context["unique_id_var"],
+                 "uses_alternative_id": context["uses_alternative_id"],
                  "checked_version": context["version"].version_id})
     db.commit()
     return {"id": b.id}
+
+
+@router.post("/datasets/{slug}/bugs/unstructured")
+def submit_unstructured_bug(
+        slug: str, body: UnstructuredBugIn, db: Session = Depends(get_db),
+        user: User = Depends(get_current_user)):
+    """提交无法按单元格描述的自然语言勘误；只进入人工审核和人工修改流程。"""
+    d = _ds(db, slug)
+    if not is_dataset_member(db, d.id, user):
+        raise HTTPException(403, "非成员不能提交勘误，请先申请加入处理")
+    if get_settings(db, d.id).is_closed:
+        raise HTTPException(400, "数据集已关闭，不再接受新勘误")
+    b = Bug(
+        dataset_id=d.id, reporter_id=user.id, status="pending",
+        bug_type="unstructured", description_zh=body.issue,
+        suggested_value=body.suggestion, evidence=body.evidence,
+        created_at=datetime.utcnow(),
+    )
+    db.add(b)
+    db.flush()
+    write_audit(db, user.id, "bug.submit.unstructured", "bug", b.id, {
+        "manual_only": True,
+    })
+    db.commit()
+    return {"id": b.id, "manual_only": True}
 
 
 def _var_name(db, variable_id):
@@ -282,8 +361,9 @@ def _var_name(db, variable_id):
 
 
 # ============ 批量勘误：模板下载 + Excel/CSV 导入 ============
-BATCH_COLS = ["唯一ID值", "变量名", "当前值", "建议值", "说明", "证据"]
+BATCH_COLS = ["ID变量名", "唯一ID值", "变量名", "当前值", "建议值", "说明", "证据"]
 BATCH_REQUIRED = ["唯一ID值", "变量名", "说明", "证据"]
+LEGACY_BATCH_COLS = ["唯一ID值", "变量名", "当前值", "建议值", "说明", "证据"]
 
 
 @router.get("/datasets/{slug}/bug-template")
@@ -298,6 +378,8 @@ def bug_template(slug: str, db: Session = Depends(get_db),
     ws = wb.active; ws.title = "勘误"
     ws.append(BATCH_COLS)
     notes = {
+        "ID变量名": f"可留空，默认使用管理员推荐的「{uidv or '尚未设置'}」。"
+                    "如填写其他 ID 变量，提交前必须额外确认，且平台只提示管理员手工处理。",
         "唯一ID值": f"该数据集的唯一标识变量是「{uidv or '未设置，请管理员先在数据设置中指定'}」。"
                    "填该行记录对应的唯一ID取值（唯一ID本身不可被修改）。",
         "变量名": "要修改的变量名（须与数据集变量一致）。",
@@ -319,10 +401,11 @@ def bug_template(slug: str, db: Session = Depends(get_db),
         "1. 每一行是一个独立勘误；提交后会在勘误列表中分别显示、分别打分和分别终审。",
         "2. 上传文件后先逐行校验；有问题的行会显示具体原因，可删除问题行后再提交其余行。",
         f"3. 唯一ID变量：{uidv or '（管理员尚未设置，请先在数据集设置里指定唯一ID）'}，用于定位要改的记录。",
-        "4. 唯一ID本身不允许被修改；变量名须与「变量清单」页一致。",
-        "5. 「说明」和「证据」是两个独立必填列，旧版合并列模板不再接受。",
-        "6. 系统会用「唯一ID值、变量名、当前值、建议值」与全部历史勘误查重，重复行不能提交。",
-        "7. 支持 .xlsx / .csv，列顺序：" + "、".join(BATCH_COLS) + "。",
+        "4. 「ID变量名」可留空；如不用管理员推荐 ID，须填写变量名并在上传页额外确认。",
+        "5. ID 变量本身不允许被修改；要修改的变量名须与「变量清单」页一致。",
+        "6. 「说明」和「证据」是两个独立必填列，旧版合并列模板不再接受。",
+        "7. 系统会用「ID变量名、唯一ID值、变量名、当前值、建议值」与全部历史勘误查重。",
+        "8. 支持 .xlsx / .csv，列顺序：" + "、".join(BATCH_COLS) + "。",
     ]:
         ws3.append([line])
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
@@ -340,10 +423,11 @@ def _validate_batch_rows(db: Session, dataset: Dataset, rows: list[dict],
     header = set(rows[0].keys())
     if "说明与证据" in header:
         raise HTTPException(400, "这是旧版批量模板。请重新下载模板，将「说明」和「证据」分列填写")
-    missing_cols = [col for col in BATCH_COLS if col not in header]
+    missing_cols = [col for col in LEGACY_BATCH_COLS if col not in header]
     if missing_cols:
         raise HTTPException(400, "批量模板缺少列：" + "、".join(missing_cols))
     context = _uid_context(db, dataset.id)
+    contexts = {context["unique_id_var"]: context}
     variables = {v.var_name for v in db.query(Variable).filter_by(
         dataset_id=dataset.id, enabled=True).all()}
     historical = _duplicate_index(db, dataset.id, context)
@@ -360,17 +444,27 @@ def _validate_batch_rows(db: Session, dataset: Dataset, rows: list[dict],
             problems.append("缺少必填项：" + "、".join(missing))
         if cleaned["变量名"] not in variables:
             problems.append(f"变量「{cleaned['变量名']}」不在当前变量清单")
-        elif cleaned["变量名"] == context["unique_id_var"]:
-            problems.append("不能修改唯一 ID 变量本身")
         uid_check = None
-        if cleaned["唯一ID值"]:
+        selected_uid_var = cleaned["ID变量名"] or context["recommended_uid_var"]
+        row_context = contexts.get(selected_uid_var)
+        if row_context is None:
             try:
-                uid_check = _check_uid(context, cleaned["唯一ID值"])
+                row_context = _uid_context(db, dataset.id, selected_uid_var)
+                contexts[selected_uid_var] = row_context
             except HTTPException as exc:
                 problems.append(str(exc.detail))
-        if uid_check and cleaned["变量名"] in variables:
+        if cleaned["变量名"] in {
+                context["recommended_uid_var"], selected_uid_var}:
+            problems.append("不能修改管理员推荐或本次选用的 ID 变量本身")
+        if cleaned["唯一ID值"]:
+            if row_context is not None:
+                try:
+                    uid_check = _check_uid(row_context, cleaned["唯一ID值"])
+                except HTTPException as exc:
+                    problems.append(str(exc.detail))
+        if uid_check and row_context and cleaned["变量名"] in variables:
             signature = _bug_signature(
-                context, uid_check["value"], cleaned["变量名"],
+                row_context, uid_check["value"], cleaned["变量名"],
                 cleaned["当前值"], cleaned["建议值"],
             )
             duplicate = historical.get(signature)
@@ -382,6 +476,7 @@ def _validate_batch_rows(db: Session, dataset: Dataset, rows: list[dict],
                 seen_batch[signature] = row_no
         checked.append({
             "row_no": row_no, "row": cleaned, "uid": uid_check,
+            "uid_context": row_context,
             "valid": not problems, "problems": problems,
         })
     return context, checked
@@ -396,6 +491,10 @@ def _public_batch_item(item: dict) -> dict:
         "problems": item["problems"],
         "uid_exists": bool(uid and uid["exists"]),
         "is_new_officer": bool(uid and not uid["exists"]),
+        "uses_alternative_id": bool(
+            item.get("uid_context")
+            and item["uid_context"]["uses_alternative_id"]
+        ),
     }
 
 
@@ -421,12 +520,17 @@ def validate_bug_batch(slug: str, file: UploadFile = File(...),
             "items": [_public_batch_item(item) for item in checked],
             "unique_id_var": context["unique_id_var"],
             "source_version": context["version"].version_id,
-            "missing_uid_values": missing}
+            "missing_uid_values": missing,
+            "alternative_id_rows": [
+                item["row_no"] for item in checked
+                if item["valid"] and item["uid_context"]["uses_alternative_id"]
+            ]}
 
 
 @router.post("/datasets/{slug}/bugs/batch")
 def submit_bug_batch(slug: str, file: UploadFile = File(...), title: str = Form(""),
                      confirmed_new_officer_ids: str = Form("[]"),
+                     confirmed_alternative_id_rows: str = Form("[]"),
                      included_row_numbers: str = Form(""),
                      db: Session = Depends(get_db),
                      user: User = Depends(get_current_user)):
@@ -441,7 +545,13 @@ def submit_bug_batch(slug: str, file: UploadFile = File(...), title: str = Form(
     try:
         confirmed = {str(x).strip() for x in json.loads(confirmed_new_officer_ids or "[]")}
     except Exception:
-        raise HTTPException(400, "新增官员确认参数格式错误，请重新校验批量文件")
+        raise HTTPException(400, "新增主体/记录确认参数格式错误，请重新校验批量文件")
+    try:
+        confirmed_alternative_rows = {
+            int(x) for x in json.loads(confirmed_alternative_id_rows or "[]")
+        }
+    except Exception:
+        raise HTTPException(400, "非推荐 ID 确认参数格式错误，请重新校验批量文件")
     known_rows = set(range(2, len(rows) + 2))
     try:
         requested = (
@@ -467,8 +577,17 @@ def submit_bug_batch(slug: str, file: UploadFile = File(...), title: str = Form(
                           if not item["uid"]["exists"] and item["uid"]["value"] not in confirmed})
     if unconfirmed:
         raise HTTPException(
-            409, "以下 ID 在最新原始版本中不存在，请确认它们是新增官员后再提交："
+            409, "以下 ID 在最新原始版本中不存在，请确认它们是新增主体或新增记录后再提交："
                  + "、".join(unconfirmed[:20]))
+    alternative_rows = {
+        item["row_no"] for item in selected
+        if item["uid_context"]["uses_alternative_id"]
+    }
+    unconfirmed_alternative = sorted(alternative_rows - confirmed_alternative_rows)
+    if unconfirmed_alternative:
+        raise HTTPException(
+            409, "以下行没有使用管理员推荐的唯一 ID，请确认定位口径后再提交："
+                 + "、".join(str(row_no) for row_no in unconfirmed_alternative[:20]))
     variables = {v.var_name: v for v in db.query(Variable).filter_by(
         dataset_id=d.id, enabled=True).all()}
     created_ids = []
@@ -485,6 +604,7 @@ def submit_bug_batch(slug: str, file: UploadFile = File(...), title: str = Form(
         )
         db.add(b); db.flush()
         db.add(BugItem(bug_id=b.id, dataset_id=d.id, seq=1,
+                       uid_var=item["uid_context"]["unique_id_var"],
                        uid_value=r["唯一ID值"], var_name=r["变量名"],
                        current_value=r["当前值"], suggested_value=r["建议值"],
                        reason=r["说明"], evidence=r["证据"],
@@ -493,6 +613,8 @@ def submit_bug_batch(slug: str, file: UploadFile = File(...), title: str = Form(
         write_audit(db, user.id, "bug.submit.batch.item", "bug", b.id, {
             "source_row": item["row_no"],
             "is_new_officer": not item["uid"]["exists"],
+            "uid_var": item["uid_context"]["unique_id_var"],
+            "uses_alternative_id": item["uid_context"]["uses_alternative_id"],
             "checked_version": context["version"].version_id,
         })
     db.commit()
@@ -531,10 +653,13 @@ def edit_bug(bid: int, body: BugIn, db: Session = Depends(get_db),
         raise HTTPException(404, "勘误不存在")
     if b.reporter_id != user.id or b.status != "pending":
         raise HTTPException(403, "仅本人且未审核前可改")
-    context = _uid_context(db, b.dataset_id)
+    context = _uid_context(db, b.dataset_id, body.uid_var)
+    if context["uses_alternative_id"] and not body.confirm_alternative_id:
+        raise HTTPException(
+            409, "本次没有使用管理员推荐的唯一 ID，请明确确认定位口径后再保存")
     check = _check_uid(context, body.officer_id or body.term_id)
     if not check["exists"] and not body.confirm_new_officer:
-        raise HTTPException(409, "该唯一 ID 不存在；若确为新增官员，请勾选确认后再保存")
+        raise HTTPException(409, "该 ID 不存在；若确为新增主体或新增记录，请勾选确认后再保存")
     var = db.get(Variable, body.variable_id) if body.variable_id else None
     if not var or var.dataset_id != b.dataset_id or not var.enabled:
         raise HTTPException(400, "请选择本数据集当前有效的勘误变量")
@@ -549,9 +674,11 @@ def edit_bug(bid: int, body: BugIn, db: Session = Depends(get_db),
     if duplicate:
         raise HTTPException(409, "重复勘误，无法保存：" + _duplicate_message(duplicate))
     for k, v in body.model_dump(
-            exclude={"confirm_new_officer"}, exclude_none=True).items():
+            exclude={"uid_var", "confirm_new_officer", "confirm_alternative_id"},
+            exclude_none=True).items():
         setattr(b, k, v)
     if item:
+        item.uid_var = context["unique_id_var"]
         item.uid_value = check["value"]
         item.var_name = var.var_name
         item.current_value = body.current_value
@@ -815,9 +942,13 @@ def bug_detail(bid: int, db: Session = Depends(get_db), user: User = Depends(get
         editor.id: editor.display_name
         for editor in db.query(User).filter(User.id.in_(editor_ids or {-1})).all()
     }
+    recommended_uid_var = _uid_var(db, b.dataset_id)
+    correction_type = "unstructured" if b.bug_type == "unstructured" else "structured"
     return {"id": b.id, "dataset_id": b.dataset_id, "officer_id": b.officer_id,
             "term_id": b.term_id, "current_value": b.current_value,
             "suggested_value": b.suggested_value, "description_zh": b.description_zh,
+            "correction_type": correction_type,
+            "manual_only": correction_type == "unstructured",
             "evidence": b.evidence, "status": _effective_bug_status(items, b.status),
             "created_at": china_iso(b.created_at), "reviewer_count": reviewer_count,
             "reporter": {"id": b.reporter_id, "name": reporter.display_name if reporter else ""},
@@ -830,7 +961,14 @@ def bug_detail(bid: int, db: Session = Depends(get_db), user: User = Depends(get
                          "score": r.acceptability_score, "comment": r.comment} for r in reviews],
             "final": ({"adopt_level": fin.adopt_level, "final_score": fin.final_score,
                        "comment": fin.comment} if fin else None),
-            "items": [{"id": it.id, "seq": it.seq, "uid_value": it.uid_value,
+            "items": [{"id": it.id, "seq": it.seq,
+                       "uid_var": it.uid_var or recommended_uid_var,
+                       "uses_alternative_id": bool(
+                           it.uid_var and it.uid_var != recommended_uid_var),
+                       "manual_only": bool(
+                           it.is_new_officer
+                           or (it.uid_var and it.uid_var != recommended_uid_var)),
+                       "uid_value": it.uid_value,
                        "var_name": it.var_name, "current_value": it.current_value,
                        "suggested_value": it.suggested_value, "reason": it.reason,
                        "evidence": it.evidence,
@@ -933,18 +1071,19 @@ def finalize_item_partial(iid: int, body: PartialFinalizeIn,
     if bug and bug.reporter_id == user.id and count_dataset_admins(db, it.dataset_id) > 1:
         raise HTTPException(403, "这是你本人提交的勘误，请由另一名管理员审核")
 
-    context = _uid_context(db, it.dataset_id)
+    context = _uid_context(db, it.dataset_id, body.uid_var or it.uid_var)
     uid_check = _check_uid(context, body.uid_value)
     if not uid_check["exists"] and not body.confirm_new_officer:
         raise HTTPException(
             409, f"最新原始版本中没有 {context['unique_id_var']}={uid_check['value']}。"
-                 "若确为新增官员，请明确勾选后再确认")
+                 "若确为新增主体或新增记录，请明确勾选后再确认")
     variable = db.query(Variable).filter_by(
         dataset_id=it.dataset_id, var_name=body.var_name, enabled=True).first()
     if not variable:
         raise HTTPException(400, "请选择本数据集当前有效的勘误变量")
-    if variable.var_name == context["unique_id_var"]:
-        raise HTTPException(400, "唯一 ID 变量本身不能作为勘误修改对象")
+    if variable.var_name in {
+            context["unique_id_var"], context["recommended_uid_var"]}:
+        raise HTTPException(400, "管理员推荐或本次选用的 ID 变量本身不能作为勘误修改对象")
 
     old_values = (
         _match_text(it.uid_value), _match_text(it.var_name),
@@ -974,6 +1113,7 @@ def finalize_item_partial(iid: int, body: PartialFinalizeIn,
     it.original_current_value = it.current_value
     it.original_suggested_value = it.suggested_value
     it.original_reason = it.reason
+    it.uid_var = context["unique_id_var"]
     it.uid_value = uid_check["value"]
     it.var_name = variable.var_name
     it.current_value = body.current_value
@@ -1022,6 +1162,7 @@ def finalize_item_partial(iid: int, body: PartialFinalizeIn,
             "reason": old_values[4],
         },
         "modified": {
+            "uid_var": context["unique_id_var"],
             "uid_value": new_values[0], "var_name": new_values[1],
             "current_value": new_values[2], "suggested_value": new_values[3],
             "reason": new_values[4],
@@ -1039,21 +1180,44 @@ def _accepted_release_material(db: Session, dataset_id: int, unique_id_var: str,
     items = db.query(BugItem).filter_by(dataset_id=dataset_id, status="accepted").filter(
         BugItem.applied_in_version.is_(None)).order_by(BugItem.bug_id, BugItem.seq).all()
     payload = [{"seq": it.id, "bug_id": it.bug_id, "item_seq": it.seq,
+                "uid_var": it.uid_var or unique_id_var,
                 "uid_value": it.uid_value, "var_name": it.var_name,
                 "current_value": it.current_value, "suggested_value": it.suggested_value,
                 "reason": it.reason, "evidence": it.evidence,
                 "is_new_officer": bool(it.is_new_officer)} for it in items]
-    auto_payload = [it for it in payload if not it["is_new_officer"]]
-    manual_payload = [it for it in payload if it["is_new_officer"]]
-    script = apply_corrections_script(payload, unique_id_var) if payload else ""
+    auto_payload = [
+        it for it in payload
+        if not it["is_new_officer"] and it["uid_var"] == unique_id_var
+    ]
+    manual_payload = [it for it in payload if it not in auto_payload]
+    script = apply_corrections_script(auto_payload, unique_id_var) if auto_payload else ""
+    manual_script_lines = []
+    for it in manual_payload:
+        if it["is_new_officer"]:
+            label = "人工处理：新增官员/记录"
+        else:
+            label = f"人工处理：使用非推荐 ID 变量 {it['uid_var']}"
+        manual_script_lines.extend([
+            "",
+            f"* [{label}] 勘误 #{it['bug_id']}·第 {it['item_seq']} 项",
+            f"* {it['uid_var']}={it['uid_value']}；{it['var_name']}："
+            f"{it.get('current_value') or ''} -> {it.get('suggested_value') or ''}",
+        ])
+    if manual_script_lines:
+        script = (script.rstrip() + "\n" + "\n".join(manual_script_lines)).lstrip()
     lines = [f"本版本自动应用 {len(auto_payload)} 条已采纳勘误；"
-             f"{len(manual_payload)} 条新增官员勘误保留为人工处理："]
+             f"{len(manual_payload)} 条勘误保留为人工处理："]
     for it in payload:
-        mode = "人工处理·新增官员" if it["is_new_officer"] else "自动应用"
+        if it["is_new_officer"]:
+            mode = "人工处理·新增官员/记录"
+        elif it["uid_var"] != unique_id_var:
+            mode = f"人工处理·非推荐 ID（{it['uid_var']}）"
+        else:
+            mode = "自动应用"
         reason = f"；说明：{it['reason']}" if it.get("reason") else ""
         lines.append(
             f"- [{mode}] 勘误 #{it['bug_id']}·第 {it['item_seq']} 项："
-            f"{unique_id_var}={it['uid_value']}，"
+            f"{it['uid_var']}={it['uid_value']}，"
             f"{it['var_name']} 由「{it.get('current_value') or ''}」改为「{it.get('suggested_value') or ''}」{reason}")
     fingerprint = hashlib.sha256(json.dumps(
         {"dataset_id": dataset_id, "base_version_id": base_version_id,
@@ -1122,7 +1286,8 @@ def apply_corrections_endpoint(slug: str, base_version_id: int = Form(...),
         raise HTTPException(409, "已采纳勘误或基准版本在预览后发生变化，请重新打开并审阅代码")
     if not payload and manual:
         return {"generated": "script", "script": script, "manual_remaining": len(manual),
-                "note": "待处理项全部是新增官员，系统不会自动追加不完整记录。请复制代码提示并人工补全后再发布原始版本。"}
+                "note": "待处理项均需人工修改（新增记录或使用了非推荐 ID）。"
+                        "系统不会自动改数；请人工处理后再发布原始版本。"}
     if not payload:
         raise HTTPException(400, "没有待应用的已采纳勘误项")
     try:

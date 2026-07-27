@@ -50,17 +50,32 @@ class CharterIn(BaseModel):
 # -------- bug --------
 class BugIn(BaseModel):
     officer_id: str | None = None; term_id: str | None = None
+    uid_var: str | None = None
     variable_id: int | None = None
     current_value: str | None = None; suggested_value: str | None = None
     bug_type: str | None = None
     description_zh: str; description_en: str | None = None; evidence: str
     confirm_new_officer: bool = False
+    confirm_alternative_id: bool = False
 
     @field_validator("description_zh", "evidence")
     @classmethod
     def _required_bug_text(cls, v):
         if not (v or "").strip():
             raise ValueError("说明和证据均为必填")
+        return v.strip()
+
+
+class UnstructuredBugIn(BaseModel):
+    issue: str
+    suggestion: str
+    evidence: str
+
+    @field_validator("issue", "suggestion", "evidence")
+    @classmethod
+    def _required_unstructured_text(cls, v):
+        if not (v or "").strip():
+            raise ValueError("问题、修改建议和证据均为必填")
         return v.strip()
 
 
@@ -103,11 +118,13 @@ class FinalizeIn(BaseModel):
 
 class PartialFinalizeIn(BaseModel):
     uid_value: str
+    uid_var: str | None = None
     var_name: str
     current_value: str | None = None
     suggested_value: str | None = None
     reason: str
     confirm_new_officer: bool = False
+    confirm_alternative_id: bool = False
     final_score: float = 6
     comment: str | None = None
 

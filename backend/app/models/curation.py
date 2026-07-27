@@ -49,6 +49,7 @@ class BugItem(Base):
     bug_id = Column(Integer, ForeignKey("bugs.id"))
     dataset_id = Column(Integer, ForeignKey("datasets.id"))
     seq = Column(Integer, default=1)
+    uid_var = Column(String(80))       # 本条勘误实际使用的 ID 变量；空值兼容旧记录（取管理员推荐 ID）
     uid_value = Column(String(200))     # 唯一ID的取值，如 officerID=O123
     var_name = Column(String(80))       # 要改的变量
     current_value = Column(String(300))

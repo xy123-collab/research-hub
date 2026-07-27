@@ -126,6 +126,121 @@ def test_batch_validation_separates_evidence_and_marks_new_officer(client, found
     assert legacy.status_code == 400 and "旧版" in legacy.json()["detail"]
 
 
+def test_alternative_id_requires_confirmation_and_stays_manual(client, founder):
+    slug = "ds-correction-alternative-id"
+    base_id, variables = _new_dataset(client, founder, slug, [
+        {"rowID": "R1", "officerID": "O1", "year": 2001},
+        {"rowID": "R2", "officerID": "O2", "year": 2002},
+    ])
+    client.put(
+        f"/api/datasets/{slug}/data-config",
+        json={"unique_id_var": "rowID"}, headers=founder,
+    )
+    checked = client.get(
+        f"/api/datasets/{slug}/bugs/id-check",
+        params={"id_var": "officerID", "value": "O1"}, headers=founder,
+    )
+    assert checked.status_code == 200
+    assert checked.json()["uses_alternative_id"] is True
+
+    body = {
+        "uid_var": "officerID", "officer_id": "O1",
+        "variable_id": variables["year"], "current_value": "2001",
+        "suggested_value": "2000", "description_zh": "年份有误",
+        "evidence": "公开履历",
+    }
+    blocked = client.post(
+        f"/api/datasets/{slug}/bugs", json=body, headers=founder)
+    assert blocked.status_code == 409 and "不是管理员推荐" in blocked.json()["detail"]
+    submitted = client.post(
+        f"/api/datasets/{slug}/bugs",
+        json={**body, "confirm_alternative_id": True}, headers=founder,
+    )
+    assert submitted.status_code == 200
+    detail = client.get(
+        f"/api/bugs/{submitted.json()['id']}", headers=founder).json()
+    assert detail["items"][0]["uid_var"] == "officerID"
+    assert detail["items"][0]["uses_alternative_id"] is True
+    item_id = detail["items"][0]["id"]
+    assert client.post(
+        f"/api/bug-items/{item_id}/finalize",
+        json={"adopt_level": "full", "final_score": 9}, headers=founder,
+    ).status_code == 200
+    preview = client.get(
+        f"/api/datasets/{slug}/corrections-release-preview",
+        params={"base_version_id": base_id}, headers=founder,
+    )
+    assert preview.status_code == 200
+    assert preview.json()["auto_count"] == 0
+    assert preview.json()["manual_count"] == 1
+    assert "非推荐 ID" in preview.json()["script"]
+
+    csv = (
+        "ID变量名,唯一ID值,变量名,当前值,建议值,说明,证据\n"
+        "officerID,O2,year,2002,2003,批量年份校正,公开履历\n"
+    ).encode("utf-8")
+    batch_checked = client.post(
+        f"/api/datasets/{slug}/bugs/batch/validate",
+        files={"file": ("alternative.csv", io.BytesIO(csv), "text/csv")},
+        headers=founder,
+    )
+    assert batch_checked.status_code == 200
+    assert batch_checked.json()["alternative_id_rows"] == [2]
+    batch_blocked = client.post(
+        f"/api/datasets/{slug}/bugs/batch",
+        files={"file": ("alternative.csv", io.BytesIO(csv), "text/csv")},
+        headers=founder,
+    )
+    assert batch_blocked.status_code == 409
+    batch_submitted = client.post(
+        f"/api/datasets/{slug}/bugs/batch",
+        data={"confirmed_alternative_id_rows": json.dumps([2])},
+        files={"file": ("alternative.csv", io.BytesIO(csv), "text/csv")},
+        headers=founder,
+    )
+    assert batch_submitted.status_code == 200
+    batch_detail = client.get(
+        f"/api/bugs/{batch_submitted.json()['id']}", headers=founder).json()
+    assert batch_detail["items"][0]["uid_var"] == "officerID"
+    assert batch_detail["items"][0]["manual_only"] is True
+
+
+def test_unstructured_correction_is_required_and_never_auto_applied(client, founder):
+    slug = "ds-correction-unstructured"
+    _new_dataset(
+        client, founder, slug, [{"officerID": "U1", "year": 2001}])
+    invalid = client.post(
+        f"/api/datasets/{slug}/bugs/unstructured",
+        json={"issue": "1. 两个 ID 应合并", "suggestion": "", "evidence": "公开简历"},
+        headers=founder,
+    )
+    assert invalid.status_code == 422
+    submitted = client.post(
+        f"/api/datasets/{slug}/bugs/unstructured",
+        json={
+            "issue": "1. U1 与 U2 为同一官员\n2. 缺少一段任职经历",
+            "suggestion": "1. 合并为 U1\n2. 补录完整任职经历",
+            "evidence": "1. 官方简历链接\n2. 任免公告链接",
+        },
+        headers=founder,
+    )
+    assert submitted.status_code == 200
+    bid = submitted.json()["id"]
+    detail = client.get(f"/api/bugs/{bid}", headers=founder).json()
+    assert detail["correction_type"] == "unstructured"
+    assert detail["manual_only"] is True
+    assert detail["items"] == []
+    assert "合并为 U1" in detail["suggested_value"]
+    assert client.post(
+        f"/api/bugs/{bid}/finalize",
+        json={"adopt_level": "full", "final_score": 9}, headers=founder,
+    ).status_code == 200
+    preview = client.get(
+        f"/api/datasets/{slug}/corrections-release-preview", headers=founder)
+    assert preview.status_code == 400
+    assert "没有待应用" in preview.json()["detail"]
+
+
 def test_duplicate_detection_batch_row_removal_and_pending_delete(client, founder):
     slug = "ds-correction-deduplicate"
     _, variables = _new_dataset(client, founder, slug, [

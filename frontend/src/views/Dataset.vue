@@ -29,11 +29,13 @@ async function toggleFollow() {
 const versions = ref<any[]>([]); const bugs = ref<any[]>([]); const vars = ref<any[]>([])
 const codes = ref<any[]>([]); const flags = ref<any[]>([]); const dash = ref<any[]>([])
 const lit = ref<any>({ topics: [], refs: [] }); const acceptedBugs = ref<any[]>([])
-const bugForm = ref<any>({ officer_id: '', variable_id: null, current_value: '', suggested_value: '',
-  description_zh: '', evidence: '', confirm_new_officer: false })
+const bugForm = ref<any>({ uid_var: '', officer_id: '', variable_id: null, current_value: '', suggested_value: '',
+  description_zh: '', evidence: '', confirm_new_officer: false, confirm_alternative_id: false })
 const bugFile = ref<File | null>(null)
+const unstructuredBugForm = ref<any>({ issue: '', suggestion: '', evidence: '' })
+const unstructuredBugFile = ref<File | null>(null)
 const bugModal = ref<any>(null)
-const showBugUpload = ref(false); const bugUploadMode = ref<'single'|'batch'>('single')
+const showBugUpload = ref(false); const bugUploadMode = ref<'single'|'batch'|'unstructured'>('single')
 const bugUidCheck = ref<any>(null); const bugUidChecking = ref(false)
 const bugStatusFilter = ref<'pending'|'accepted'|'fixed'|'rejected'>('pending')
 const bugDateFilter = ref<'7'|'30'|'all'>('all')
@@ -111,6 +113,7 @@ const policyLabel: Record<string, string> = {
 onMounted(async () => {
   d.value = (await api.get(`/datasets/${slug}`)).data
   vars.value = (await api.get(`/datasets/${slug}/variables`)).data
+  bugForm.value.uid_var = d.value.unique_id_var || ''
   loadFollow()
   if (d.value.is_admin) { try { await loadMembers() } catch {} }
   const q = route.query.tab as string
@@ -367,7 +370,7 @@ async function doApply() {
     const r = await api.post(`/datasets/${slug}/apply-corrections`, fd)
     if (r.data.generated === 'script') { downloadText(r.data.script, 'apply_corrections.do'); alert(r.data.note) }
     else alert(`已生成新版本 ${r.data.version_id}，自动应用 ${r.data.applied} 条勘误` +
-      (r.data.manual_remaining ? `；另有 ${r.data.manual_remaining} 条新增官员项待人工处理` : ''))
+      (r.data.manual_remaining ? `；另有 ${r.data.manual_remaining} 条勘误需人工处理` : ''))
     showApply.value = false; loadTab('versions'); reloadDetail()
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
@@ -390,14 +393,19 @@ function downloadTemplate() { downloadFile(`/datasets/${slug}/bug-template`, `${
 const batchFile = ref<File | null>(null)
 const batchTitle = ref('')
 const batchValidation = ref<any>(null); const batchConfirmNew = ref(false)
+const batchConfirmAlternative = ref(false)
 const batchRows = computed<any[]>(() => batchValidation.value?.items || [])
 const batchInvalidRows = computed(() => batchRows.value.filter((row: any) => !row.valid))
 const batchMissingIds = computed(() => Array.from(new Set(
   batchRows.value.filter((row: any) => row.valid && row.is_new_officer)
     .map((row: any) => row['唯一ID值'])
 )))
+const batchAlternativeRows = computed(() =>
+  batchRows.value.filter((row: any) => row.valid && row.uses_alternative_id)
+)
 function selectBatchFile(file: File | null) {
-  batchFile.value = file; batchValidation.value = null; batchConfirmNew.value = false
+  batchFile.value = file; batchValidation.value = null
+  batchConfirmNew.value = false; batchConfirmAlternative.value = false
 }
 async function validateBatch() {
   if (!batchFile.value) { alert('请选择填好的模板文件'); return }
@@ -405,6 +413,7 @@ async function validateBatch() {
   try {
     batchValidation.value = (await api.post(`/datasets/${slug}/bugs/batch/validate`, fd)).data
     batchConfirmNew.value = !batchMissingIds.value.length
+    batchConfirmAlternative.value = !batchAlternativeRows.value.length
   } catch (e: any) { batchValidation.value = null; alert(e.response?.data?.detail || '校验失败') }
 }
 function removeBatchRow(rowNo: number) {
@@ -413,6 +422,7 @@ function removeBatchRow(rowNo: number) {
     (row: any) => row.row_no !== rowNo
   )
   batchConfirmNew.value = !batchMissingIds.value.length
+  batchConfirmAlternative.value = !batchAlternativeRows.value.length
 }
 async function submitBatch() {
   if (!batchFile.value) { alert('请选择填好的模板文件'); return }
@@ -420,16 +430,22 @@ async function submitBatch() {
   if (!batchRows.value.length) { alert('请至少保留一条可提交的勘误'); return }
   if (batchInvalidRows.value.length) { alert('请先删除所有标红的问题行'); return }
   if (batchMissingIds.value.length && !batchConfirmNew.value) {
-    alert('请确认列出的 ID 均为新增官员'); return
+    alert('请确认列出的 ID 均为新增主体或新增记录'); return
+  }
+  if (batchAlternativeRows.value.length && !batchConfirmAlternative.value) {
+    alert('请确认非推荐 ID 行的定位口径没有问题'); return
   }
   const fd = new FormData(); fd.append('file', batchFile.value)
   fd.append('title', batchTitle.value)
   fd.append('confirmed_new_officer_ids', JSON.stringify(batchMissingIds.value))
+  fd.append('confirmed_alternative_id_rows',
+    JSON.stringify(batchAlternativeRows.value.map((row: any) => row.row_no)))
   fd.append('included_row_numbers', JSON.stringify(batchRows.value.map((row: any) => row.row_no)))
   try {
     const r = await api.post(`/datasets/${slug}/bugs/batch`, fd)
     alert(`已分别导入 ${r.data.items} 条独立勘误，可逐条查看、评分和终审`)
     batchFile.value = null; batchValidation.value = null; batchTitle.value = ''
+    batchConfirmAlternative.value = false
     showBugUpload.value = false; loadTab('bugs')
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
@@ -442,6 +458,7 @@ async function finalizeItem(iid: number, adopt: string, score: number) {
 }
 function openPartialEditor(it: any) {
   partialOriginal.value = {
+    uid_var: String(it.uid_var ?? d.value?.unique_id_var ?? ''),
     uid_value: String(it.uid_value ?? ''), var_name: String(it.var_name ?? ''),
     current_value: String(it.current_value ?? ''), suggested_value: String(it.suggested_value ?? ''),
     reason: String(it.reason ?? '')
@@ -463,7 +480,7 @@ async function checkPartialUid() {
   partialUidChecking.value = true
   try {
     partialUidCheck.value = (await api.get(`/datasets/${slug}/bugs/id-check`, {
-      params: { value }
+      params: { value, id_var: partialEdit.value.uid_var }
     })).data
   } catch (e: any) {
     partialUidCheck.value = { error: e.response?.data?.detail || '唯一 ID 校验失败' }
@@ -489,6 +506,7 @@ async function confirmPartialEdit() {
   try {
     await api.post(`/bug-items/${partialEdit.value.item_id}/finalize-partial`, {
       uid_value: partialEdit.value.uid_value,
+      uid_var: partialEdit.value.uid_var,
       var_name: partialEdit.value.var_name,
       current_value: partialEdit.value.current_value,
       suggested_value: partialEdit.value.suggested_value,
@@ -570,9 +588,17 @@ const filteredBugs = computed(() => {
     return bt - at || b.id - a.id
   })
 })
+function openBugUploader() {
+  if (!bugForm.value.uid_var) bugForm.value.uid_var = d.value?.unique_id_var || ''
+  showBugUpload.value = true
+}
+const usesAlternativeBugId = computed(() =>
+  !!bugForm.value.uid_var && bugForm.value.uid_var !== d.value?.unique_id_var
+)
 function resetBugUidCheck() {
   bugUidCheck.value = null
   bugForm.value.confirm_new_officer = false
+  bugForm.value.confirm_alternative_id = false
 }
 async function checkBugUid() {
   const value = (bugForm.value.officer_id || '').trim()
@@ -580,7 +606,7 @@ async function checkBugUid() {
   bugUidChecking.value = true
   try {
     bugUidCheck.value = (await api.get(`/datasets/${slug}/bugs/id-check`, {
-      params: { value }
+      params: { value, id_var: bugForm.value.uid_var }
     })).data
   } catch (e: any) {
     bugUidCheck.value = { error: e.response?.data?.detail || '唯一 ID 校验失败' }
@@ -590,7 +616,9 @@ const canSubmitBug = computed(() => {
   const f = bugForm.value
   const uidReady = bugUidCheck.value && !bugUidCheck.value.error &&
     (bugUidCheck.value.exists || f.confirm_new_officer)
-  return !!(uidReady && f.variable_id && f.description_zh?.trim() && f.evidence?.trim())
+  const alternativeReady = !usesAlternativeBugId.value || f.confirm_alternative_id
+  return !!(uidReady && alternativeReady && f.variable_id &&
+    f.description_zh?.trim() && f.evidence?.trim())
 })
 async function submitBug() {
   if (!canSubmitBug.value) { alert('请完成唯一 ID 校验，并填写说明和证据'); return }
@@ -600,10 +628,29 @@ async function submitBug() {
       const fd = new FormData(); fd.append('file', bugFile.value)
       await api.post(`/bugs/${r.data.id}/attachments`, fd)
     }
-    bugForm.value = { officer_id: '', variable_id: null, current_value: '', suggested_value: '',
-      description_zh: '', evidence: '', confirm_new_officer: false }
+    bugForm.value = { uid_var: d.value?.unique_id_var || '', officer_id: '',
+      variable_id: null, current_value: '', suggested_value: '',
+      description_zh: '', evidence: '', confirm_new_officer: false,
+      confirm_alternative_id: false }
     bugUidCheck.value = null; bugFile.value = null; showBugUpload.value = false; loadTab('bugs')
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
+}
+async function submitUnstructuredBug() {
+  const f = unstructuredBugForm.value
+  if (!f.issue?.trim() || !f.suggestion?.trim() || !f.evidence?.trim()) {
+    alert('请完整填写问题、修改建议和证据'); return
+  }
+  try {
+    const r = await api.post(`/datasets/${slug}/bugs/unstructured`, f)
+    if (unstructuredBugFile.value) {
+      const fd = new FormData(); fd.append('file', unstructuredBugFile.value)
+      await api.post(`/bugs/${r.data.id}/attachments`, fd)
+    }
+    unstructuredBugForm.value = { issue: '', suggestion: '', evidence: '' }
+    unstructuredBugFile.value = null
+    showBugUpload.value = false
+    await loadTab('bugs')
+  } catch (e: any) { alert(e.response?.data?.detail || '提交失败') }
 }
 async function openBug(id: number) {
   bugModal.value = (await api.get(`/bugs/${id}`)).data
@@ -1250,7 +1297,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
       <div v-else-if="tab==='bugs'">
         <div class="flex items-center justify-between gap-3 mb-3">
           <p class="text-xs text-gray-500">勘误按上传时间排序；点击任一条可查看详情或参与评分。</p>
-          <button v-if="d.is_member" class="btn-primary shrink-0" @click="showBugUpload=true">＋勘误上传</button>
+          <button v-if="d.is_member" class="btn-primary shrink-0" @click="openBugUploader">＋勘误上传</button>
         </div>
 
         <!-- 管理员：已采纳未修改勘误的透明代码入口 -->
@@ -1260,7 +1307,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <div class="label-cap">已采纳未修改勘误 · 修改代码</div>
               <p class="text-xs text-gray-500 mt-1">
                 {{ correctionPreview.auto_count }} 条可自动应用
-                <span v-if="correctionPreview.manual_count">；{{ correctionPreview.manual_count }} 条新增官员需人工处理</span>
+                <span v-if="correctionPreview.manual_count">；{{ correctionPreview.manual_count }} 条需人工处理</span>
               </p>
             </div>
             <div class="flex gap-2 shrink-0">
@@ -1291,9 +1338,11 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <span class="font-mono text-xs text-gray-400 w-6 shrink-0">{{ i+1 }}</span>
               <div class="min-w-0 flex-1">
                 <div class="text-sm font-medium truncate">
-                  <span class="font-mono text-xs">{{ b.officer_id || '批量' }}</span>
+                  <span v-if="b.correction_type==='unstructured'" class="tag mr-1 border-amber-400 text-amber-700">非格式化</span>
+                  <span v-else class="font-mono text-xs">{{ b.officer_id || '批量' }}</span>
                   · {{ b.description_zh }}
                   <span v-if="b.has_new_officer" class="tag ml-1 border-amber-400 text-amber-700">新增官员</span>
+                  <span v-else-if="b.has_manual_only" class="tag ml-1 border-amber-400 text-amber-700">需手工修改</span>
                 </div>
                 <div class="text-xs text-gray-500 mt-1">
                   提交人：{{ b.reporter_name }} ·
@@ -1644,15 +1693,25 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <button class="text-gray-400" @click="showBugUpload=false">×</button>
         </div>
         <div class="flex gap-1 border-b border-line mb-4 text-sm">
-          <button v-for="[k,l] in [['single','单条提交'],['batch','批量上传']]" :key="k"
+          <button v-for="[k,l] in [['single','单条提交'],['batch','批量上传'],['unstructured','非格式化勘误']]" :key="k"
             @click="bugUploadMode=k as any"
             :class="['px-3 py-1.5', bugUploadMode===k ? 'border-b-2 border-accent text-accent':'text-gray-500']">{{ l }}</button>
         </div>
 
         <div v-if="bugUploadMode==='single'">
+          <p class="text-xs text-gray-500 mb-3">
+            管理员推荐使用 <b class="font-mono">{{ d.unique_id_var || '（尚未设置）' }}</b> 定位记录。
+            如本条勘误更适合使用其他 ID，可改选，但须确认定位口径，且由管理员手工修改。
+          </p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <select v-model="bugForm.uid_var" class="input" @change="resetBugUidCheck">
+              <option value="">选择本次使用的 ID 变量 *</option>
+              <option v-for="v in vars" :key="v.id" :value="v.var_name">
+                {{ v.var_name }}{{ v.var_name===d.unique_id_var ? '（管理员推荐）' : '' }}
+              </option>
+            </select>
             <input v-model="bugForm.officer_id" class="input"
-              :placeholder="d.unique_id_var ? (d.unique_id_var + '（唯一ID）*') : '唯一ID（管理员未设置）'"
+              :placeholder="bugForm.uid_var ? (bugForm.uid_var + ' 的取值 *') : '先选择 ID 变量'"
               @input="resetBugUidCheck" @blur="checkBugUid" />
             <select v-model="bugForm.variable_id" class="input">
               <option :value="null">选择变量 *</option>
@@ -1661,16 +1720,23 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <input v-model="bugForm.current_value" class="input" placeholder="当前值" />
             <input v-model="bugForm.suggested_value" class="input" placeholder="建议值" />
           </div>
+          <label v-if="usesAlternativeBugId"
+            class="flex items-start gap-2 text-sm mt-2 p-2 rounded bg-amber-50 border border-amber-200">
+            <input type="checkbox" v-model="bugForm.confirm_alternative_id" class="mt-0.5" />
+            <span>我确认本条没有使用管理员推荐的 <b class="font-mono">{{ d.unique_id_var }}</b>，
+              而是使用 <b class="font-mono">{{ bugForm.uid_var }}</b> 定位；我已核对该口径没有问题。
+              此类勘误由管理员手工修改，不进入一键自动应用。</span>
+          </label>
           <p v-if="bugUidChecking" class="text-xs text-gray-400 mt-1">正在核对唯一 ID…</p>
           <p v-else-if="bugUidCheck?.error" class="text-xs text-red-600 mt-1">{{ bugUidCheck.error }}</p>
           <p v-else-if="bugUidCheck?.exists" class="text-xs text-emerald-700 mt-1">
             已在原始版本 {{ bugUidCheck.source_version }} 中找到该 ID。
           </p>
           <div v-else-if="bugUidCheck && !bugUidCheck.exists" class="mt-2 p-2 rounded bg-amber-50 border border-amber-200">
-            <p class="text-xs text-amber-800">现有数据中没有该 ID。请先检查是否填错；若确为新增官员，再勾选确认。</p>
+            <p class="text-xs text-amber-800">现有数据中没有该 ID。请先检查是否填错；若确为新增主体或新增记录，再勾选确认。</p>
             <label class="flex items-center gap-2 text-sm mt-2">
               <input type="checkbox" v-model="bugForm.confirm_new_officer" />
-              我确认这是新增官员
+              我确认这是新增主体或新增记录
             </label>
           </div>
           <label class="label-cap mt-3">修改说明 *</label>
@@ -1687,7 +1753,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           </div>
         </div>
 
-        <div v-else>
+        <div v-else-if="bugUploadMode==='batch'">
           <p class="text-xs text-gray-500 mb-3">每一行会生成一条独立勘误。上传后逐行校验；问题行会标红，可单独删除后提交其余行。</p>
           <input v-model="batchTitle" class="input mb-2" placeholder="本批来源备注（可选；不会合并勘误）" />
           <div class="flex flex-wrap items-center gap-2">
@@ -1707,11 +1773,12 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
                 <span class="font-mono text-xs text-gray-400 shrink-0">第{{ row.row_no }}行</span>
                 <div class="min-w-0 flex-1">
                   <p class="text-xs">
-                    <span class="font-mono">{{ row['唯一ID值'] }}</span> ·
+                    <span class="font-mono">{{ row['ID变量名'] || d.unique_id_var }}={{ row['唯一ID值'] }}</span> ·
                     {{ row['变量名'] }}：{{ row['当前值'] }} → {{ row['建议值'] }}
                   </p>
                   <p class="text-xs text-gray-500 mt-1">{{ row['说明'] }}</p>
-                  <p v-if="row.is_new_officer && row.valid" class="text-xs text-amber-700 mt-1">现有数据无此 ID，需确认新增官员。</p>
+                  <p v-if="row.uses_alternative_id && row.valid" class="text-xs text-amber-700 mt-1">本行未使用管理员推荐 ID，将由管理员手工处理。</p>
+                  <p v-if="row.is_new_officer && row.valid" class="text-xs text-amber-700 mt-1">现有数据无此 ID，需确认新增主体或记录。</p>
                   <p v-for="problem in row.problems" :key="problem" class="text-xs text-red-600 mt-1">问题：{{ problem }}</p>
                 </div>
                 <button class="text-xs text-red-600 shrink-0" @click="removeBatchRow(row.row_no)">删除此行</button>
@@ -1723,7 +1790,14 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               <p class="font-mono text-xs mt-1 break-words">{{ batchMissingIds.join('、') }}</p>
               <label class="flex items-center gap-2 mt-2">
                 <input type="checkbox" v-model="batchConfirmNew" />
-                我确认以上均为新增官员
+                我确认以上均为新增主体或新增记录
+              </label>
+            </template>
+            <template v-if="batchAlternativeRows.length">
+              <p class="text-amber-700 mt-2">第 {{ batchAlternativeRows.map((row:any)=>row.row_no).join('、') }} 行未使用管理员推荐 ID。</p>
+              <label class="flex items-start gap-2 mt-2">
+                <input type="checkbox" v-model="batchConfirmAlternative" class="mt-0.5" />
+                <span>我已核对这些行的 ID 定位口径没有问题，并理解它们不会进入一键自动应用。</span>
               </label>
             </template>
             <p v-else-if="batchRows.length && !batchInvalidRows.length" class="text-emerald-700 mt-2">保留行均已通过校验。</p>
@@ -1731,8 +1805,36 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <div class="flex justify-end gap-2 mt-4">
             <button class="btn-ghost" @click="showBugUpload=false">取消</button>
             <button class="btn-primary"
-              :disabled="!batchValidation || !batchRows.length || !!batchInvalidRows.length || (!!batchMissingIds.length && !batchConfirmNew)"
+              :disabled="!batchValidation || !batchRows.length || !!batchInvalidRows.length ||
+                (!!batchMissingIds.length && !batchConfirmNew) ||
+                (!!batchAlternativeRows.length && !batchConfirmAlternative)"
               @click="submitBatch">确认导入</button>
+          </div>
+        </div>
+
+        <div v-else>
+          <div class="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 mb-3">
+            适用于合并 ID、新增官员、跨多行调整等无法按“某个单元格从 A 改为 B”描述的问题。
+            可在一栏内写多个问题，但请自行编号，并让下方修改建议和证据使用相同编号。
+            此类勘误只供管理员审核并手工修改，平台不提供一键自动应用。
+          </div>
+          <label class="label-cap">问题 *</label>
+          <textarea v-model="unstructuredBugForm.issue" class="input mt-1" rows="5"
+            placeholder="示例：1. ID 1001 与 2034 实为同一官员；2. 数据缺少官员张三。"></textarea>
+          <label class="label-cap mt-3">修改建议 *</label>
+          <textarea v-model="unstructuredBugForm.suggestion" class="input mt-1" rows="5"
+            placeholder="请与问题编号对应：1. 合并为 ID 1001；2. 新增张三及其完整履历。"></textarea>
+          <label class="label-cap mt-3">证据 *</label>
+          <textarea v-model="unstructuredBugForm.evidence" class="input mt-1" rows="5"
+            placeholder="请与问题编号对应，填写来源、链接、出处或核对依据。"></textarea>
+          <label class="label-cap mt-3">证据附件（可选）</label>
+          <input type="file" @change="(e:any)=>unstructuredBugFile=e.target.files[0]"
+            class="text-xs mt-1 block" />
+          <div class="flex justify-end gap-2 mt-4">
+            <button class="btn-ghost" @click="showBugUpload=false">取消</button>
+            <button class="btn-primary"
+              :disabled="!unstructuredBugForm.issue.trim() || !unstructuredBugForm.suggestion.trim() || !unstructuredBugForm.evidence.trim()"
+              @click="submitUnstructuredBug">提交非格式化勘误</button>
           </div>
         </div>
       </div>
@@ -1751,9 +1853,17 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <p class="text-sm mt-2">提交人：<router-link :to="`/users/${bugModal.reporter.id}`" class="text-accent">{{ bugModal.reporter.name }}</router-link>
           <span class="text-gray-400"> · {{ bugModal.created_at ? formatChinaDateTime(bugModal.created_at) : '历史时间未知' }} · {{ bugModal.reviewer_count }} 人参与评分</span>
         </p>
+        <div v-if="bugModal.correction_type==='unstructured'"
+          class="mt-3 rounded border border-amber-200 bg-amber-50 p-3">
+          <p class="text-xs text-amber-800">非格式化勘误：管理员须在原始数据中手工修改，平台不会一键自动应用。</p>
+        </div>
         <div class="mt-2 p-2 rounded bg-paper">
-          <div class="label-cap">修改说明</div>
+          <div class="label-cap">{{ bugModal.correction_type==='unstructured' ? '问题' : '修改说明' }}</div>
           <p class="text-sm mt-1 whitespace-pre-wrap">{{ bugModal.description_zh }}</p>
+          <template v-if="bugModal.correction_type==='unstructured'">
+            <div class="label-cap mt-2">修改建议</div>
+            <p class="text-sm mt-1 whitespace-pre-wrap">{{ bugModal.suggested_value }}</p>
+          </template>
           <div class="label-cap mt-2">证据</div>
           <p class="text-sm mt-1 whitespace-pre-wrap">{{ bugModal.evidence || '历史记录未单独保存证据' }}</p>
         </div>
@@ -1764,9 +1874,10 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <div class="label-cap mb-1">修改项（逐条打分与终审，共 {{ bugModal.items.length }} 条）</div>
           <div v-for="it in bugModal.items" :key="it.id" class="border border-line rounded p-2 mb-2 text-sm">
             <div class="flex items-center gap-2 flex-wrap">
-              <span class="font-mono text-xs">{{ it.uid_value }}</span>
+              <span class="font-mono text-xs">{{ it.uid_var }}={{ it.uid_value }}</span>
               <span class="text-gray-500">{{ it.var_name }}：{{ it.current_value }} → <b>{{ it.suggested_value }}</b></span>
-              <span v-if="it.is_new_officer" class="tag border-amber-400 text-amber-700">新增官员·需人工补全</span>
+              <span v-if="it.is_new_officer" class="tag border-amber-400 text-amber-700">新增主体/记录·需人工补全</span>
+              <span v-else-if="it.uses_alternative_id" class="tag border-amber-400 text-amber-700">非推荐 ID·需人工修改</span>
               <span class="tag ml-auto">{{ it.status }}</span>
             </div>
             <p v-if="it.reason" class="text-xs text-gray-500 mt-1">说明：{{ it.reason }}</p>
@@ -1801,7 +1912,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
               </template>
             </div>
           </div>
-          <p class="text-[11px] text-gray-400">采纳后可在版本库「一键应用已采纳勘误发版」，按唯一ID自动改上一版数据。</p>
+          <p class="text-[11px] text-gray-400">采用管理员推荐 ID 且可唯一定位的项目，采纳后可进入一键应用；其余项目由管理员手工修改。</p>
         </div>
         <div v-if="bugModal.attachments.length" class="mt-2">
           <div class="label-cap">证据附件</div>
@@ -1830,7 +1941,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
           <div class="label-cap mb-1">终审（管理员）</div>
           <div class="flex gap-1">
             <button class="btn-primary text-xs" @click="finalizeBug(bugModal.id,'full',9)">全部采纳(9)</button>
-            <button class="btn-ghost text-xs" @click="finalizeBug(bugModal.id,'partial',6)">部分采纳（先修改）</button>
+            <button v-if="bugModal.correction_type!=='unstructured'" class="btn-ghost text-xs" @click="finalizeBug(bugModal.id,'partial',6)">部分采纳（先修改）</button>
             <button class="btn-ghost text-xs" @click="finalizeBug(bugModal.id,'reject',0)">不采纳</button>
           </div>
         </div>
@@ -1846,6 +1957,12 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
             <p class="text-xs text-gray-500 mt-1">至少实际修改一项，确认后才会进入“已采纳未修改”。原始投稿会永久保留在详情中。</p>
           </div>
           <button @click="showPartialEdit=false" class="text-gray-400">×</button>
+        </div>
+        <div class="mt-4 rounded border border-line bg-paper p-2 text-xs text-gray-600">
+          本条使用 ID 变量：<b class="font-mono">{{ partialEdit.uid_var }}</b>
+          <span v-if="partialEdit.uid_var!==d.unique_id_var" class="text-amber-700">
+            （非管理员推荐 ID，仍由管理员手工修改）
+          </span>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
           <div>
@@ -1875,7 +1992,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         <label v-else-if="partialUidCheck && !partialUidCheck.exists"
           class="flex items-center gap-2 text-sm mt-2 p-2 rounded bg-amber-50 border border-amber-200">
           <input type="checkbox" v-model="partialEdit.confirm_new_officer" />
-          我确认修改后的唯一 ID 是新增官员
+          我确认修改后的 ID 是新增主体或新增记录
         </label>
         <label class="label-cap mt-3">修改理由 *</label>
         <textarea v-model="partialEdit.reason" class="input mt-1" rows="4"></textarea>
@@ -2176,7 +2293,7 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     <div v-if="showApply" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-3xl w-full p-6 m-4 max-h-[88vh] overflow-y-auto">
         <h3 class="text-lg mb-1">应用已采纳勘误 → 生成新版本</h3>
-        <p class="text-xs text-gray-500 mb-3">请先核对下面的实际 Stata 修改代码。系统只自动处理已有唯一 ID 的项目；新增官员继续保留为人工处理。</p>
+        <p class="text-xs text-gray-500 mb-3">请先核对下面的实际 Stata 修改代码。系统只自动处理使用管理员推荐 ID 且可唯一定位的项目；其余项目继续保留为人工处理。</p>
         <label class="label-cap">基准版本</label>
         <select v-model="applyForm.base_version_id" class="input mb-2" @change="refreshApplyPreview">
           <option v-for="v in rawVersions" :key="v.id" :value="v.id">{{ v.version_id }}（原始数据）</option>
@@ -2194,12 +2311,12 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
         <p class="text-xs text-gray-500 mb-2">
           自动应用 {{ applyForm.auto_count }} 条
-          <span v-if="applyForm.manual_count">；{{ applyForm.manual_count }} 条新增官员项不会自动执行</span>
+          <span v-if="applyForm.manual_count">；{{ applyForm.manual_count }} 条人工处理项不会自动执行</span>
         </p>
         <pre class="whitespace-pre-wrap bg-paper border border-line rounded p-3 text-xs max-h-72 overflow-auto">{{ applyForm.script }}</pre>
         <label class="flex items-start gap-2 text-sm mt-3 p-2 rounded border border-line">
           <input type="checkbox" v-model="applyForm.reviewed" class="mt-0.5" />
-          <span>我已检查上述代码，确认系统可按该代码自动修改已有 ID 项；新增官员项继续人工处理。</span>
+          <span>我已检查上述代码，确认系统只自动修改安全项；新增记录或使用非推荐 ID 的项目继续人工处理。</span>
         </label>
         <div class="flex justify-end gap-2">
           <button class="btn-ghost" @click="showApply=false">取消</button>
