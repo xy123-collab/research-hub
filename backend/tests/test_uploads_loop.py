@@ -92,13 +92,17 @@ def test_dataset_meta_edit_and_member_remove(client):
 
 def test_code_file_upload(client):
     founder = _hdr(client, "lixiaoyu", "pass123")
-    files = {"file": ("merge.do", io.BytesIO(b"use x, clear\nmerge 1:1 id using y"), "text/plain")}
+    raw = b"use x, clear\nmerge 1:1 id using y"
+    files = {"file": ("merge.do", io.BytesIO(raw), "text/plain")}
     r = client.post("/api/datasets/cod/code/upload",
                     data={"title_zh": "合并脚本", "lang": "Stata"},
                     files=files, headers=founder)
     assert r.status_code == 200
     cid = r.json()["id"]
-    assert "merge 1:1" in client.get(f"/api/code/{cid}", headers=founder).json()["source_code"]
+    detail = client.get(f"/api/code/{cid}", headers=founder).json()
+    assert detail["current_file_name"] == "merge.do"
+    assert detail["source_code"] == ""
+    assert client.get(f"/api/code/{cid}/download", headers=founder).content == raw
 
 
 def test_code_submission_accepts_any_file_or_pasted_text_or_both(client):
@@ -115,6 +119,9 @@ def test_code_submission_accepts_any_file_or_pasted_text_or_both(client):
     )
     assert r.status_code == 200
     cid = r.json()["id"]
+    detail = client.get(f"/api/code/{cid}", headers=founder).json()
+    assert detail["current_file_name"] == "处理说明.docx"
+    assert detail["source_code"] == ""
     downloaded = client.get(f"/api/code/{cid}/download", headers=founder)
     assert downloaded.status_code == 200 and downloaded.content == doc_bytes
 
@@ -127,6 +134,7 @@ def test_code_submission_accepts_any_file_or_pasted_text_or_both(client):
     assert pasted.status_code == 200
     pasted_id = pasted.json()["id"]
     pasted_detail = client.get(f"/api/code/{pasted_id}", headers=founder).json()
+    assert pasted_detail["current_file_name"] is None
     assert pasted_detail["source_code"] == "print('ok')"
     assert client.get(f"/api/code/{pasted_id}/download", headers=founder).content == b"print('ok')"
 
@@ -139,7 +147,9 @@ def test_code_submission_accepts_any_file_or_pasted_text_or_both(client):
     )
     assert both.status_code == 200
     both_id = both.json()["id"]
-    assert client.get(f"/api/code/{both_id}", headers=founder).json()["source_code"] == "配套处理说明"
+    both_detail = client.get(f"/api/code/{both_id}", headers=founder).json()
+    assert both_detail["current_file_name"] == "readme.md"
+    assert both_detail["source_code"] == "配套处理说明"
     assert client.get(f"/api/code/{both_id}/download", headers=founder).content == b"# raw file"
 
     # 发布后续版本时同样支持两种方式并存，文件下载与文本预览各自保留。
@@ -151,7 +161,9 @@ def test_code_submission_accepts_any_file_or_pasted_text_or_both(client):
         headers=founder,
     )
     assert version.status_code == 200
-    assert client.get(f"/api/code/{both_id}", headers=founder).json()["source_code"] == "更新后的在线预览"
+    version_detail = client.get(f"/api/code/{both_id}", headers=founder).json()
+    assert version_detail["current_file_name"] == "appendix.doc"
+    assert version_detail["source_code"] == "更新后的在线预览"
     assert client.get(
         f"/api/code/{both_id}/download?vid={version.json()['id']}",
         headers=founder,

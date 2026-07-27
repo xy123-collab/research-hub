@@ -20,21 +20,6 @@ router = APIRouter(tags=["code"])
 _INITIAL_VERSION = "__initial__"
 
 
-def _text_preview(raw: bytes) -> str:
-    """尽力生成纯文本预览；DOC/DOCX 等二进制文件只原样存储，不强行解码。"""
-    for encoding in ("utf-8-sig", "gb18030"):
-        try:
-            text = raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-        if not text:
-            return ""
-        readable = sum(ch.isprintable() or ch in "\r\n\t" for ch in text)
-        if readable / len(text) >= 0.9:
-            return text
-    return ""
-
-
 def _pasted_filename(lang: str) -> str:
     return {
         "Stata": "pasted-code.do",
@@ -104,10 +89,22 @@ def get_code(cid: int, db: Session = Depends(get_db), user: User = Depends(get_c
     author = db.get(User, c.author_id)
     versions = db.query(CodeVersion).filter_by(script_id=cid).order_by(
         CodeVersion.id.desc()).all()
+    current_version = next((v for v in versions if v.is_current), None)
+    current_file_name = (
+        current_version.filename
+        if current_version and current_version.file_path
+        else None
+    )
+    current_source = (
+        current_version.source_code
+        if current_version is not None
+        else c.source_code
+    )
     grants = db.query(CodeGrant).filter_by(script_id=cid).all()
     is_member = is_dataset_member(db, c.dataset_id, user)
     return {"id": c.id, "dataset_id": c.dataset_id, "filename": c.filename, "lang": c.lang,
-            "title_zh": c.title_zh, "desc_zh": c.desc_zh, "source_code": c.source_code,
+            "title_zh": c.title_zh, "desc_zh": c.desc_zh,
+            "current_file_name": current_file_name, "source_code": current_source or "",
             "author_id": c.author_id, "author_name": author.display_name if author else "",
             "is_member": is_member,
             "can_edit": _code_perm(db, c, user, "edit"),
@@ -177,15 +174,15 @@ def publish_code_version(cid: int, version_label: str = Form(...), changelog: st
         raise HTTPException(400, f"版本 {version_label} 已存在")
     if file is None and not source_code.strip():
         raise HTTPException(400, "请上传文件或粘贴代码，至少完成一种方式")
-    filename = c.filename; key = None; src = source_code
+    filename = _pasted_filename(c.lang) if file is None else c.filename
+    key = None
+    src = source_code
     if file is not None:
         from ..services.uploads import validate_upload
         checked = validate_upload(file, allow_any_type=True)
         if checked["size"] > 5 * 1024 * 1024:
             raise HTTPException(400, "上传文件过大（>5MB）")
         raw = file.file.read()
-        if not source_code.strip():
-            src = _text_preview(raw)
         filename = checked["filename"]
         key = f"code/{cid}/{version_label}/{filename}"
         from ..services.uploads import save_stored_file
@@ -196,8 +193,7 @@ def publish_code_version(cid: int, version_label: str = Form(...), changelog: st
                     created_by=user.id, created_at=datetime.utcnow(), is_current=True)
     db.add(v)
     # 同步主记录的当前源码/文件名
-    if src:
-        c.source_code = src
+    c.source_code = src
     c.filename = filename
     write_audit(db, user.id, "code.version.publish", "code", cid, {"v": version_label})
     db.commit()
@@ -399,8 +395,6 @@ def upload_code(slug: str, title_zh: str = Form(...), lang: str = Form("Python")
             raise HTTPException(400, "上传文件过大（>5MB）")
         raw = file.file.read()
         filename = checked["filename"]
-        if not source_code.strip():
-            source = _text_preview(raw)
 
     c = CodeScript(dataset_id=d.id, author_id=user.id, filename=filename,
                    lang=lang, title_zh=title_zh, desc_zh=desc_zh, source_code=source)

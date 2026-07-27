@@ -567,6 +567,7 @@ async function aiReviewItem(iid: number) {
 const codeVerForm = ref<any>({ version_label: '', changelog: '', source_code: '' }); const codeVerFile = ref<File | null>(null)
 const codeComments = ref<any[]>([]); const codeCommentForm = ref<any>({ content: '', is_correction: false })
 const codeCommentMentions = ref<any[]>([])
+const codeCommentsSection = ref<HTMLElement | null>(null)
 const showCodeVer = ref(false); const showCodeGrant = ref(false); const codeGrantForm = ref<any>({ user_id: null, can_edit: false, can_publish: true })
 async function openCode(id: number) {
   codeModal.value = (await api.get(`/code/${id}`)).data
@@ -587,6 +588,12 @@ async function publishCodeVer() {
   } catch (e: any) { alert(e.response?.data?.detail || '失败') }
 }
 function downloadCode(vid?: number) { downloadFile(`/code/${codeModal.value.id}/download${vid ? '?vid=' + vid : ''}`) }
+function scrollToCodeComments() {
+  const el = codeCommentsSection.value
+  if (!el) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  el.focus({ preventScroll: true })
+}
 async function addCodeComment() {
   if (!codeCommentForm.value.content.trim()) return
   const fd = new FormData(); fd.append('content', codeCommentForm.value.content); fd.append('is_correction', String(codeCommentForm.value.is_correction))
@@ -2113,19 +2120,29 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
     <div v-if="codeModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div class="bg-white rounded-lg max-w-2xl w-full p-6 m-4 max-h-[85vh] overflow-y-auto">
         <div class="flex items-center justify-between">
-          <h3 class="text-lg font-mono">{{ codeModal.filename }}</h3>
+          <h3 class="text-lg">{{ codeModal.title_zh || '处理代码' }}</h3>
           <button @click="codeModal=null" class="text-gray-400">×</button>
         </div>
-        <p class="text-sm text-gray-500 mt-1">{{ codeModal.title_zh }} · {{ codeModal.desc_zh }}
+        <p class="text-sm text-gray-500 mt-1">{{ codeModal.desc_zh }}
           <span class="text-gray-400">· 作者 {{ codeModal.author_name }}</span></p>
         <div class="flex flex-wrap gap-2 mt-2">
           <button v-if="codeModal.is_member" class="btn-ghost text-xs" @click="downloadCode()">下载代码文件</button>
+          <button class="btn-ghost text-xs" @click="scrollToCodeComments">评论</button>
           <button v-if="codeModal.can_publish" class="btn-ghost text-xs" @click="showCodeVer=true">发布新版本</button>
           <button v-if="codeModal.can_grant" class="btn-ghost text-xs" @click="showCodeGrant=true">授予权限</button>
           <button v-if="codeModal.can_delete" class="btn-ghost text-xs text-red-600" @click="deleteCode">删除代码</button>
           <button v-if="d.is_member" class="btn-ghost text-xs" @click="genWriteup(codeModal.id)">AI 生成处理说明</button>
         </div>
-        <pre class="mt-2">{{ codeModal.source_code }}</pre>
+        <div v-if="codeModal.current_file_name" class="mt-3 text-sm">
+          <span class="text-gray-500">提交文件：</span>
+          <button class="text-accent hover:underline break-all" @click="downloadCode()">
+            {{ codeModal.current_file_name }}
+          </button>
+        </div>
+        <div v-if="codeModal.source_code" class="mt-3">
+          <div class="label-cap mb-1">粘贴内容</div>
+          <pre class="whitespace-pre-wrap break-words">{{ codeModal.source_code }}</pre>
+        </div>
 
         <!-- 版本迭代 -->
         <div v-if="codeModal.versions?.length" class="mt-3 border-t border-line pt-3">
@@ -2140,7 +2157,8 @@ const maxBar = (arr: any[]) => Math.max(...arr.map(a => +a.value), 1)
         </div>
 
         <!-- 评论（可选勘误类）-->
-        <div class="mt-3 border-t border-line pt-3">
+        <div ref="codeCommentsSection" tabindex="-1"
+          class="mt-3 border-t border-line pt-3 scroll-mt-3 outline-none">
           <div class="label-cap mb-1">评论</div>
           <div v-for="c in codeComments" :key="c.id" class="text-sm border-t border-line py-1">
             <router-link :to="`/users/${c.user_id}`" class="text-accent hover:underline">{{ c.name }}</router-link>
